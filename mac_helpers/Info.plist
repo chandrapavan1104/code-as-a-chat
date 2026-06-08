@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>WebcamSnap</string>
+    <key>CFBundleDisplayName</key>
+    <string>Code-as-a-Chat WebcamSnap</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.codeasachat.webcamsnap</string>
+    <key>CFBundleExecutable</key>
+    <string>WebcamSnap</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>Code-as-a-Chat captures a webcam photo when you request /mac photo from your phone.</string>
+</dict>
+</plist>

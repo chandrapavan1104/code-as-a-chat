@@ -1,0 +1,142 @@
+# Pocket Coding Engine — Scalable Architecture (V1 → V2)
+
+A headless macOS orchestrator that turns your Mac into a personal, intelligent, extensible computer you control entirely from your phone.
+
+## Design Philosophy
+
+The key insight is to **separate the client from the server completely**. The server (your Mac) runs a persistent **FastAPI + WebSocket orchestrator** that exposes a skill-based API. The client is just a thin UI layer that talks to it.
+
+- **V1 Client:** Telegram Bot (zero UI development, instant MVP)
+- **V2 Client:** Custom Android APK (React Native / Expo)
+- **Both clients talk to the exact same backend.** Swapping client is trivial.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        YOUR MAC (SERVER)                        │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │              FastAPI Orchestrator (:8000)                  │  │
+│  │  ┌─────────┐  ┌──────────┐  ┌───────────┐  ┌──────────┐  │  │
+│  │  │ Skill   │  │ Skill    │  │ Skill     │  │ Skill    │  │  │
+│  │  │ Router  │──│ Registry │──│ Executor  │──│ Results  │  │  │
+│  │  └─────────┘  └──────────┘  └───────────┘  └──────────┘  │  │
+│  └──────┬───────────┬──────────────┬──────────────┬──────────┘  │
+│         │           │              │              │              │
+│    ┌────▼───┐  ┌────▼────┐   ┌────▼────┐   ┌────▼─────────┐   │
+│    │Open    │  │ System  │   │ File    │   │ PII/PCI      │   │
+│    │Interp. │  │ Monitor │   │ Manager │   │ Masking      │   │
+│    │(Codex) │  │ (psutil)│   │ (R/W/X) │   │ (Presidio)   │   │
+│    └────────┘  └─────────┘   └─────────┘   └──────────────┘   │
+│                                                                 │
+│    ┌────────────────────────────────────────────────────────┐   │
+│    │              MCP Server Layer (V2+)                    │   │
+│    │  GitHub │ SQLite │ Browser │ Calendar │ Custom...      │   │
+│    └────────────────────────────────────────────────────────┘   │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ Tailscale VPN / WebSocket
+              ┌───────────▼───────────┐
+              │    MOBILE CLIENT      │
+              │  V1: Telegram Bot     │
+              │  V2: Android APK      │
+              └───────────────────────┘
+```
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> 1. **Open Interpreter as the Codex execution backend:** Open Interpreter already has `auto_run` mode and supports OpenAI models natively. It can read/write/execute files on your Mac. Should I use it as the primary execution engine, or do you prefer we build raw `subprocess` wrappers ourselves for more control?
+> 2. **Skill Priority:** For V1, which skills matter most? My recommendation is: **(a)** Codex/Code Generation + Execution, **(b)** System Monitor, **(c)** File Manager. PII masking and MCP can come in V2. Does that sound right?
+
+---
+
+## Why This Architecture is Scalable
+
+| Concern | Solution |
+|---|---|
+| **Adding new skills** | Each skill is a Python module in `/skills/`. Drop in a new file, register it → done. No core changes needed. |
+| **Swapping the mobile client** | The orchestrator exposes REST + WebSocket endpoints. Telegram, Android, iOS, web — all just clients. |
+| **PII/PCI masking** | Plug in [Microsoft Presidio](https://github.com/microsoft/presidio) as a middleware layer that intercepts all inbound/outbound messages and masks sensitive data before it reaches the LLM. |
+| **Personalization** | A local SQLite DB stores user preferences, prompt templates, and conversation history. The system prompt is dynamically assembled per-user. |
+| **More MCP tools** | The orchestrator can spawn MCP servers (GitHub, Slack, Google Drive, databases) as child processes. Skills can call them via the standard MCP protocol. |
+| **Switching LLM providers** | Open Interpreter is model-agnostic. Swap `gpt-4o` for a local Ollama model with one config change. |
+
+---
+
+## Key Open-Source Components
+
+| Component | Repository | Role |
+|---|---|---|
+| **Open Interpreter** | [OpenInterpreter/open-interpreter](https://github.com/OpenInterpreter/open-interpreter) | Execution engine — gives OpenAI models the ability to read, write, and execute code on your Mac. |
+| **Microsoft Presidio** | [microsoft/presidio](https://github.com/microsoft/presidio) | PII/PCI detection and anonymization. Masks credit cards, SSNs, emails, etc. in all messages before they hit the LLM. |
+| **Goose (V2 reference)** | [block/goose](https://github.com/block/goose) | Block's open-source agent with deep MCP integration and 70+ extensions. Can be studied for its skill/recipe architecture. |
+| **python-telegram-bot** | [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) | V1 Telegram client library. |
+| **FastAPI** | [tiangolo/fastapi](https://github.com/tiangolo/fastapi) | Core orchestrator framework (REST + WebSocket). |
+
+---
+
+## Proposed Implementation Plan
+
+### Phase 1: Project Scaffolding
+Create a clean, modular Python project structure:
+
+```
+Code-as-a-chat/
+├── server/
+│   ├── main.py              # FastAPI app entry point
+│   ├── config.py            # Environment variables, paths
+│   ├── orchestrator.py      # Skill router + intent classifier
+│   ├── skills/
+│   │   ├── __init__.py      # Skill registry
+│   │   ├── codex.py         # Open Interpreter wrapper (OpenAI Codex)
+│   │   ├── sysmon.py        # CPU/RAM/Disk monitoring via psutil
+│   │   └── filemanager.py   # List/read/write/delete files
+│   ├── middleware/
+│   │   └── pii_mask.py      # Presidio PII/PCI masking (V2, stub for now)
+│   └── db/
+│       └── store.py         # SQLite for preferences & history
+├── clients/
+│   ├── telegram_bot.py      # V1 Telegram bot client
+│   └── android/             # V2 React Native / Expo app (future)
+├── .env                     # API keys and config
+├── requirements.txt
+└── README.md
+```
+
+### Phase 2: Core Orchestrator (`server/`)
+- **FastAPI server** with REST endpoints and a WebSocket endpoint for streaming.
+- **Skill Registry:** A simple dict-based registry where each skill registers its name, description, and handler function. The orchestrator looks up the right skill based on intent keywords or an explicit `/command`.
+- **Open Interpreter Integration:** Initialize `interpreter` with `auto_run=True` and `model="gpt-4o"`. Route coding-related messages to it. Stream stdout/stderr back to the client.
+- **System Monitor Skill:** Use `psutil` to return CPU%, RAM%, disk usage, top processes, and thermal state.
+
+### Phase 3: V1 Client — Telegram Bot (`clients/telegram_bot.py`)
+- Use `python-telegram-bot` with long polling.
+- Map Telegram commands (`/status`, `/run`, `/files`) to orchestrator REST endpoints.
+- Forward free-text messages to the Codex skill via the orchestrator.
+- Stream responses back to the Telegram chat.
+
+### Phase 4: Persistence & Always-On
+- Use `pm2` or a macOS `launchd` plist to keep the FastAPI server running 24/7.
+- Use `caffeinate` to prevent Mac sleep.
+- The Telegram bot runs as a second process managed by the same daemon.
+
+### Phase 5 (V2): Android APK
+- Initialize a React Native / Expo project.
+- Connect to the FastAPI WebSocket endpoint over Tailscale VPN.
+- Build a chat UI with skill command palette.
+- PII/PCI masking via Presidio middleware activates on all messages.
+
+---
+
+## Verification Plan
+
+### Automated
+1. `pytest` for skill unit tests (mock Open Interpreter responses).
+2. Lint with `ruff`.
+3. Health check endpoint: `GET /health` returns `{"status": "ok"}`.
+
+### Manual (V1)
+1. **Codex Test:** Send *"Write a python script that calculates fibonacci numbers and run it"* via Telegram → file should be created on Mac and output streamed back.
+2. **System Monitor Test:** Send `/status` → get CPU/RAM/disk stats.
+3. **File Manager Test:** Send `/files ~/Desktop` → get a listing of files.

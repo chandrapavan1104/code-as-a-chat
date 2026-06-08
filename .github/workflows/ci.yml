@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check server/ clients/ --ignore E501
+
+      - name: Type check with mypy
+        run: |
+          pip install mypy
+          mypy server/ --ignore-missing-imports --no-strict-optional
+        continue-on-error: true
+
+      - name: Run tests
+        run: |
+          pip install pytest
+          pytest server/ -v --tb=short
+        # ⚠️  Add any required env vars as GitHub Secrets and reference here:
+        # env:
+        #   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        #   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

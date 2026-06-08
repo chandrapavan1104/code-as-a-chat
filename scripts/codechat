@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+#
+# codechat — manage the Code-as-a-Chat services (server + Telegram bot)
+# via macOS launchd. Services auto-start at user login and restart on crash.
+#
+# Usage:
+#   ./scripts/codechat install     register and start autostart
+#   ./scripts/codechat uninstall   stop and remove autostart
+#   ./scripts/codechat start       start both services
+#   ./scripts/codechat stop        stop both services
+#   ./scripts/codechat restart     bounce both services
+#   ./scripts/codechat status      show service state + recent errors
+#   ./scripts/codechat logs        tail all logs (Ctrl-C to exit)
+
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="$(command -v python3)"
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+LOG_DIR="$HOME/Library/Logs/code-as-a-chat"
+
+SERVER_LABEL="com.codeasachat.server"
+BOT_LABEL="com.codeasachat.bot"
+SERVER_PLIST="$LAUNCH_AGENTS_DIR/$SERVER_LABEL.plist"
+BOT_PLIST="$LAUNCH_AGENTS_DIR/$BOT_LABEL.plist"
+
+# launchd's default PATH is minimal — give subprocesses (claude/codex/gemini)
+# the homebrew + system paths so they're discoverable.
+SUBPROCESS_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# ─── plist generators ────────────────────────────────────────────────────────
+
+generate_server_plist() {
+    cat > "$SERVER_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${SERVER_LABEL}</string>
+    <key>WorkingDirectory</key>
+    <string>${PROJECT_DIR}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${PYTHON_BIN}</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>server.main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8000</string>
+        <string>--reload</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${SUBPROCESS_PATH}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/server.err</string>
+</dict>
+</plist>
+EOF
+}
+
+generate_bot_plist() {
+    cat > "$BOT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${BOT_LABEL}</string>
+    <key>WorkingDirectory</key>
+    <string>${PROJECT_DIR}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${PYTHON_BIN}</string>
+        <string>-m</string>
+        <string>clients.telegram_bot</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${SUBPROCESS_PATH}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/bot.log</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/bot.err</string>
+</dict>
+</plist>
+EOF
+}
+
+# ─── subcommands ─────────────────────────────────────────────────────────────
+
+cmd_install() {
+    mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
+    generate_server_plist
+    generate_bot_plist
+    echo "Wrote $SERVER_PLIST"
+    echo "Wrote $BOT_PLIST"
+    cmd_start
+    echo
+    echo "Installed. Services will now auto-start at user login."
+    echo "Logs: $LOG_DIR"
+}
+
+cmd_uninstall() {
+    cmd_stop || true
+    rm -f "$SERVER_PLIST" "$BOT_PLIST"
+    echo "Uninstalled. Plists removed."
+}
+
+cmd_start() {
+    [[ -f "$SERVER_PLIST" ]] || { echo "Not installed. Run: $0 install"; exit 1; }
+    launchctl load -w "$SERVER_PLIST" 2>/dev/null || true
+    launchctl load -w "$BOT_PLIST" 2>/dev/null || true
+    echo "Started: server + bot"
+}
+
+cmd_stop() {
+    launchctl unload -w "$SERVER_PLIST" 2>/dev/null || true
+    launchctl unload -w "$BOT_PLIST" 2>/dev/null || true
+    echo "Stopped: server + bot"
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_status() {
+    echo "── Services ──"
+    for label in "$SERVER_LABEL" "$BOT_LABEL"; do
+        line="$(launchctl list 2>/dev/null | awk -v l="$label" '$3==l {print}')"
+        if [[ -n "$line" ]]; then
+            pid="$(echo "$line" | awk '{print $1}')"
+            status="$(echo "$line" | awk '{print $2}')"
+            if [[ "$pid" == "-" ]]; then
+                echo "  $label  (loaded but not running, last exit: $status)"
+            else
+                echo "  $label  running  pid=$pid"
+            fi
+        else
+            echo "  $label  (not loaded)"
+        fi
+    done
+    echo
+    echo "── Health check ──"
+    if curl -s -m 2 http://localhost:8000/health >/dev/null 2>&1; then
+        echo "  server: responding on :8000"
+    else
+        echo "  server: NOT responding"
+    fi
+    echo
+    echo "── Last 10 lines of server.err ──"
+    [[ -s "$LOG_DIR/server.err" ]] && tail -n 10 "$LOG_DIR/server.err" || echo "  (empty)"
+    echo
+    echo "── Last 10 lines of bot.err ──"
+    [[ -s "$LOG_DIR/bot.err" ]] && tail -n 10 "$LOG_DIR/bot.err" || echo "  (empty)"
+}
+
+cmd_logs() {
+    echo "Tailing $LOG_DIR/{server,bot}.{log,err}  (Ctrl-C to exit)"
+    touch "$LOG_DIR"/{server,bot}.{log,err}
+    tail -F "$LOG_DIR"/server.log "$LOG_DIR"/server.err \
+            "$LOG_DIR"/bot.log    "$LOG_DIR"/bot.err
+}
+
+# ─── dispatch ────────────────────────────────────────────────────────────────
+
+case "${1:-help}" in
+    install)   cmd_install ;;
+    uninstall) cmd_uninstall ;;
+    start)     cmd_start ;;
+    stop)      cmd_stop ;;
+    restart)   cmd_restart ;;
+    status)    cmd_status ;;
+    logs)      cmd_logs ;;
+    *)
+        echo "Usage: $0 {install|uninstall|start|stop|restart|status|logs}"
+        exit 1
+        ;;
+esac
