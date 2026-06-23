@@ -5,7 +5,10 @@ from server.skills import register
 
 class AntigravitySkill(CLISubprocessSkill):
     name = "antigravity"
+    command = "gemini"
     description = "Gemini CLI — code analysis and parallel subagent orchestration"
+    agent_doc = ('Google Gemini agent. Pick when the user explicitly says '
+                 '"gemini" or "google".')
     cli_name = "gemini"
     install_hint = "Install: npm install -g @google/gemini-cli"
 

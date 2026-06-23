@@ -137,7 +137,13 @@ def _list() -> str:
 
 class RemindersSkill(Skill):
     name = "reminders"
+    command = "remind"
+    aliases = ["reminders"]
     description = "Time-based Telegram alerts: /remind <when> <what> | list | delete <id>"
+    final_output = True
+    agent_doc = ("Time-based Telegram alerts. The user gets a push when due. "
+                 'args: "<when> <what>" to create (e.g. "in 2 hours check the deploy", '
+                 '"tomorrow 9am standup") | "list" (upcoming) | "delete <id>"')
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
         raw = prompt.strip()

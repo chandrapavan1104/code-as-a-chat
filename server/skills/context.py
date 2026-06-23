@@ -239,6 +239,13 @@ class ContextSkill(Skill):
     name = "context"
     description = ("Universal project context shared by all agents "
                    "(AGENTS.md ↔ CLAUDE.md ↔ GEMINI.md)")
+    final_output = True
+    agent_doc = ("Universal project context shared by all agents — the AGENTS.md / CLAUDE.md / "
+                 "GEMINI.md files in the active workspace. Use when the user asks about "
+                 '"project context", wants to record what a project is/does, switch agents while '
+                 "keeping continuity, or log a change. "
+                 'args: "" (show) | "status" | "init" | "refresh" (Claude analyzes + writes it) | '
+                 '"sync" | "add <changelog entry>"')
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
         args = prompt.strip().split()

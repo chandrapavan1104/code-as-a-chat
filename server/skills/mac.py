@@ -192,6 +192,11 @@ class MacSkill(Skill):
     name = "mac"
     description = ("Remote-control the Mac: lock, sleep, say, notify, "
                    "screenshot, photo, open")
+    agent_doc = ('Remote-control the physical Mac. Flex / utility. '
+                 'args: "lock" | "sleep" | "say <text>" | "notify <text>" | "screenshot" | '
+                 '"photo" (webcam) | "open <url>" | "bluetooth on|off|toggle". '
+                 'Examples: "lock my mac"->"lock", "make my mac say hi"->"say hi", '
+                 '"take a screenshot"->"screenshot", "turn off bluetooth"->"bluetooth off".')
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
         parts = prompt.strip().split(None, 1)

@@ -232,6 +232,9 @@ def _kill_pid(pid: int, sig: int, sig_name: str, name: str) -> str:
 class PortsSkill(Skill):
     name = "ports"
     description = "Listening TCP ports: /ports | show <port> | kill <pid|:<port>>"
+    final_output = True
+    agent_doc = ('Listening TCP ports and who owns them. Can also kill processes. '
+                 'args: "" (list) | "mine" | "show <port>" | "kill <pid>" | "kill :<port>"')
 
     async def run(self, prompt: str = "", **kwargs) -> str:
         args = prompt.strip().split()

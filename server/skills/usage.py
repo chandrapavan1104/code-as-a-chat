@@ -23,6 +23,7 @@ import asyncio
 import datetime as dt
 import json
 import shutil
+from pathlib import Path
 from server.skills.base import Skill
 from server.skills import register
 from server import config
@@ -254,7 +255,7 @@ def _format_threads(rep: dict | None, all_payload: dict | None = None, limit: in
             threads_by_provider[r.get("provider")] = r.get("recentThreads") or []
 
     lines = ["RECENT THREADS:"]
-    home_prefix = "/Users/chandrapavan1104"
+    home_prefix = str(Path.home())   # username-agnostic (works for any user)
     for prov, threads in threads_by_provider.items():
         if not threads:
             continue
@@ -282,6 +283,11 @@ class UsageSkill(Skill):
     name = "usage"
     description = ("LLM provider usage: /usage | <provider> | today | "
                    "days <n> | threads | raw")
+    final_output = True
+    agent_doc = ("Local LLM usage report (Codex/Claude/Gemini/Antigravity). Reads on-disk "
+                 "session files. Shows real rate-limit % for Codex; computed % vs daily token "
+                 'budget for Claude/Gemini. args: "" | "<provider>" | "today" | "days <n>" | '
+                 '"threads [provider]"')
 
     async def run(self, prompt: str = "", **kwargs) -> str:
         args = prompt.strip().split()

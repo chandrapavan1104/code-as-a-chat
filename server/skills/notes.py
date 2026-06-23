@@ -320,6 +320,24 @@ class NotesSkill(Skill):
     name = "notes"
     description = ("Personal whiteboard — capture / browse / track ideas, bugs, "
                    "todos, with auto project tagging")
+    agent_doc = """Personal whiteboard / scratchpad. Capture bugs, ideas, todos, features, questions.
+   Each note auto-tags itself to a known project when the user names one. Use this whenever the
+   user is BRAIN-DUMPING, REPORTING an issue, JOTTING an idea, ADDING a todo, OR asking to
+   BROWSE past notes. When in doubt between answering directly and capturing, CAPTURE — the user
+   wants nothing lost.
+    args:
+      "capture <user's full text>"   store a new note (LLM auto-extracts kind/project/tags).
+                                      If the text covers MULTIPLE projects/topics, the notes skill
+                                      splits into multiple notes automatically — pass a long
+                                      brain-dump as ONE capture call.
+      ""                              list recent open notes
+      "<kind>"                        filter (bugs, features, ideas, todos, questions)
+      "<project-name>"                filter to a project
+      "show <id>"                     view full
+      "done <id>" / "drop <id>"       change status
+      "search <query>"                full-text search
+      "stats"                         counts per project x kind
+      "wipe all" / "wipe 1-6"         bulk delete (only when user explicitly asks)"""
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
         args = prompt.strip().split()

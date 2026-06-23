@@ -22,6 +22,32 @@ WORKSPACE_DIR: Path = Path(_workspace_env).expanduser() if _workspace_env else P
 
 ORCHESTRATOR_URL: str = os.getenv("ORCHESTRATOR_URL", "http://localhost:8000")
 
+
+def _load_or_create_api_token() -> str:
+    """Shared secret guarding the /run and /skills endpoints.
+    Priority: API_TOKEN env → persisted token file → freshly generated.
+    Server and bot both read this so they agree on the token automatically."""
+    env = os.getenv("API_TOKEN", "").strip()
+    if env:
+        return env
+    token_file = Path.home() / ".codeasachat" / "api_token"
+    if token_file.exists():
+        existing = token_file.read_text().strip()
+        if existing:
+            return existing
+    import secrets
+    token = secrets.token_urlsafe(32)
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(token)
+    try:
+        token_file.chmod(0o600)
+    except OSError:
+        pass
+    return token
+
+
+API_TOKEN: str = _load_or_create_api_token()
+
 # LLM that powers the shell skill (routing + mobile reformatting).
 # 'haiku' is fast and cheap; override to 'sonnet' / 'opus' / full model name if you want.
 SHELL_MODEL: str = os.getenv("SHELL_MODEL", "haiku")
@@ -48,6 +74,17 @@ CONTEXT_AUTO_SYNC: bool = os.getenv("CONTEXT_AUTO_SYNC", "true").lower() in ("1"
 # template (AGENTS.md + mirrors) so every workspace is context-ready.
 # Disable with CONTEXT_AUTO_INIT=false.
 CONTEXT_AUTO_INIT: bool = os.getenv("CONTEXT_AUTO_INIT", "true").lower() in ("1", "true", "yes")
+
+# ── Agent persona ─────────────────────────────────────────────────────────────
+# Name + personality of the shell agent. Persona affects only the user-facing
+# reply text — tool routing stays precise English under the hood.
+AGENT_NAME: str = os.getenv("AGENT_NAME", "Gajala")
+# Set AGENT_PERSONA=professional to switch back to a plain assistant voice.
+AGENT_PERSONA: str = os.getenv("AGENT_PERSONA", "telugu-bestie")
+
+# Model for the diary/Anna mentor skill. Mentor judgment is worth a better
+# model than the fast shell router; entries are low-frequency.
+DIARY_MODEL: str = os.getenv("DIARY_MODEL", "sonnet")
 
 # ── Background scheduler (reminders + battery alerts) ─────────────────────────
 SCHEDULER_INTERVAL: int = int(os.getenv("SCHEDULER_INTERVAL", "60"))   # seconds
