@@ -101,37 +101,100 @@ async def _open(url: str) -> str:
     return f"Opened on Mac: {url}" if rc == 0 else f"[mac] open failed: {err or out}"
 
 
+def _bt_perm_hint(err: str) -> str:
+    if "access" in err.lower() or "abort" in err.lower():
+        return ("\nGrant Bluetooth access: System Settings → Privacy & "
+                "Security → Bluetooth → enable for the Code-as-a-Chat "
+                "process (or your terminal).")
+    return ""
+
+
+async def _bt_paired() -> list[dict]:
+    """Parse `blueutil --paired` into [{address, name, connected}]."""
+    import re
+    rc, out, _ = await _run(["blueutil", "--paired"])
+    if rc != 0:
+        return []
+    devices = []
+    for line in out.splitlines():
+        addr = re.search(r"address:\s*([0-9a-fA-F:\-]+)", line)
+        name = re.search(r'name:\s*"([^"]*)"', line)
+        if addr:
+            devices.append({
+                "address": addr.group(1),
+                "name": name.group(1) if name else "",
+                "connected": "not connected" not in line and "connected" in line,
+            })
+    return devices
+
+
+async def _bt_resolve(query: str) -> dict | None:
+    """Find a paired device by address or case-insensitive name substring."""
+    q = query.strip().lower()
+    devices = await _bt_paired()
+    for d in devices:                                  # exact address first
+        if d["address"].lower() == q:
+            return d
+    for d in devices:                                  # then name substring
+        if q and q in d["name"].lower():
+            return d
+    return None
+
+
 async def _bluetooth(arg: str) -> str:
     if shutil.which("blueutil") is None:
         return "[mac] Bluetooth control needs blueutil — run: brew install blueutil"
 
-    arg = arg.strip().lower()
+    parts = arg.strip().split(None, 1)
+    cmd = parts[0].lower() if parts else ""
+    target = parts[1].strip() if len(parts) > 1 else ""
 
-    def _perm_hint(err: str) -> str:
-        if "access" in err.lower() or "abort" in err.lower():
-            return ("\nGrant Bluetooth access: System Settings → Privacy & "
-                    "Security → Bluetooth → enable for the Code-as-a-Chat "
-                    "process (or your terminal).")
-        return ""
-
-    if arg in ("on", "enable", "1"):
+    if cmd in ("on", "enable", "1"):
         rc, out, err = await _run(["blueutil", "--power", "1"])
-        return "Bluetooth ON." if rc == 0 else f"[mac] bluetooth on failed: {err or out}{_perm_hint(err)}"
-    if arg in ("off", "disable", "0"):
+        return "Bluetooth ON." if rc == 0 else f"[mac] bluetooth on failed: {err or out}{_bt_perm_hint(err)}"
+    if cmd in ("off", "disable", "0"):
         rc, out, err = await _run(["blueutil", "--power", "0"])
-        return "Bluetooth OFF." if rc == 0 else f"[mac] bluetooth off failed: {err or out}{_perm_hint(err)}"
+        return "Bluetooth OFF." if rc == 0 else f"[mac] bluetooth off failed: {err or out}{_bt_perm_hint(err)}"
 
-    # no arg (or "status"/"toggle") → report current state
+    if cmd in ("list", "paired", "devices"):
+        devices = await _bt_paired()
+        if not devices:
+            return "No paired Bluetooth devices."
+        lines = ["Paired devices:"]
+        for d in devices:
+            dot = "🟢" if d["connected"] else "⚪️"
+            lines.append(f"{dot} {d['name'] or d['address']}  ({d['address']})")
+        return "\n".join(lines)
+
+    if cmd in ("connect", "disconnect"):
+        if not target:
+            return f"[mac] which device? e.g. /mac bluetooth {cmd} keyboard"
+        # Bluetooth must be on to connect.
+        if cmd == "connect":
+            await _run(["blueutil", "--power", "1"])
+        dev = await _bt_resolve(target)
+        if dev is None:
+            names = ", ".join(d["name"] or d["address"] for d in await _bt_paired()) or "none"
+            return f"[mac] no paired device matching '{target}'. Paired: {names}"
+        flag = "--connect" if cmd == "connect" else "--disconnect"
+        rc, out, err = await _run(["blueutil", flag, dev["address"]])
+        label = dev["name"] or dev["address"]
+        if rc == 0:
+            return f"{'Connected to' if cmd == 'connect' else 'Disconnected'} {label}."
+        return f"[mac] {cmd} {label} failed: {err or out}{_bt_perm_hint(err)}"
+
+    # no/unknown arg (or "status"/"toggle") → report current state
     rc, out, err = await _run(["blueutil", "--power"])
     if rc != 0:
-        return f"[mac] bluetooth status failed: {err or out}{_perm_hint(err)}"
+        return f"[mac] bluetooth status failed: {err or out}{_bt_perm_hint(err)}"
     on = out.strip() == "1"
-    if arg == "toggle":
+    if cmd == "toggle":
         rc2, out2, err2 = await _run(["blueutil", "--power", "0" if on else "1"])
         if rc2 == 0:
             return f"Bluetooth toggled {'OFF' if on else 'ON'}."
-        return f"[mac] toggle failed: {err2 or out2}{_perm_hint(err2)}"
-    return f"Bluetooth is {'ON' if on else 'OFF'}.  (/mac bluetooth on|off|toggle)"
+        return f"[mac] toggle failed: {err2 or out2}{_bt_perm_hint(err2)}"
+    return (f"Bluetooth is {'ON' if on else 'OFF'}.  "
+            "(/mac bluetooth on|off|toggle|list|connect <name>|disconnect <name>)")
 
 
 async def _screenshot(session_id: str | None) -> str:
@@ -192,6 +255,16 @@ class MacSkill(Skill):
     name = "mac"
     description = ("Remote-control the Mac: lock, sleep, say, notify, "
                    "screenshot, photo, open")
+    agent_doc = ('Remote-control the physical Mac. Flex / utility. '
+                 'args: "lock" | "sleep" | "say <text>" | "notify <text>" | "screenshot" | '
+                 '"photo" (webcam) | "open <url>" | '
+                 '"bluetooth on|off|toggle|list|connect <name>|disconnect <name>". '
+                 'Examples: "lock my mac"->"lock", "make my mac say hi"->"say hi", '
+                 '"take a screenshot"->"screenshot", "turn off bluetooth"->"bluetooth off", '
+                 '"connect my keyboard"->"bluetooth connect keyboard", '
+                 '"list bluetooth devices"->"bluetooth list". '
+                 'bluetooth connect/disconnect takes a paired device name substring or address; '
+                 'it turns Bluetooth on and connects in ONE call (no separate "on" step needed).')
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
         parts = prompt.strip().split(None, 1)

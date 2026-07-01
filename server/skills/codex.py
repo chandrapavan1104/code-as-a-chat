@@ -7,6 +7,8 @@ from server.skills import register
 class CodexSkill(CLISubprocessSkill):
     name = "codex"
     description = "OpenAI Codex CLI — code generation with filesystem access"
+    agent_doc = ('OpenAI coding agent. Same capability as claude. Pick when the '
+                 'user explicitly says "codex" or "openai".')
     cli_name = "codex"
     install_hint = "Install: npm install -g @openai/codex"
 

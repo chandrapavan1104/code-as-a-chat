@@ -6,6 +6,11 @@ from server.skills import register
 class ClaudeCodeSkill(CLISubprocessSkill):
     name = "claude"
     description = "Claude Code CLI — multi-file refactors, test runs, git ops"
+    agent_doc = ("Heavy coding agent. Use for: code reading/writing, multi-file "
+                 "refactors, running tests, git ops, debugging, anything that "
+                 "needs to touch the filesystem. ALSO your eyes — it can read "
+                 "images (screenshots, error dialogs), PDFs, and any file: pass "
+                 "'Read the image/file at <path> and <question>'.")
     cli_name = "claude"
     install_hint = "Install: npm install -g @anthropic-ai/claude-code"
 

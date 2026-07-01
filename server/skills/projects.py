@@ -192,6 +192,9 @@ def _switch_view(target: str) -> str:
 class ProjectsSkill(Skill):
     name = "projects"
     description = "Switch active project dir: /projects | /projects switch <name>"
+    final_output = True
+    agent_doc = ("Switch the active project directory (workspace) for all subsequent skills. "
+                 'args: "" (list) | "current" | "switch <name-or-path>"')
 
     async def run(self, prompt: str = "", **kwargs) -> str:
         args = prompt.strip().split()

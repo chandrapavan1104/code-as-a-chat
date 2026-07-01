@@ -249,6 +249,10 @@ async def _whoami_view() -> str:
 
 class FirebaseSkill(Skill):
     name = "firebase"
+    agent_doc = ("Deploy/preview the active workspace to Firebase. User must have /projects "
+                 "switched into a Firebase project (one with firebase.json). "
+                 'args: "" (status) | "list" | "use <id>" | "deploy" | "deploy hosting" | '
+                 '"preview [name]"')
     description = ("Firebase from your phone: /firebase | list | use <id> | "
                    "deploy [target] | preview [name]")
 

@@ -5,7 +5,10 @@ from server.skills import register
 
 class SysmonSkill(Skill):
     name = "sysmon"
+    command = "status"
     description = "System monitor: CPU, RAM, disk usage, and top processes"
+    final_output = True
+    agent_doc = "Returns CPU/RAM/disk/processes/battery. args=\"\" (empty)."
 
     async def run(self, prompt: str = "", **kwargs) -> str:
         cpu = psutil.cpu_percent(interval=1)

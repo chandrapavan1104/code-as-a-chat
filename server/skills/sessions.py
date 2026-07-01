@@ -400,6 +400,10 @@ def _show_view(prefix: str) -> str:
 class SessionsSkill(Skill):
     name = "sessions"
     description = "Browse past chats: /sessions | /sessions <engine> | /sessions show <id>"
+    final_output = True
+    agent_doc = ('Browse past chats from claude/codex/gemini. '
+                 'args: "" (list recent) | "claude"|"codex"|"gemini" (filter) | '
+                 '"show <id-prefix>" | "count"')
 
     async def run(self, prompt: str = "", **kwargs) -> str:
         args = prompt.strip().split()

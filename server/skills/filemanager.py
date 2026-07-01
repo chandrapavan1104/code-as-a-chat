@@ -6,7 +6,10 @@ from server import config
 
 class FileManagerSkill(Skill):
     name = "filemanager"
+    command = "files"
     description = "List a directory or read a file.  Usage: /files <path>"
+    final_output = True
+    agent_doc = 'Lists a directory or reads a file. args=path (e.g. "~/Desktop").'
 
     async def run(self, prompt: str = "", **kwargs) -> str:
         raw = prompt.strip()
