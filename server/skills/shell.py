@@ -355,10 +355,24 @@ class ShellSkill(Skill):
         for iteration in range(MAX_ITERATIONS):
             agent_input = self._build_agent_input(context_block, prompt, scratchpad)
 
-            try:
-                raw = await _haiku(get_agent_system(), agent_input, timeout=HAIKU_TIMEOUT)
-            except Exception as exc:
-                final = f"[shell] agent LLM error after {iteration} step(s): {exc}"
+            raw = None
+            last_exc: Exception | None = None
+            for attempt in range(2):   # one retry — the claude CLI occasionally hiccups
+                try:
+                    raw = await _haiku(get_agent_system(), agent_input, timeout=HAIKU_TIMEOUT)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt == 0:
+                        await asyncio.sleep(1.0)
+            if raw is None:
+                # LLM unreachable even after a retry. If earlier steps already ran,
+                # surface what we did instead of dropping it all with an opaque error.
+                if scratchpad:
+                    final = self._partial_summary(
+                        scratchpad, note=f"(couldn't compose a final reply: {last_exc})")
+                else:
+                    final = f"[shell] agent LLM error after {iteration} step(s): {last_exc}"
                 self._remember(session_id, prompt, final)
                 return final
 
@@ -441,16 +455,25 @@ class ShellSkill(Skill):
 
         # Hit MAX_ITERATIONS without "done"
         if scratchpad:
-            lines = [f"Hit step limit ({MAX_ITERATIONS} tool calls). Summary:"]
-            for i, step in enumerate(scratchpad, 1):
-                first = (step["result"].splitlines() or [""])[0]
-                lines.append(f"  {i}. {step['tool']}({step['args'][:40]}): {first[:80]}")
-            final = "\n".join(lines)
+            final = self._partial_summary(
+                scratchpad, note=f"(stopped at the step limit of {MAX_ITERATIONS})")
         else:
             final = (f"Hit step limit ({MAX_ITERATIONS}) with no completed steps. "
                      "Try a more specific request.")
         self._remember(session_id, prompt, final)
         return final
+
+    @staticmethod
+    def _partial_summary(scratchpad: list[dict], note: str = "") -> str:
+        """One-line-per-step recap of what actually ran — used when the agent
+        can't produce a clean final reply (LLM error or step limit)."""
+        lines = ["Here's what I got done:"]
+        for i, step in enumerate(scratchpad, 1):
+            first = (step["result"].splitlines() or [""])[0]
+            lines.append(f"  {i}. {step['tool']}({step['args'][:40]}): {first[:80]}")
+        if note:
+            lines.append(note)
+        return "\n".join(lines)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

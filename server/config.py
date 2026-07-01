@@ -88,8 +88,20 @@ DIARY_MODEL: str = os.getenv("DIARY_MODEL", "sonnet")
 
 # ── Background scheduler (reminders + battery alerts) ─────────────────────────
 SCHEDULER_INTERVAL: int = int(os.getenv("SCHEDULER_INTERVAL", "60"))   # seconds
+# Battery alerts only make sense on a laptop; disable on an always-plugged
+# desktop (e.g. Mac Mini) with BATTERY_ALERTS=false. Machines with no battery
+# are skipped automatically regardless.
+BATTERY_ALERTS: bool = os.getenv("BATTERY_ALERTS", "true").lower() in ("1", "true", "yes")
 BATTERY_THRESHOLD: int = int(os.getenv("BATTERY_THRESHOLD", "20"))     # percent
 BATTERY_ALERT_COOLDOWN: int = int(os.getenv("BATTERY_ALERT_COOLDOWN", "1800"))  # seconds
+
+# ── FCM push (Gajala Android app) ─────────────────────────────────────────────
+# Service-account key downloaded from Firebase console; lets the server send
+# pushes to registered devices via the FCM HTTP v1 API. If the file is absent,
+# push is silently skipped (Telegram still works).
+FCM_SERVICE_ACCOUNT: Path = Path(
+    os.getenv("FCM_SERVICE_ACCOUNT", str(Path.home() / ".codeasachat" / "fcm-service-account.json"))
+).expanduser()
 
 
 # Apply any persisted workspace override (from /projects switch …).

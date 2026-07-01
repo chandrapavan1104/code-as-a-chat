@@ -34,6 +34,11 @@ async def require_token(x_api_token: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing API token")
 
 
+# ── API v2 — structured JSON for the native app (token-authed) ────────────────
+from server.api_v2 import router as api_v2_router  # noqa: E402
+app.include_router(api_v2_router, dependencies=[Depends(require_token)])
+
+
 class RunRequest(BaseModel):
     command: str
     prompt: str = ""

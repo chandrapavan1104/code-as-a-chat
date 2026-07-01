@@ -15,7 +15,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="$(command -v python3)"
+# Allow an explicit python via env (setup_mini.sh sets this to a 3.11+ build);
+# our code uses 3.10+ syntax so the default 3.9 from Xcode tools won't do.
+PYTHON_BIN="${CODECHAT_PYTHON:-$(command -v python3)}"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/Library/Logs/code-as-a-chat"
 
@@ -50,7 +52,6 @@ generate_server_plist() {
         <string>127.0.0.1</string>
         <string>--port</string>
         <string>8000</string>
-        <string>--reload</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

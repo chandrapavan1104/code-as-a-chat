@@ -30,14 +30,18 @@ brew install node blueutil imagesnap ffmpeg gh wget || true
 # Tailscale (the always-on tunnel) — GUI app, sign in afterwards
 brew install --cask tailscale || true
 
-# ── 3. Python deps ───────────────────────────────────────────────────────────
-PY="$(command -v python3)"
-say "Python: $PY ($("$PY" --version))"
-echo "   (needs 3.11+; if older, install python.org 3.11 and re-run)"
+# ── 3. Python 3.12 (our code needs 3.10+ — Xcode's 3.9 won't run it) ─────────
+say "Installing Python 3.12 via brew…"
+brew install python@3.12 || true
+PY="$(brew --prefix)/bin/python3.12"
+[ -x "$PY" ] || PY="$(command -v python3.12 || command -v python3)"
+say "Using Python: $PY ($("$PY" --version 2>&1))"
 "$PY" -m pip install --upgrade pip >/dev/null 2>&1 || true
 "$PY" -m pip install -r "$REPO/requirements.txt"
 # extras not always pinned in requirements
 "$PY" -m pip install "python-telegram-bot>=21" "httpx>=0.27"
+# launchd services must use THIS python (3.12), not Xcode's 3.9
+export CODECHAT_PYTHON="$PY"
 
 # ── 4. The three AI CLIs (subscription login done later) ─────────────────────
 say "Installing Claude / Codex / Gemini CLIs…"
