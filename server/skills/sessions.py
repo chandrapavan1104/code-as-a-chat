@@ -385,7 +385,7 @@ def _show_view(prefix: str) -> str:
     for i, (user_msg, asst_msg) in enumerate(shown, start=1):
         idx = len(turns) - len(shown) + i
         lines.append(f"── turn {idx} ──")
-        lines.append(f"YOU:")
+        lines.append("YOU:")
         lines.append(_trunc(user_msg))
         lines.append("")
         lines.append(f"{engine.upper()}:")
