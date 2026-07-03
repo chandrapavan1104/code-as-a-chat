@@ -225,6 +225,29 @@ def _rate_pcts(rep: dict) -> tuple:
     return primary, secondary
 
 
+_WINDOW_LABELS = {"5h": "5-hour", "7d": "weekly", "1d": "daily", "current": "current"}
+
+
+def _limits(rep: dict) -> list:
+    """Human-labeled rate-limit bars for the app — one per window a provider
+    reports. Engines differ: Codex/Claude expose 5h+7d token windows, Gemini a
+    single daily-request window, so the app renders whatever comes back."""
+    out = []
+    for lu in rep.get("limitUsage") or []:
+        pct = lu.get("usedPercent")
+        if pct is None:
+            continue
+        window = (lu.get("window") or "").lower()
+        label = _WINDOW_LABELS.get(window, window or "usage")
+        if (lu.get("unit") or "") == "requests":
+            label += " requests"
+        detail = None
+        if lu.get("used") is not None and lu.get("limit"):
+            detail = f"{int(lu['used'])} / {int(lu['limit'])}"
+        out.append({"label": label, "pct": round(float(pct), 1), "detail": detail})
+    return out
+
+
 @router.get("/usage")
 def usage():
     if shutil.which("codaur") is None:
@@ -257,6 +280,8 @@ def usage():
             "threads": totals.get("threads"),
             # Activity fallback for engines that don't expose tokens (Antigravity).
             "events": totals.get("events"),
+            # Generic labeled rate-limit bars (per-engine window shapes differ).
+            "limits": _limits(rep),
         })
 
     # Hide providers with no signal at all (unused engines) so the screen shows

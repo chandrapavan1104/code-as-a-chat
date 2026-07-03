@@ -47,8 +47,7 @@ class _ProviderCard extends StatelessWidget {
   const _ProviderCard(this.p);
   @override
   Widget build(BuildContext context) {
-    final primary = p['primary_pct'];
-    final secondary = p['secondary_pct'];
+    final limits = (p['limits'] as List?) ?? const [];
     // Some engines (Antigravity) don't expose tokens — show activity instead.
     final hasTokens = p['today_tokens'] != null || p['total_tokens'] != null;
     return Card(
@@ -71,12 +70,15 @@ class _ProviderCard extends StatelessWidget {
             ],
           ]),
           const SizedBox(height: 10),
-          if (primary != null) _limitBar('5-hour window', (primary as num).toDouble()),
-          if (secondary != null) ...[
-            const SizedBox(height: 8),
-            _limitBar('weekly', (secondary as num).toDouble()),
+          for (int i = 0; i < limits.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            _limitBar(
+              (limits[i]['label'] ?? 'usage').toString(),
+              (limits[i]['pct'] as num).toDouble(),
+              detail: limits[i]['detail']?.toString(),
+            ),
           ],
-          if (primary == null && secondary == null)
+          if (limits.isEmpty)
             Text(hasTokens
                     ? 'No live rate-limit data'
                     : 'Activity only — token usage not exposed by this tool',
@@ -100,13 +102,15 @@ class _ProviderCard extends StatelessWidget {
     );
   }
 
-  Widget _limitBar(String label, double pct) => Builder(builder: (context) {
+  Widget _limitBar(String label, double pct, {String? detail}) => Builder(builder: (context) {
     final frac = (pct / 100).clamp(0.0, 1.0);
     final color = frac > .85 ? GajalaColors.danger : frac > .6 ? GajalaColors.warn : GajalaColors.ok;
+    final pctStr = pct >= 10 ? pct.toStringAsFixed(0) : pct.toStringAsFixed(1);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
         Text(label, style: TextStyle(color: context.pal.textDim, fontSize: 12)),
-        Text('${pct.toStringAsFixed(0)}% used', style: TextStyle(color: color, fontSize: 12)),
+        Text(detail != null ? '$detail · $pctStr%' : '$pctStr% used',
+            style: TextStyle(color: color, fontSize: 12)),
       ]),
       const SizedBox(height: 4),
       ClipRRect(borderRadius: BorderRadius.circular(4),
