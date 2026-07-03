@@ -25,7 +25,7 @@ class _NotesScreenState extends ConsumerState<NotesScreen> {
   Widget build(BuildContext context) {
     final notesAsync = ref.watch(notesProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Notes')),
+      appBar: AppBar(title: const Text('Brain Dump')),
       body: Column(children: [
         SizedBox(
           height: 48,
@@ -83,7 +83,7 @@ class _NotesScreenState extends ConsumerState<NotesScreen> {
       context: context,
       builder: (c) => StatefulBuilder(builder: (c, setLocal) => AlertDialog(
         backgroundColor: context.pal.surface,
-        title: const Text('New note'),
+        title: const Text('New brain dump'),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
           TextField(controller: title, decoration: const InputDecoration(hintText: 'Title'), autofocus: true),
           const SizedBox(height: 10),
