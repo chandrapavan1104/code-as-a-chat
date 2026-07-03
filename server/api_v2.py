@@ -12,6 +12,7 @@ import time
 import json as _json
 import shutil
 import subprocess
+from pathlib import Path
 import psutil
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -248,6 +249,31 @@ def _limits(rep: dict) -> list:
     return out
 
 
+_PLAN_DISPLAY = {
+    "aipro": "Pro", "aiultra": "Ultra", "pro": "Pro", "plus": "Plus",
+    "free": "Free", "standard": "Standard", "enterprise": "Enterprise",
+    "max": "Max", "team": "Team",
+}
+
+
+def _plan_label(raw) -> str | None:
+    """Normalize a plan value (native or configured) to a short chip label."""
+    if not raw or str(raw).lower() == "null":
+        return None
+    return _PLAN_DISPLAY.get(str(raw).lower(), str(raw).capitalize())
+
+
+def _codaur_plans() -> dict:
+    """Plans the user configured via `codaur config set-plan` — used to label
+    engines (Claude/Gemini) that don't carry a plan in their usage data."""
+    try:
+        cfg_file = Path.home() / ".config" / "codaur" / "config.json"
+        data = _json.loads(cfg_file.read_text())
+        return {k: (v or {}).get("plan") for k, v in data.items()}
+    except Exception:
+        return {}
+
+
 @router.get("/usage")
 def usage():
     if shutil.which("codaur") is None:
@@ -262,17 +288,20 @@ def usage():
 
     # Antigravity exposes no local token/limit data (protobuf blobs) — skip it.
     _EXCLUDE = {"antigravity"}
+    configured_plans = _codaur_plans()
 
     providers = []
     for rep in data.get("reports", []):
-        if rep.get("provider") in _EXCLUDE:
+        provider = rep.get("provider")
+        if provider in _EXCLUDE:
             continue
         snap = rep.get("latestRateLimitSnapshot") or {}
         totals = rep.get("totals") or {}
         primary_pct, secondary_pct = _rate_pcts(rep)
         providers.append({
-            "provider": rep.get("provider"),
-            "plan": snap.get("planType") or rep.get("plan"),
+            "provider": provider,
+            # Native plan (codex) if present, else the codaur-configured plan.
+            "plan": _plan_label(snap.get("planType") or configured_plans.get(provider)),
             "primary_pct": primary_pct,
             "secondary_pct": secondary_pct,
             "today_tokens": totals.get("todayTokens"),
