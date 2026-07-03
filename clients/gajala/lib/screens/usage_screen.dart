@@ -20,7 +20,7 @@ class UsageScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final usage = ref.watch(usageProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Usage'), actions: [
+      appBar: AppBar(title: const Text('Codaur'), actions: [
         IconButton(icon: const Icon(Icons.refresh),
             onPressed: () => ref.invalidate(usageProvider)),
       ]),
