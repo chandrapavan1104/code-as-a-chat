@@ -237,8 +237,13 @@ def usage():
     except Exception as e:
         raise HTTPException(500, f"codaur failed: {e}")
 
+    # Antigravity exposes no local token/limit data (protobuf blobs) — skip it.
+    _EXCLUDE = {"antigravity"}
+
     providers = []
     for rep in data.get("reports", []):
+        if rep.get("provider") in _EXCLUDE:
+            continue
         snap = rep.get("latestRateLimitSnapshot") or {}
         totals = rep.get("totals") or {}
         primary_pct, secondary_pct = _rate_pcts(rep)
