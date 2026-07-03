@@ -49,6 +49,8 @@ class _ProviderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final primary = p['primary_pct'];
     final secondary = p['secondary_pct'];
+    // Some engines (Antigravity) don't expose tokens — show activity instead.
+    final hasTokens = p['today_tokens'] != null || p['total_tokens'] != null;
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: Padding(
@@ -75,13 +77,24 @@ class _ProviderCard extends StatelessWidget {
             _limitBar('weekly', (secondary as num).toDouble()),
           ],
           if (primary == null && secondary == null)
-            Text('No live rate-limit data', style: TextStyle(color: context.pal.textDim, fontSize: 12)),
+            Text(hasTokens
+                    ? 'No live rate-limit data'
+                    : 'Activity only — token usage not exposed by this tool',
+                style: TextStyle(color: context.pal.textDim, fontSize: 12)),
           const SizedBox(height: 12),
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            _stat(context, 'today', _humanTokens(p['today_tokens'])),
-            _stat(context, '30-day', _humanTokens(p['total_tokens'])),
-            _stat(context, 'threads', (p['threads'] ?? 0).toString()),
-          ]),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: hasTokens
+                ? [
+                    _stat(context, 'today', _humanTokens(p['today_tokens'])),
+                    _stat(context, '30-day', _humanTokens(p['total_tokens'])),
+                    _stat(context, 'threads', (p['threads'] ?? 0).toString()),
+                  ]
+                : [
+                    _stat(context, 'conversations', (p['threads'] ?? 0).toString()),
+                    _stat(context, 'steps', (p['events'] ?? 0).toString()),
+                  ],
+          ),
         ]),
       ),
     );

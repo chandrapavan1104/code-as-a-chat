@@ -250,6 +250,8 @@ def usage():
             "today_tokens": totals.get("todayTokens"),
             "total_tokens": totals.get("tokens"),
             "threads": totals.get("threads"),
+            # Activity fallback for engines that don't expose tokens (Antigravity).
+            "events": totals.get("events"),
         })
 
     # Hide providers with no signal at all (unused engines) so the screen shows
@@ -257,7 +259,7 @@ def usage():
     def _has_signal(p: dict) -> bool:
         return (p["primary_pct"] is not None or p["secondary_pct"] is not None
                 or bool(p["today_tokens"]) or bool(p["total_tokens"])
-                or (p["threads"] or 0) > 0)
+                or (p["threads"] or 0) > 0 or (p["events"] or 0) > 0)
 
     active = [p for p in providers if _has_signal(p)]
     return {"providers": active or providers}
