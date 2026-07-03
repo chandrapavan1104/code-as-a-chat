@@ -12,6 +12,9 @@ import 'projects_screen.dart';
 import 'usage_screen.dart';
 import 'mac_screen.dart';
 
+// Display-label overrides for skill tiles (the screen behind is unchanged).
+const _tileLabels = {'usage': 'codaur'};
+
 const _icons = {
   'claude': Icons.code, 'codex': Icons.terminal, 'antigravity': Icons.auto_awesome,
   'sysmon': Icons.memory, 'filemanager': Icons.folder, 'sessions': Icons.history,
@@ -174,7 +177,7 @@ class _SkillCard extends StatelessWidget {
             children: [
               Icon(_icons[skill.name] ?? Icons.bolt, color: GajalaColors.accent, size: 28),
               const SizedBox(height: 8),
-              Text(skill.command,
+              Text(_tileLabels[skill.name] ?? skill.command,
                   maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w600)),
             ],
