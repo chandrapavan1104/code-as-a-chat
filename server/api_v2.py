@@ -201,6 +201,30 @@ def switch_project(p: ProjectSwitch):
 
 # ── usage (LLM provider quota/activity via codaur) ────────────────────────────
 
+def _rate_pcts(rep: dict) -> tuple:
+    """Extract (5-hour %, weekly %) from a codaur provider report.
+
+    codaur moved captured rate limits into a `limitUsage[]` array (window "5h"
+    / "7d" with `usedPercent`); older builds put them in
+    `latestRateLimitSnapshot`. Read the new schema first, fall back to legacy.
+    """
+    primary = secondary = None
+    for lu in rep.get("limitUsage") or []:
+        pct = lu.get("usedPercent")
+        if pct is None:
+            continue
+        window = (lu.get("window") or "").lower()
+        if "5h" in window or window.startswith("current"):
+            primary = pct
+        elif "7d" in window or "week" in window:
+            secondary = pct
+    if primary is None or secondary is None:            # legacy fallback
+        snap = rep.get("latestRateLimitSnapshot") or {}
+        primary = primary if primary is not None else (snap.get("primary") or {}).get("used_percent")
+        secondary = secondary if secondary is not None else (snap.get("secondary") or {}).get("used_percent")
+    return primary, secondary
+
+
 @router.get("/usage")
 def usage():
     if shutil.which("codaur") is None:
@@ -217,13 +241,23 @@ def usage():
     for rep in data.get("reports", []):
         snap = rep.get("latestRateLimitSnapshot") or {}
         totals = rep.get("totals") or {}
+        primary_pct, secondary_pct = _rate_pcts(rep)
         providers.append({
             "provider": rep.get("provider"),
-            "plan": snap.get("planType"),
-            "primary_pct": (snap.get("primary") or {}).get("used_percent"),
-            "secondary_pct": (snap.get("secondary") or {}).get("used_percent"),
+            "plan": snap.get("planType") or rep.get("plan"),
+            "primary_pct": primary_pct,
+            "secondary_pct": secondary_pct,
             "today_tokens": totals.get("todayTokens"),
             "total_tokens": totals.get("tokens"),
             "threads": totals.get("threads"),
         })
-    return {"providers": providers}
+
+    # Hide providers with no signal at all (unused engines) so the screen shows
+    # only the ones you actually run. Keep everything if nothing has data.
+    def _has_signal(p: dict) -> bool:
+        return (p["primary_pct"] is not None or p["secondary_pct"] is not None
+                or bool(p["today_tokens"]) or bool(p["total_tokens"])
+                or (p["threads"] or 0) > 0)
+
+    active = [p for p in providers if _has_signal(p)]
+    return {"providers": active or providers}
