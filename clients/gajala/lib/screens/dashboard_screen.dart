@@ -13,7 +13,7 @@ import 'usage_screen.dart';
 import 'mac_screen.dart';
 
 // Display-label overrides for skill tiles (the screen behind is unchanged).
-const _tileLabels = {'usage': 'codaur'};
+const _tileLabels = {'usage': 'codaur', 'notes': 'brain dump'};
 
 const _icons = {
   'claude': Icons.code, 'codex': Icons.terminal, 'antigravity': Icons.auto_awesome,
