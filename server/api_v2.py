@@ -10,7 +10,6 @@ Mounted under /api in main.py with the shared token auth applied there.
 
 import time
 import json as _json
-import os
 import shutil
 import subprocess
 import uuid
@@ -25,7 +24,7 @@ from server import fcm
 from server.db import notes_store, diary_store, reminders_store
 from server.db import devices_store
 from server.db import store as memory
-from server.media import UPLOADS_DIR, is_served_path
+from server.media import ensure_uploads_dir, is_served_path
 from server.skills.projects import _candidates as _project_candidates, _switch_view as _switch_workspace
 
 router = APIRouter(prefix="/api", tags=["app"])
@@ -196,7 +195,6 @@ async def upload_image(request: Request, name: str = "image.jpg"):
         raise HTTPException(400, "empty upload")
     if len(body) > _MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"image too large (max {_MAX_UPLOAD_BYTES // (1024*1024)} MB)")
-    from server.media import ensure_uploads_dir
     dest = ensure_uploads_dir() / f"{uuid.uuid4().hex}{ext}"
     dest.write_bytes(body)
     return {"path": str(dest), "name": name}
