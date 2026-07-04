@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
 import '../core/models.dart';
+import '../core/push.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
 
@@ -13,16 +14,43 @@ class ChatScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends ConsumerState<ChatScreen> {
+class _ChatScreenState extends ConsumerState<ChatScreen>
+    with WidgetsBindingObserver {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   final List<ChatMessage> _msgs = [];
   bool _sending = false;
+  String? _sid;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initSession();
     _loadHistory();
+  }
+
+  Future<void> _initSession() async {
+    _sid = await ref.read(sessionIdProvider.future);
+    // Mark this chat as "being viewed" so completion pushes for it are muted.
+    Push.activeSession = _sid;
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    if (Push.activeSession == _sid) Push.activeSession = null;
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Only "viewing" this chat while it's on top AND the app is foregrounded.
+    if (state == AppLifecycleState.resumed) {
+      Push.activeSession = _sid;
+    } else if (Push.activeSession == _sid) {
+      Push.activeSession = null;
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -69,7 +97,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
     _scrollEnd();
     try {
-      final result = await api.run(command, prompt, sid);
+      // notify:true → server pushes a "reply ready" ping on completion; it's
+      // suppressed app-side while we're still viewing this chat, so it only
+      // surfaces if you've left the chat or backgrounded the app.
+      final result = await api.run(command, prompt, sid, notify: true);
       setState(() => _msgs.add(ChatMessage('bot', result)));
     } catch (e) {
       setState(() => _msgs.add(ChatMessage('error', friendlyError(e))));
