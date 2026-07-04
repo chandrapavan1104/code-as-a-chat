@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'models.dart';
 
@@ -76,6 +78,43 @@ class GajalaApi {
       'notify': notify,
     });
     return r.data['result']?.toString() ?? '(no result)';
+  }
+
+  /// Streaming variant of [run]: yields NDJSON progress frames as the agent
+  /// works — {"type":"step","label":...} while tools run, then a terminal
+  /// {"type":"final","result":...} (or {"type":"error","message":...}). Lets the
+  /// chat show live steps instead of one silent wait.
+  Stream<Map<String, dynamic>> runStream(
+      String command, String prompt, String sessionId,
+      {bool notify = false}) async* {
+    final resp = await _dio.post<ResponseBody>('/run/stream',
+        data: {
+          'command': command,
+          'prompt': prompt,
+          'session_id': sessionId,
+          'notify': notify,
+        },
+        options: Options(responseType: ResponseType.stream));
+    final byteStream = resp.data!.stream;
+    var buffer = '';
+    await for (final Uint8List chunk in byteStream) {
+      buffer += utf8.decode(chunk, allowMalformed: true);
+      int nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        final line = buffer.substring(0, nl).trim();
+        buffer = buffer.substring(nl + 1);
+        if (line.isEmpty) continue;
+        try {
+          yield jsonDecode(line) as Map<String, dynamic>;
+        } catch (_) {/* skip a partial/garbled frame */}
+      }
+    }
+    final rest = buffer.trim();
+    if (rest.isNotEmpty) {
+      try {
+        yield jsonDecode(rest) as Map<String, dynamic>;
+      } catch (_) {}
+    }
   }
 
   // ── structured v2 endpoints ─────────────────────────────────────────────────

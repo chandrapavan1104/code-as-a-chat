@@ -90,20 +90,58 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       prompt = sp == -1 ? '' : text.substring(sp + 1);
     }
 
+    // Live 'status' bubble that accumulates progress steps, replaced by the
+    // final reply when it lands.
+    final live = ChatMessage('status', 'Gajala typing…');
     setState(() {
       _msgs.add(ChatMessage('user', text));
+      _msgs.add(live);
       _sending = true;
       _input.clear();
     });
     _scrollEnd();
+
+    final steps = <String>[];
+    var replaced = false;
+    void finish(ChatMessage msg) {
+      setState(() {
+        final i = _msgs.indexOf(live);
+        if (i >= 0) {
+          _msgs[i] = msg;
+        } else {
+          _msgs.add(msg);
+        }
+      });
+      replaced = true;
+    }
+
     try {
-      // notify:true → server pushes a "reply ready" ping on completion; it's
-      // suppressed app-side while we're still viewing this chat, so it only
-      // surfaces if you've left the chat or backgrounded the app.
-      final result = await api.run(command, prompt, sid, notify: true);
-      setState(() => _msgs.add(ChatMessage('bot', result)));
+      // notify:true → server also pushes a "reply ready" ping on completion as a
+      // safety net if the stream drops (app backgrounded/killed). It's suppressed
+      // while we're still foregrounded on this chat.
+      await for (final ev in api.runStream(command, prompt, sid, notify: true)) {
+        switch (ev['type']) {
+          case 'step':
+            final label = ev['label']?.toString() ?? '';
+            if (label.isNotEmpty) steps.add(label);
+            setState(() => live.text = steps.join('\n'));
+            _scrollEnd();
+            break;
+          case 'final':
+            finish(ChatMessage('bot', ev['result']?.toString() ?? '(no result)'));
+            break;
+          case 'error':
+            finish(ChatMessage('error', ev['message']?.toString() ?? 'Server error'));
+            break;
+        }
+      }
+      // Stream ended without a terminal frame (rare) — don't leave a dangling
+      // status bubble.
+      if (!replaced) {
+        finish(ChatMessage('error', 'Connection ended before a reply'));
+      }
     } catch (e) {
-      setState(() => _msgs.add(ChatMessage('error', friendlyError(e))));
+      finish(ChatMessage('error', friendlyError(e)));
     } finally {
       setState(() => _sending = false);
       _scrollEnd();
@@ -130,15 +168,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             itemBuilder: (_, i) => _Bubble(_msgs[i]),
           ),
         ),
-        if (_sending)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6),
-            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-              const SizedBox(width: 8),
-              Text('Gajala typing…', style: TextStyle(color: context.pal.textDim, fontSize: 12)),
-            ]),
-          ),
         Container(
           color: context.pal.surface,
           padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
@@ -172,6 +201,7 @@ class _Bubble extends StatelessWidget {
   const _Bubble(this.m);
   @override
   Widget build(BuildContext context) {
+    if (m.role == 'status') return _StatusBubble(m.text);
     final isUser = m.role == 'user';
     final isError = m.role == 'error';
     return Align(
@@ -192,6 +222,53 @@ class _Bubble extends StatelessWidget {
         child: SelectableText(m.text,
             style: TextStyle(
                 color: isError ? GajalaColors.danger : context.pal.text, height: 1.35)),
+      ),
+    );
+  }
+}
+
+/// Live progress bubble: a spinner plus the accumulating step labels while the
+/// agent works. Replaced by the real reply bubble when `final` lands.
+class _StatusBubble extends StatelessWidget {
+  final String text;
+  const _StatusBubble(this.text);
+  @override
+  Widget build(BuildContext context) {
+    final lines = text.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .82),
+        decoration: BoxDecoration(
+          color: context.pal.botBubble,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(16), topRight: Radius.circular(16),
+            bottomLeft: Radius.circular(4), bottomRight: Radius.circular(16),
+          ),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 3, right: 10),
+            child: SizedBox(
+              width: 13, height: 13,
+              child: CircularProgressIndicator(strokeWidth: 2, color: context.pal.textDim),
+            ),
+          ),
+          Flexible(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              for (final l in lines)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 1),
+                  child: Text(l,
+                      style: TextStyle(
+                          color: context.pal.textDim, fontSize: 13,
+                          fontStyle: FontStyle.italic, height: 1.3)),
+                ),
+            ]),
+          ),
+        ]),
       ),
     );
   }

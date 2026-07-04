@@ -1,6 +1,8 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from server import config, fcm, orchestrator
 from server.scheduler import scheduler_loop
@@ -108,3 +110,50 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
         return {"command": body.command, "result": result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/run/stream", dependencies=[Depends(require_token)])
+async def run_stream(body: RunRequest):
+    """Same as /run, but streams NDJSON progress while the (possibly long) agent
+    turn executes, so the phone shows live steps instead of one silent blob.
+
+    Frames (one JSON object per line):
+      {"type":"step","label":"Coding with Claude: fix the auth bug"}
+      {"type":"final","result":"<full reply>"}
+      {"type":"error","message":"<why>"}
+
+    The completion push still fires on `notify` — the FCM ping is the safety net
+    if the phone dropped the stream (backgrounded / killed) before `final`.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_event(ev: dict) -> None:
+        await queue.put(ev)
+
+    async def worker() -> None:
+        try:
+            result = await orchestrator.route(
+                body.command, body.prompt,
+                session_id=body.session_id, on_event=on_event,
+            )
+            await queue.put({"type": "final", "result": result})
+            if body.notify and body.session_id:
+                await _push_reply(body.session_id, body.command, result)
+        except Exception as exc:
+            await queue.put({"type": "error", "message": str(exc)})
+        finally:
+            await queue.put(None)   # sentinel → close the stream
+
+    async def frames():
+        task = asyncio.create_task(worker())
+        try:
+            while True:
+                ev = await queue.get()
+                if ev is None:
+                    break
+                yield json.dumps(ev) + "\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(frames(), media_type="application/x-ndjson")

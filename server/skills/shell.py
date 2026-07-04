@@ -26,6 +26,48 @@ RESULT_TRUNCATE = 2500     # cap each tool result before feeding back to Haiku
 HAIKU_TIMEOUT = 60         # seconds per Haiku call
 
 
+# ── live progress labels ──────────────────────────────────────────────────────
+# Present-progressive line shown in the app while a tool runs. Keeps the phone
+# feeling alive during long agent turns instead of one silent final blob.
+_STEP_VERBS = {
+    "claude": "Coding with Claude",
+    "codex": "Coding with Codex",
+    "gemini": "Working with Gemini",
+    "notes": "Working on notes",
+    "reminders": "Working on reminders",
+    "projects": "Working on projects",
+    "files": "Working with files",
+    "mac": "Controlling the Mac",
+    "memory": "Recalling context",
+    "ports": "Checking ports",
+    "sessions": "Reading sessions",
+    "usage": "Reading usage",
+    "firebase": "Running Firebase",
+}
+
+
+def _step_label(tool: str, args: str) -> str:
+    """Human, single-line 'what's happening now' label for a tool call."""
+    verb = _STEP_VERBS.get(tool, f"Running {tool}")
+    detail = " ".join((args or "").split())
+    if detail:
+        if len(detail) > 60:
+            detail = detail[:59].rstrip() + "…"
+        return f"{verb}: {detail}"
+    return f"{verb}…"
+
+
+async def _emit(on_event, event: dict) -> None:
+    """Push a progress event to the streaming client, if one is listening.
+    Best-effort — a slow/broken consumer must never stall the agent."""
+    if on_event is None:
+        return
+    try:
+        await on_event(event)
+    except Exception:
+        pass
+
+
 # ── agent system prompt ───────────────────────────────────────────────────────
 # The tool catalog is assembled at runtime from each skill's `agent_doc`
 # (see _build_tool_catalog). Skills are the single source of truth.
@@ -339,6 +381,9 @@ class ShellSkill(Skill):
         return {n for n, s in registry.items() if getattr(s, "passthrough", False)}
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
+        # Streaming clients pass on_event to receive live progress; None = the
+        # classic single-response path (Telegram bot, plain /run).
+        on_event = kwargs.get("on_event")
         prompt = prompt.strip()
         if not prompt:
             return (f"Em sangathi mava! {config.AGENT_NAME} ikkada 🔥\n"
@@ -413,6 +458,8 @@ class ShellSkill(Skill):
                     })
                     continue
 
+                await _emit(on_event, {"type": "step",
+                                       "label": _step_label(tool_name, tool_args)})
                 try:
                     result = await skill.run(tool_args, session_id=session_id)
                 except Exception as exc:
