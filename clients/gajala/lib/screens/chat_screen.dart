@@ -1,10 +1,24 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import '../core/api.dart';
 import '../core/models.dart';
 import '../core/push.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+
+/// Pulls "[image: /path]" markers out of an agent reply, returning the cleaned
+/// text plus the full /api/file URLs to render.
+final _imgMarker = RegExp(r'\[image:\s*([^\]]+?)\s*\]');
+(String, List<String>) _splitImages(String raw, GajalaApi api) {
+  final urls = <String>[];
+  final clean = raw.replaceAllMapped(_imgMarker, (m) {
+    urls.add(api.fileUrl(m.group(1)!.trim()));
+    return '';
+  }).trim();
+  return (clean, urls);
+}
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String command;   // 'shell' = Gajala agent; else a specific skill
@@ -21,6 +35,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   final List<ChatMessage> _msgs = [];
   bool _sending = false;
   String? _sid;
+  XFile? _pending;   // image picked but not yet sent
 
   @override
   void initState() {
@@ -60,7 +75,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         final sid = await ref.read(sessionIdProvider.future);
         final history = await api.chatHistory(sid);
         if (mounted && history.isNotEmpty) {
-          setState(() => _msgs.addAll(history));
+          // Rebuild any images the agent sent from their stored [image:] markers.
+          final rebuilt = history.map((m) {
+            if (m.role != 'bot') return m;
+            final (clean, urls) = _splitImages(m.text, api);
+            if (urls.isEmpty) return m;
+            return ChatMessage('bot', clean, remoteImages: urls);
+          }).toList();
+          setState(() => _msgs.addAll(rebuilt));
           _scrollEnd();
           return;
         }
@@ -74,9 +96,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
+  Future<void> _pickImage() async {
+    if (_sending) return;
+    try {
+      final x = await ImagePicker().pickImage(
+          source: ImageSource.gallery, maxWidth: 2000, imageQuality: 85);
+      if (x != null) setState(() => _pending = x);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not pick image: $e')));
+      }
+    }
+  }
+
   Future<void> _send() async {
     final text = _input.text.trim();
-    if (text.isEmpty || _sending) return;
+    final attach = _pending;
+    if ((text.isEmpty && attach == null) || _sending) return;
     final api = ref.read(apiProvider);
     if (api == null) return;
     final sid = await ref.read(sessionIdProvider.future);
@@ -94,9 +131,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // final reply when it lands.
     final live = ChatMessage('status', 'Gajala typing…');
     setState(() {
-      _msgs.add(ChatMessage('user', text));
+      _msgs.add(ChatMessage('user', text.isEmpty ? '📷 Photo' : text,
+          localImage: attach?.path));
       _msgs.add(live);
       _sending = true;
+      _pending = null;
       _input.clear();
     });
     _scrollEnd();
@@ -116,6 +155,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
 
     try {
+      // Upload the attachment first, then prepend a marker the agent understands
+      // (its claude tool reads the image from that path).
+      if (attach != null) {
+        setState(() => live.text = 'Uploading image…');
+        final bytes = await File(attach.path).readAsBytes();
+        final serverPath = await api.uploadImage(bytes, attach.name);
+        final marker = '[User sent an image, saved at: $serverPath]';
+        prompt = prompt.isEmpty ? marker : '$marker\n$prompt';
+      }
+
       // notify:true → server also pushes a "reply ready" ping on completion as a
       // safety net if the stream drops (app backgrounded/killed). It's suppressed
       // while we're still foregrounded on this chat.
@@ -128,7 +177,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             _scrollEnd();
             break;
           case 'final':
-            finish(ChatMessage('bot', ev['result']?.toString() ?? '(no result)'));
+            final (clean, urls) = _splitImages(ev['result']?.toString() ?? '', api);
+            finish(ChatMessage('bot', clean.isEmpty && urls.isNotEmpty ? '' : (clean.isEmpty ? '(no result)' : clean),
+                remoteImages: urls));
             break;
           case 'error':
             finish(ChatMessage('error', ev['message']?.toString() ?? 'Server error'));
@@ -157,6 +208,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   @override
   Widget build(BuildContext context) {
+    final imgHeaders = ref.read(apiProvider)?.authHeaders;
     return Scaffold(
       appBar: AppBar(title: Text(widget.title)),
       body: Column(children: [
@@ -165,30 +217,61 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             controller: _scroll,
             padding: const EdgeInsets.all(12),
             itemCount: _msgs.length,
-            itemBuilder: (_, i) => _Bubble(_msgs[i]),
+            itemBuilder: (_, i) => _Bubble(_msgs[i], imgHeaders),
           ),
         ),
         Container(
           color: context.pal.surface,
           padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
-          child: Row(children: [
-            Expanded(
-              child: TextField(
-                controller: _input,
-                minLines: 1, maxLines: 5,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _send(),
-                decoration: const InputDecoration(hintText: 'Message or /command…'),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (_pending != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 8, left: 4),
+                  child: Stack(clipBehavior: Clip.none, children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.file(File(_pending!.path),
+                          width: 64, height: 64, fit: BoxFit.cover),
+                    ),
+                    Positioned(
+                      top: -8, right: -8,
+                      child: GestureDetector(
+                        onTap: () => setState(() => _pending = null),
+                        child: CircleAvatar(
+                          radius: 11, backgroundColor: context.pal.surfaceAlt,
+                          child: Icon(Icons.close, size: 14, color: context.pal.text),
+                        ),
+                      ),
+                    ),
+                  ]),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            CircleAvatar(
-              backgroundColor: GajalaColors.accent,
-              child: IconButton(
-                icon: const Icon(Icons.send, color: Colors.white, size: 20),
-                onPressed: _sending ? null : _send,
+            Row(children: [
+              IconButton(
+                icon: Icon(Icons.add_photo_alternate_outlined, color: context.pal.textDim),
+                onPressed: _sending ? null : _pickImage,
+                tooltip: 'Attach image',
               ),
-            ),
+              Expanded(
+                child: TextField(
+                  controller: _input,
+                  minLines: 1, maxLines: 5,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => _send(),
+                  decoration: const InputDecoration(hintText: 'Message or /command…'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              CircleAvatar(
+                backgroundColor: GajalaColors.accent,
+                child: IconButton(
+                  icon: const Icon(Icons.send, color: Colors.white, size: 20),
+                  onPressed: _sending ? null : _send,
+                ),
+              ),
+            ]),
           ]),
         ),
       ]),
@@ -198,12 +281,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
 class _Bubble extends StatelessWidget {
   final ChatMessage m;
-  const _Bubble(this.m);
+  final Map<String, String>? imgHeaders;   // auth headers for /api/file images
+  const _Bubble(this.m, this.imgHeaders);
   @override
   Widget build(BuildContext context) {
     if (m.role == 'status') return _StatusBubble(m.text);
     final isUser = m.role == 'user';
     final isError = m.role == 'error';
+    final hasText = m.text.trim().isNotEmpty;
+    final radius = BorderRadius.only(
+      topLeft: const Radius.circular(16), topRight: const Radius.circular(16),
+      bottomLeft: Radius.circular(isUser ? 16 : 4),
+      bottomRight: Radius.circular(isUser ? 4 : 16),
+    );
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -212,16 +302,53 @@ class _Bubble extends StatelessWidget {
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .82),
         decoration: BoxDecoration(
           color: isUser ? GajalaColors.userBubble : context.pal.botBubble,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16), topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isUser ? 16 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 16),
-          ),
+          borderRadius: radius,
           border: isError ? Border.all(color: GajalaColors.danger) : null,
         ),
-        child: SelectableText(m.text,
-            style: TextStyle(
-                color: isError ? GajalaColors.danger : context.pal.text, height: 1.35)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Image the user attached (rendered from the local file).
+            if (m.localImage != null)
+              Padding(
+                padding: EdgeInsets.only(bottom: hasText ? 8 : 0),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 320),
+                    child: Image.file(File(m.localImage!),
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, _, _) => const SizedBox()),
+                  ),
+                ),
+              ),
+            // Images the agent sent back (fetched from the server, auth'd).
+            for (final url in m.remoteImages)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 320),
+                    child: Image.network(url,
+                        headers: imgHeaders, fit: BoxFit.contain,
+                        loadingBuilder: (c, w, p) => p == null
+                            ? w
+                            : const SizedBox(
+                                height: 120,
+                                child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
+                        errorBuilder: (_, _, _) => Text('[image unavailable]',
+                            style: TextStyle(color: context.pal.textDim))),
+                  ),
+                ),
+              ),
+            if (hasText)
+              SelectableText(m.text,
+                  style: TextStyle(
+                      color: isError ? GajalaColors.danger : context.pal.text, height: 1.35)),
+          ],
+        ),
       ),
     );
   }

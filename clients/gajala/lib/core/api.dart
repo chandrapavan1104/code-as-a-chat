@@ -157,6 +157,26 @@ class GajalaApi {
   Future<void> registerDevice(String fcmToken, {String? label}) async =>
       _dio.post('/api/devices', data: {'fcm_token': fcmToken, 'label': label});
 
+  // ── images ──────────────────────────────────────────────────────────────────
+  /// Auth headers for loading an /api/file image via Image.network.
+  Map<String, String> get authHeaders => {'X-API-Token': token};
+
+  /// Absolute URL the app uses to fetch a server-side image path.
+  String fileUrl(String serverPath) =>
+      '${_dio.options.baseUrl}/api/file?path=${Uri.encodeQueryComponent(serverPath)}';
+
+  /// Upload raw image bytes; returns the server path the agent can read.
+  Future<String> uploadImage(List<int> bytes, String name) async {
+    final r = await _dio.post('/api/upload',
+        data: Stream.fromIterable(bytes.map((b) => [b])),
+        queryParameters: {'name': name},
+        options: Options(
+          headers: {Headers.contentLengthHeader: bytes.length},
+          contentType: 'application/octet-stream',
+        ));
+    return r.data['path']?.toString() ?? '';
+  }
+
   Future<Map<String, dynamic>> projects() async =>
       Map<String, dynamic>.from((await _dio.get('/api/projects')).data);
 
