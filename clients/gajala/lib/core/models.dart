@@ -52,7 +52,7 @@ class SystemStats {
 }
 
 class ChatMessage {
-  final String role; // user | bot | error
-  final String text;
+  final String role; // user | bot | error | status
+  String text;       // mutable so a live 'status' bubble can accumulate steps
   ChatMessage(this.role, this.text);
 }
