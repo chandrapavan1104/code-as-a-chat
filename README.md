@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#meet-gajala">Meet Gajala</a> ·
   <a href="#skills">Skills</a> ·
   <a href="#the-gajala-app">App</a> ·
@@ -25,6 +26,16 @@ all over chat.
 No cloud middleman. No account to sign up for. Your code and data stay on your
 machine; the only things that leave are the requests to the AI CLIs you already
 use. One small Python server — no Node gateway, no Docker daemon, no runtime zoo.
+
+## Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/dashboard.jpg" width="200" alt="Dashboard" />
+  <img src="assets/screenshots/chat.jpg" width="200" alt="Chat with Gajala" />
+  <img src="assets/screenshots/codaur.jpg" width="200" alt="Codaur — live usage" />
+  <img src="assets/screenshots/mac.jpg" width="200" alt="Mac control" />
+</p>
+<p align="center"><sub><b>Dashboard</b> &middot; <b>Gajala</b> chat &middot; <b>Codaur</b> live usage &middot; <b>Mac</b> control</sub></p>
 
 ## Why it's built this way
 
@@ -46,12 +57,12 @@ one machine a developer actually cares about — their Mac.
 
 The app has a name and an attitude. **Gajala** is the default voice — your Telugu
 best friend who happens to run your Mac. (Telugu cinema fans will catch the
-*Venky* wink.) She talks Tinglish, hypes you when the build passes
+*Venky* wink.) He talks Tinglish, hypes you when the build passes
 (*"Kummesav mava 🔥"*), lightly roasts you when you've got ten open TODOs, and
-has a running gag that she's *"Gajala… from Washington DC."*
+has a running gag that he's *"Gajala… from Washington DC."*
 
-She also knows when to drop the bit — stressed, mid-incident, or asking for
-something urgent? She goes quiet and just fixes it. Numbers, paths, and error
+He also knows when to drop the bit — stressed, mid-incident, or asking for
+something urgent? He goes quiet and just fixes it. Numbers, paths, and error
 messages are always kept exact; the personality is seasoning, never the data.
 
 Not your vibe? It's one setting:
