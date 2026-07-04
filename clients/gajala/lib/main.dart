@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/push.dart';
 import 'core/state.dart';
 import 'core/theme.dart';
+import 'screens/chat_screen.dart';
 import 'screens/connect_screen.dart';
 import 'screens/dashboard_screen.dart';
 
@@ -17,10 +18,30 @@ void main() async {
   runApp(const ProviderScope(child: GajalaApp()));
 }
 
-class GajalaApp extends ConsumerWidget {
+class GajalaApp extends ConsumerStatefulWidget {
   const GajalaApp({super.key});
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<GajalaApp> createState() => _GajalaAppState();
+}
+
+class _GajalaAppState extends ConsumerState<GajalaApp> {
+  @override
+  void initState() {
+    super.initState();
+    // Tapping a reply notification (foreground, background, or cold launch)
+    // deep-links into the chat.
+    Push.onOpenChat = (_) {
+      final nav = Push.navigatorKey.currentState;
+      if (nav == null) return;
+      nav.push(MaterialPageRoute(
+        builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'),
+      ));
+    };
+    WidgetsBinding.instance.addPostFrameCallback((_) => Push.handleLaunchMessage());
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final config = ref.watch(configProvider);
     final mode = ref.watch(themeModeProvider);
     // Register this device for push whenever a live API client is available.
@@ -32,6 +53,7 @@ class GajalaApp extends ConsumerWidget {
     return MaterialApp(
       title: 'Gajala',
       debugShowCheckedModeBanner: false,
+      navigatorKey: Push.navigatorKey,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
       themeMode: mode,

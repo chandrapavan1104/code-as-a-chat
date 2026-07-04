@@ -65,11 +65,15 @@ class GajalaApi {
         .toList();
   }
 
-  Future<String> run(String command, String prompt, String sessionId) async {
+  Future<String> run(String command, String prompt, String sessionId,
+      {bool notify = false}) async {
     final r = await _dio.post('/run', data: {
       'command': command,
       'prompt': prompt,
       'session_id': sessionId,
+      // Ask the server to push a completion notification; the app suppresses it
+      // when we're still foregrounded on this chat.
+      'notify': notify,
     });
     return r.data['result']?.toString() ?? '(no result)';
   }
