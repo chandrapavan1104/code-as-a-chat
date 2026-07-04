@@ -9,7 +9,7 @@ Subcommands (passed via prompt):
 
 Discovery:
   Candidate projects are read from PROJECTS_PARENT_DIR (env), default
-  ~/Desktop/Projects.  Matching is case-insensitive: exact name first,
+  ~/Projects.  Matching is case-insensitive: exact name first,
   then unique substring, then absolute path.
 
 Persistence:
@@ -64,7 +64,7 @@ def apply_persisted_workspace() -> None:
 
 def _projects_parent() -> Path:
     env = os.getenv("PROJECTS_PARENT_DIR", "")
-    return Path(env).expanduser() if env else Path.home() / "Desktop" / "Projects"
+    return Path(env).expanduser() if env else Path.home() / "Projects"
 
 
 def _candidates() -> list[Path]:
