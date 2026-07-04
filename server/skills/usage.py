@@ -1,7 +1,7 @@
 """
 usage skill — wraps the user's `codaur` CLI (coding-agent usage report).
 
-Source repo: ~/Desktop/Projects/agent-usage-reporter
+Source repo: ~/Projects/Codaur
 Binary:      /opt/homebrew/bin/codaur  (installed via `npm link`)
 
 What it surfaces:
@@ -39,7 +39,7 @@ async def _run(args: list[str], timeout: int = CMD_TIMEOUT) -> tuple[int, str, s
     if shutil.which(CLI_BIN) is None:
         return (127, "",
                 f"{CLI_BIN} not found.\n"
-                "Install: cd ~/Desktop/Projects/agent-usage-reporter && npm link")
+                "Install: cd ~/Projects/Codaur && npm link")
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
