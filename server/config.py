@@ -17,8 +17,43 @@ TELEGRAM_ALLOWED_USERS: list[int] = [
 
 DEFAULT_SKILL: str = os.getenv("DEFAULT_SKILL", "claude")
 
+# The "home base" — the default workspace for general, non-project work, and the
+# baseline you're in whenever you haven't deliberately switched into a project.
+# General/non-project asks live here so they never pollute a real project's
+# session; project work happens after you switch (or confirm a switch). Override
+# with HOME_BASE_DIR; defaults to ~/Projects/general.
+HOME_BASE_DIR: Path = Path(
+    os.getenv("HOME_BASE_DIR", str(Path.home() / "Projects" / "general"))
+).expanduser()
+
+
+def ensure_home_base() -> Path:
+    """Create the home base + a starter CLAUDE.md if missing, so there's always a
+    safe default workspace to land in. Never overwrites an existing CLAUDE.md."""
+    try:
+        HOME_BASE_DIR.mkdir(parents=True, exist_ok=True)
+        claude_md = HOME_BASE_DIR / "CLAUDE.md"
+        if not claude_md.exists():
+            claude_md.write_text(
+                "# General — home base\n\n"
+                "Default workspace for anything that isn't a specific project: "
+                "general questions, brainstorming, quick asks, and standing "
+                "preferences. Notes/reminders/diary live in the central store "
+                "(`~/.codeasachat/`), not here.\n\n"
+                "## About me / standing preferences\n"
+                "<!-- Durable, cross-project preferences load into every general chat. -->\n"
+            )
+    except OSError:
+        pass
+    return HOME_BASE_DIR
+
+
 _workspace_env = os.getenv("WORKSPACE_DIR", "")
-WORKSPACE_DIR: Path = Path(_workspace_env).expanduser() if _workspace_env else Path.home()
+# Default to the home base (created on first use) rather than the bare home dir,
+# so non-project asks land somewhere dedicated instead of ~/.
+WORKSPACE_DIR: Path = (
+    Path(_workspace_env).expanduser() if _workspace_env else ensure_home_base()
+)
 
 ORCHESTRATOR_URL: str = os.getenv("ORCHESTRATOR_URL", "http://localhost:8000")
 

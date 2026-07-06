@@ -8,6 +8,7 @@ COMMAND_MAP: dict[str, str] = {}
 def init() -> None:
     """Auto-discover every skill, then build the command map from manifests."""
     global COMMAND_MAP
+    config.ensure_home_base()   # guarantee the default workspace exists
     discover()
     COMMAND_MAP = command_map()
 
