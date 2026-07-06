@@ -241,6 +241,22 @@ def switch_project(p: ProjectSwitch):
     return {"current_name": cfg.WORKSPACE_DIR.name}
 
 
+# ── active CLI sessions (continuity + "continue on Mac" handoff) ──────────────
+
+@router.get("/sessions/active")
+def active_cli_sessions():
+    """The persistent CLI sessions for the active project — one per engine that
+    supports reuse — plus a ready-to-paste 'continue on the Mac' command. Lets
+    the app show which thread it's continuing and hand it off to the terminal."""
+    from server.db import cli_sessions_store
+    ws = str(cfg.WORKSPACE_DIR)
+    out = []
+    for engine, sid in cli_sessions_store.all_for(ws).items():
+        resume_cmd = f"claude --resume {sid}" if engine == "claude" else None
+        out.append({"engine": engine, "session_id": sid, "resume_cmd": resume_cmd})
+    return {"workspace": cfg.WORKSPACE_DIR.name, "workspace_path": ws, "sessions": out}
+
+
 # ── usage (LLM provider quota/activity via codaur) ────────────────────────────
 
 def _rate_pcts(rep: dict) -> tuple:
