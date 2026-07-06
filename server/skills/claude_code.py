@@ -17,14 +17,15 @@ class ClaudeCodeSkill(CLISubprocessSkill):
     # can `claude --resume <id>` the same thread on the Mac.
     supports_sessions = True
 
-    def build_command(self, prompt: str, resume_id: str | None = None) -> list[str]:
+    def build_command(self, prompt: str, resume_id: str | None = None,
+                      new_id: str | None = None) -> list[str]:
         cmd = [
             "claude",
             "-p", prompt,
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
         ]
-        if resume_id:
+        if resume_id:  # claude mints its own id; we only resume, never set new_id
             cmd += ["--resume", resume_id]
         return cmd
 

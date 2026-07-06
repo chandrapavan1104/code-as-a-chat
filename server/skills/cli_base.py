@@ -12,10 +12,13 @@ class CLISubprocessSkill(Skill):
     install_hint: str     # message shown if the CLI is missing
     timeout: int = 300    # seconds before we kill the subprocess
 
-    # Session reuse: when True, run() looks up a stored CLI session for this
-    # (workspace, engine) and passes it to build_command(resume_id=...), then
-    # captures the session id from the output for next time. Continuity + far
-    # less clutter. Engines whose resume story isn't verified leave this False.
+    # Session reuse: when True, run() reuses one CLI session per (workspace,
+    # engine) so turns build on each other and the thread is resumable on the
+    # Mac. Two id patterns are supported:
+    #   • CLI-assigned (claude, codex): the CLI mints the id; we read it from the
+    #     output via extract_session_id() and store it. First call: no resume.
+    #   • client-assigned (gemini): we mint the id via new_session_id() and pass
+    #     it on the first call; resume by that id. extract_session_id returns None.
     supports_sessions: bool = False
 
     @property
@@ -23,9 +26,17 @@ class CLISubprocessSkill(Skill):
         """Key under which this skill's sessions are stored (defaults to the CLI)."""
         return self.cli_name
 
-    def build_command(self, prompt: str, resume_id: str | None = None) -> list[str]:
-        """Return the full argv to spawn. Subclasses must override. `resume_id`
-        is set only for session-aware skills that have a stored session."""
+    def new_session_id(self) -> str | None:
+        """For client-assigned engines (gemini): return a fresh id to open a new
+        session with. CLI-assigned engines (claude/codex) return None and let the
+        CLI mint it."""
+        return None
+
+    def build_command(self, prompt: str, resume_id: str | None = None,
+                      new_id: str | None = None) -> list[str]:
+        """Return the full argv to spawn. Subclasses must override.
+        `resume_id` — continue this stored session (mutually exclusive with new_id).
+        `new_id`    — open a new session with this client-minted id (gemini)."""
         raise NotImplementedError
 
     def parse_output(self, stdout: str, stderr: str) -> str:
@@ -33,8 +44,8 @@ class CLISubprocessSkill(Skill):
         return stdout.strip()
 
     def extract_session_id(self, stdout: str) -> str | None:
-        """Pull the CLI session id out of the output so we can resume it next
-        time. Session-aware skills override; default: none."""
+        """Pull the CLI-assigned session id out of the output so we can resume it
+        next time. Client-assigned engines return None (we already know the id)."""
         return None
 
     async def _spawn(self, cmd: list[str], cwd: str) -> tuple[int | None, str, str]:
@@ -75,7 +86,16 @@ class CLISubprocessSkill(Skill):
         # Resume this project's session for this engine, if we have one.
         resume_id = (cli_sessions_store.get(cwd, self.session_engine)
                      if self.supports_sessions else None)
-        cmd = self.build_command(prompt, resume_id=resume_id)
+
+        def _fresh():
+            """A brand-new session (no resume). Returns (cmd, client_minted_id)."""
+            nid = self.new_session_id() if self.supports_sessions else None
+            return self.build_command(prompt, resume_id=None, new_id=nid), nid
+
+        if resume_id:
+            cmd, new_id = self.build_command(prompt, resume_id=resume_id), None
+        else:
+            cmd, new_id = _fresh()
         rc, stdout, stderr = await self._spawn(cmd, cwd)
 
         # A stored session can go stale (deleted, or the CLI rejects the id). If a
@@ -83,7 +103,8 @@ class CLISubprocessSkill(Skill):
         # the user never gets stuck behind a dead id.
         if rc not in (0, None) and resume_id:
             cli_sessions_store.clear(cwd, self.session_engine)
-            cmd = self.build_command(prompt, resume_id=None)
+            resume_id = None
+            cmd, new_id = _fresh()
             rc, stdout, stderr = await self._spawn(cmd, cwd)
 
         if rc is None:
@@ -94,8 +115,10 @@ class CLISubprocessSkill(Skill):
                     f"{stderr.strip() or stdout.strip() or '(no output)'}")
 
         # Remember the session id so the next call in this project continues it.
+        # CLI-assigned engines report it in output; client-assigned ones already
+        # know it (new_id); on a plain resume we just keep the id we resumed.
         if self.supports_sessions:
-            sid = self.extract_session_id(stdout)
+            sid = self.extract_session_id(stdout) or new_id or resume_id
             if sid:
                 cli_sessions_store.set(cwd, self.session_engine, sid)
 

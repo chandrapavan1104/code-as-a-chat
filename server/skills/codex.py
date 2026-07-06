@@ -11,18 +11,34 @@ class CodexSkill(CLISubprocessSkill):
                  'user explicitly says "codex" or "openai".')
     cli_name = "codex"
     install_hint = "Install: npm install -g @openai/codex"
+    # Reuse one Codex thread per project ("codex exec resume <id>"); the CLI
+    # mints the id and reports it in a `thread.started` event.
+    supports_sessions = True
 
-    def build_command(self, prompt: str, resume_id: str | None = None) -> list[str]:
-        # resume_id unused for now — codex exec session-resume isn't wired yet
-        # (supports_sessions stays False); accepted for base-class uniformity.
-        return [
-            "codex", "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-C", str(config.WORKSPACE_DIR),
-            prompt,
-        ]
+    _FLAGS = ["--json", "--skip-git-repo-check",
+              "--dangerously-bypass-approvals-and-sandbox"]
+
+    def build_command(self, prompt: str, resume_id: str | None = None,
+                      new_id: str | None = None) -> list[str]:
+        if resume_id:
+            # `codex exec resume <id>` continues the thread; cwd comes from the
+            # subprocess (resume has no -C flag).
+            return ["codex", "exec", "resume", resume_id, *self._FLAGS, prompt]
+        return ["codex", "exec", *self._FLAGS,
+                "-C", str(config.WORKSPACE_DIR), prompt]
+
+    def extract_session_id(self, stdout: str) -> str | None:
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "thread.started" and event.get("thread_id"):
+                return event["thread_id"]
+        return None
 
     def parse_output(self, stdout: str, stderr: str) -> str:
         # Codex emits JSONL: one JSON event per line.

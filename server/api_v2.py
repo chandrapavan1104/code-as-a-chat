@@ -243,6 +243,14 @@ def switch_project(p: ProjectSwitch):
 
 # ── active CLI sessions (continuity + "continue on Mac" handoff) ──────────────
 
+# How to resume each engine's session in a terminal on the Mac.
+_RESUME_CMD = {
+    "claude": "claude --resume {sid}",
+    "codex": "codex resume {sid}",
+    "gemini": "gemini --resume {sid}",
+}
+
+
 @router.get("/sessions/active")
 def active_cli_sessions():
     """The persistent CLI sessions for the active project — one per engine that
@@ -252,8 +260,9 @@ def active_cli_sessions():
     ws = str(cfg.WORKSPACE_DIR)
     out = []
     for engine, sid in cli_sessions_store.all_for(ws).items():
-        resume_cmd = f"claude --resume {sid}" if engine == "claude" else None
-        out.append({"engine": engine, "session_id": sid, "resume_cmd": resume_cmd})
+        tmpl = _RESUME_CMD.get(engine)
+        out.append({"engine": engine, "session_id": sid,
+                    "resume_cmd": tmpl.format(sid=sid) if tmpl else None})
     return {"workspace": cfg.WORKSPACE_DIR.name, "workspace_path": ws, "sessions": out}
 
 
