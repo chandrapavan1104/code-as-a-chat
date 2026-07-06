@@ -406,13 +406,14 @@ class ShellSkill(Skill):
 
         recent = memory.get_recent(session_id, n=config.MEMORY_TURNS) if session_id else []
         context_block = self._format_context(recent)
-        engine_hint = self._engine_hint()
+        # Combined per-turn hints: pinned engine + the narrow wrong-directory check.
+        hints = "\n\n".join(h for h in (self._engine_hint(), self._directory_hint()) if h)
         scratchpad: list[dict] = []
         images: list[str] = []   # [image: …] markers gathered from tool outputs
 
         for iteration in range(MAX_ITERATIONS):
             agent_input = self._build_agent_input(
-                context_block, prompt, scratchpad, engine_hint)
+                context_block, prompt, scratchpad, hints)
 
             raw = None
             last_exc: Exception | None = None
@@ -578,14 +579,41 @@ class ShellSkill(Skill):
                 f"this message.")
 
     @staticmethod
+    def _directory_hint() -> str:
+        """Narrow safety net: only speak up when the message clearly targets a
+        DIFFERENT known project than the current directory. Deliberately does NOT
+        ask on vague asks, general questions, or directory-independent tasks —
+        that broad 'does this belong here?' check just nags."""
+        try:
+            from server.skills.projects import _candidates
+            current = config.WORKSPACE_DIR.name
+            names = [p.name for p in _candidates()]
+        except Exception:
+            return ""
+        if not names:
+            return ""
+        return (
+            f"CURRENT DIRECTORY: {current}\n"
+            f"KNOWN PROJECTS: {', '.join(names)}\n"
+            "DIRECTORY CHECK (narrow): If — and ONLY if — this message clearly asks for "
+            "coding / file / repo work in a DIFFERENT known project than the CURRENT "
+            "DIRECTORY (it explicitly names that other project by name), do NOT do the work "
+            "here. Instead finish with a short 'done' reply: name the project you think they "
+            "mean and ask whether to switch to it first (once they confirm, use the 'projects' "
+            "tool to switch, then do the work). Do NOT trigger for general questions, "
+            "notes / reminders / mac / system tasks, follow-ups about the current project, or "
+            "when no other known project is explicitly named — in all those cases proceed normally."
+        )
+
+    @staticmethod
     def _build_agent_input(context_block: str, user_prompt: str,
-                           scratchpad: list[dict], engine_hint: str = "") -> str:
+                           scratchpad: list[dict], hints: str = "") -> str:
         parts = []
         if context_block:
             parts.append(context_block)
             parts.append("")
-        if engine_hint:
-            parts.append(engine_hint)
+        if hints:
+            parts.append(hints)
             parts.append("")
         parts.append(f"NEW USER MESSAGE:\n{user_prompt}")
 
