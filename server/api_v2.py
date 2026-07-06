@@ -257,6 +257,28 @@ def active_cli_sessions():
     return {"workspace": cfg.WORKSPACE_DIR.name, "workspace_path": ws, "sessions": out}
 
 
+# ── coding engine (pinned model for the chat) ─────────────────────────────────
+
+@router.get("/model")
+def get_model():
+    from server import prefs
+    return {"engine": prefs.get_coding_engine(), "options": list(prefs.CODING_ENGINES)}
+
+
+class ModelSet(BaseModel):
+    engine: str
+
+
+@router.post("/model")
+def set_model(m: ModelSet):
+    from server import prefs
+    try:
+        engine = prefs.set_coding_engine(m.engine)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"engine": engine}
+
+
 # ── usage (LLM provider quota/activity via codaur) ────────────────────────────
 
 def _rate_pcts(rep: dict) -> tuple:

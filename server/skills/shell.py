@@ -406,11 +406,13 @@ class ShellSkill(Skill):
 
         recent = memory.get_recent(session_id, n=config.MEMORY_TURNS) if session_id else []
         context_block = self._format_context(recent)
+        engine_hint = self._engine_hint()
         scratchpad: list[dict] = []
         images: list[str] = []   # [image: …] markers gathered from tool outputs
 
         for iteration in range(MAX_ITERATIONS):
-            agent_input = self._build_agent_input(context_block, prompt, scratchpad)
+            agent_input = self._build_agent_input(
+                context_block, prompt, scratchpad, engine_hint)
 
             raw = None
             last_exc: Exception | None = None
@@ -558,11 +560,32 @@ class ShellSkill(Skill):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
+    def _engine_hint() -> str:
+        """If the user pinned a coding engine, tell the agent to prefer it for
+        code/file work (unless they explicitly name a different one). Empty when
+        'auto' — then the agent picks per ask, as before."""
+        try:
+            from server import prefs
+            engine = prefs.get_coding_engine()
+        except Exception:
+            return ""
+        if engine == "auto":
+            return ""
+        tool = prefs.ENGINE_TOOL.get(engine, engine)
+        return (f"PINNED CODING ENGINE: the user has selected '{engine}'. For any "
+                f"coding / file / repo work, use the '{tool}' tool — NOT another "
+                f"engine — unless the user explicitly names a different one in "
+                f"this message.")
+
+    @staticmethod
     def _build_agent_input(context_block: str, user_prompt: str,
-                           scratchpad: list[dict]) -> str:
+                           scratchpad: list[dict], engine_hint: str = "") -> str:
         parts = []
         if context_block:
             parts.append(context_block)
+            parts.append("")
+        if engine_hint:
+            parts.append(engine_hint)
             parts.append("")
         parts.append(f"NEW USER MESSAGE:\n{user_prompt}")
 
