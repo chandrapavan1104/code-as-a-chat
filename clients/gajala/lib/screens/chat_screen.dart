@@ -566,9 +566,7 @@ class _ContextSheetState extends State<_ContextSheet> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    final claudeSession = _sessions.firstWhere(
-        (s) => s['engine'] == 'claude', orElse: () => const {});
-    final resumeCmd = claudeSession['resume_cmd']?.toString();
+    final resumable = _sessions.where((s) => s['resume_cmd'] != null).toList();
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.only(
@@ -606,32 +604,37 @@ class _ContextSheetState extends State<_ContextSheet> {
                     : 'Coding runs on ${_ChatScreenState._modelLabel(_model)} unless you name another.',
                 style: TextStyle(fontSize: 11.5, color: pal.textDim),
               ),
-              if (resumeCmd != null) ...[
+              if (resumable.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 _sectionLabel(context, 'CONTINUE ON MAC'),
                 const SizedBox(height: 6),
-                InkWell(
-                  onTap: () {
-                    Clipboard.setData(ClipboardData(text: resumeCmd));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Copied resume command')));
-                  },
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                        color: pal.surfaceAlt,
-                        borderRadius: BorderRadius.circular(8)),
-                    child: Row(children: [
-                      Expanded(
-                        child: Text(resumeCmd,
-                            style: const TextStyle(
-                                fontFamily: 'monospace', fontSize: 12)),
+                for (final s in resumable)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: InkWell(
+                      onTap: () {
+                        Clipboard.setData(
+                            ClipboardData(text: s['resume_cmd'].toString()));
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text('Copied ${s['engine']} resume command')));
+                      },
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                            color: pal.surfaceAlt,
+                            borderRadius: BorderRadius.circular(8)),
+                        child: Row(children: [
+                          Expanded(
+                            child: Text(s['resume_cmd'].toString(),
+                                style: const TextStyle(
+                                    fontFamily: 'monospace', fontSize: 12)),
+                          ),
+                          Icon(Icons.copy, size: 16, color: pal.textDim),
+                        ]),
                       ),
-                      Icon(Icons.copy, size: 16, color: pal.textDim),
-                    ]),
+                    ),
                   ),
-                ),
               ],
               const SizedBox(height: 16),
               _sectionLabel(context, 'DIRECTORY'),
