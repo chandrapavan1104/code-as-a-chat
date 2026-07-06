@@ -592,7 +592,7 @@ class ShellSkill(Skill):
             return ""
         if not names:
             return ""
-        return (
+        hint = (
             f"CURRENT DIRECTORY: {current}\n"
             f"KNOWN PROJECTS: {', '.join(names)}\n"
             "DIRECTORY CHECK (narrow): If — and ONLY if — this message clearly asks for "
@@ -604,6 +604,21 @@ class ShellSkill(Skill):
             "notes / reminders / mac / system tasks, follow-ups about the current project, or "
             "when no other known project is explicitly named — in all those cases proceed normally."
         )
+        # Confirm-to-move: a general/unrelated question while inside a PROJECT
+        # belongs in the 'general' home base, not this project's thread. Offer to
+        # move it (the app turns the marker into a one-tap action). Skip when
+        # already in general, or for project work / notes / reminders / mac.
+        if current.lower() != "general":
+            hint += (
+                "\nGENERAL-QUESTION CHECK: If this message is a general or standalone "
+                "question with NOTHING to do with the current project (general knowledge, "
+                "brainstorming, a topic unrelated to this codebase) — and it is NOT a "
+                "notes/reminder/mac/system task — do NOT answer it here. Finish with a "
+                "short 'done' reply offering to move it to the general chat, and end the "
+                "reply with the marker [[move:general]] on its own line. If it's about the "
+                "current project or is a tool task, answer normally with NO marker."
+            )
+        return hint
 
     @staticmethod
     def _build_agent_input(context_block: str, user_prompt: str,
