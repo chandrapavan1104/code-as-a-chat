@@ -185,6 +185,19 @@ class GajalaApi {
     return r.data['current_name']?.toString() ?? name;
   }
 
+  // ── coding engine (pinned model) ────────────────────────────────────────────
+  Future<Map<String, dynamic>> model() async =>
+      Map<String, dynamic>.from((await _dio.get('/api/model')).data);
+
+  Future<String> setModel(String engine) async {
+    final r = await _dio.post('/api/model', data: {'engine': engine});
+    return r.data['engine']?.toString() ?? engine;
+  }
+
+  /// Active CLI sessions for the current project + "continue on Mac" commands.
+  Future<Map<String, dynamic>> activeSessions() async =>
+      Map<String, dynamic>.from((await _dio.get('/api/sessions/active')).data);
+
   Future<List<Map<String, dynamic>>> usage() async {
     final r = await _dio.get('/api/usage');
     return List<Map<String, dynamic>>.from(r.data['providers']);

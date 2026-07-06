@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import '../core/api.dart';
@@ -36,6 +37,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   bool _sending = false;
   String? _sid;
   XFile? _pending;   // image picked but not yet sent
+  String? _dir;               // active project name (for the header)
+  String _model = 'auto';     // pinned coding engine
 
   @override
   void initState() {
@@ -43,6 +46,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     WidgetsBinding.instance.addObserver(this);
     _initSession();
     _loadHistory();
+    if (widget.command == 'shell') _loadContext();
+  }
+
+  /// Load the active directory + pinned model for the header.
+  Future<void> _loadContext() async {
+    final api = ref.read(apiProvider);
+    if (api == null) return;
+    try {
+      final results = await Future.wait([api.projects(), api.model()]);
+      if (!mounted) return;
+      setState(() {
+        _dir = results[0]['current_name']?.toString();
+        _model = results[1]['engine']?.toString() ?? 'auto';
+      });
+    } catch (_) {/* header just stays blank */}
   }
 
   Future<void> _initSession() async {
@@ -206,11 +224,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         }
       });
 
+  static String _modelLabel(String e) => e == 'auto' ? 'auto' : e[0].toUpperCase() + e.substring(1);
+
+  Widget _buildTitle(BuildContext context) {
+    // Skill-specific chats keep a plain title; the Gajala agent chat shows the
+    // active "directory · model" and lets you switch both.
+    if (widget.command != 'shell') return Text(widget.title);
+    return InkWell(
+      onTap: _openContextSheet,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(widget.title),
+            const SizedBox(width: 3),
+            const Icon(Icons.expand_more, size: 18),
+          ]),
+          Text(
+            _dir == null ? 'tap to set context' : '$_dir · ${_modelLabel(_model)}',
+            style: TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w400, color: context.pal.textDim),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openContextSheet() {
+    final api = ref.read(apiProvider);
+    if (api == null) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: context.pal.surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => _ContextSheet(
+        api: api,
+        currentDir: _dir,
+        currentModel: _model,
+        onChanged: (dir, model) {
+          if (dir == null && model == null) return;
+          setState(() {
+            if (dir != null) _dir = dir;
+            if (model != null) _model = model;
+            // A centered note so the chat records the context change.
+            _msgs.add(ChatMessage('system', 'Context → $_dir · ${_modelLabel(_model)}'));
+          });
+          _scrollEnd();
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final imgHeaders = ref.read(apiProvider)?.authHeaders;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
+      appBar: AppBar(title: _buildTitle(context)),
       body: Column(children: [
         Expanded(
           child: ListView.builder(
@@ -286,6 +358,22 @@ class _Bubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (m.role == 'status') return _StatusBubble(m.text);
+    if (m.role == 'system') {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            decoration: BoxDecoration(
+              color: context.pal.surfaceAlt,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(m.text,
+                style: TextStyle(fontSize: 11.5, color: context.pal.textDim)),
+          ),
+        ),
+      );
+    }
     final isUser = m.role == 'user';
     final isError = m.role == 'error';
     final hasText = m.text.trim().isNotEmpty;
@@ -399,4 +487,196 @@ class _StatusBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Bottom sheet to switch the active directory and pin the coding model, plus a
+/// "continue on Mac" handoff for the active Claude session.
+class _ContextSheet extends StatefulWidget {
+  final GajalaApi api;
+  final String? currentDir;
+  final String currentModel;
+  final void Function(String? dir, String? model) onChanged;
+  const _ContextSheet(
+      {required this.api,
+      required this.currentDir,
+      required this.currentModel,
+      required this.onChanged});
+  @override
+  State<_ContextSheet> createState() => _ContextSheetState();
+}
+
+class _ContextSheetState extends State<_ContextSheet> {
+  List<Map<String, dynamic>> _projects = [];
+  List<Map<String, dynamic>> _sessions = [];
+  String? _dir;
+  late String _model;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dir = widget.currentDir;
+    _model = widget.currentModel;
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final proj = await widget.api.projects();
+      final sess = await widget.api.activeSessions();
+      if (!mounted) return;
+      setState(() {
+        _projects = List<Map<String, dynamic>>.from(proj['projects'] ?? []);
+        _dir = proj['current_name']?.toString() ?? _dir;
+        _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []);
+      });
+    } catch (_) {/* leave lists empty */}
+  }
+
+  Future<void> _switchDir(String name) async {
+    if (_busy || name == _dir) return;
+    setState(() => _busy = true);
+    try {
+      final now = await widget.api.switchProject(name);
+      widget.onChanged(now, null);
+      final sess = await widget.api.activeSessions();
+      if (mounted) {
+        setState(() {
+          _dir = now;
+          _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []);
+        });
+      }
+    } catch (_) {} finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _pinModel(String engine) async {
+    if (_busy || engine == _model) return;
+    setState(() => _busy = true);
+    try {
+      final now = await widget.api.setModel(engine);
+      widget.onChanged(null, now);
+      if (mounted) setState(() => _model = now);
+    } catch (_) {} finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    final claudeSession = _sessions.firstWhere(
+        (s) => s['engine'] == 'claude', orElse: () => const {});
+    final resumeCmd = claudeSession['resume_cmd']?.toString();
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+            left: 16, right: 16, top: 14,
+            bottom: 16 + MediaQuery.of(context).viewInsets.bottom),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Center(
+                child: Container(
+                  width: 36, height: 4, margin: const EdgeInsets.only(bottom: 14),
+                  decoration: BoxDecoration(
+                      color: pal.textDim, borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              _sectionLabel(context, 'MODEL'),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8, runSpacing: 8,
+                children: ['auto', 'claude', 'codex', 'gemini'].map((e) {
+                  final on = e == _model;
+                  return ChoiceChip(
+                    label: Text(_ChatScreenState._modelLabel(e)),
+                    selected: on,
+                    onSelected: _busy ? null : (_) => _pinModel(e),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _model == 'auto'
+                    ? 'Gajala picks the engine per request.'
+                    : 'Coding runs on ${_ChatScreenState._modelLabel(_model)} unless you name another.',
+                style: TextStyle(fontSize: 11.5, color: pal.textDim),
+              ),
+              if (resumeCmd != null) ...[
+                const SizedBox(height: 16),
+                _sectionLabel(context, 'CONTINUE ON MAC'),
+                const SizedBox(height: 6),
+                InkWell(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: resumeCmd));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Copied resume command')));
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                        color: pal.surfaceAlt,
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Row(children: [
+                      Expanded(
+                        child: Text(resumeCmd,
+                            style: const TextStyle(
+                                fontFamily: 'monospace', fontSize: 12)),
+                      ),
+                      Icon(Icons.copy, size: 16, color: pal.textDim),
+                    ]),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              _sectionLabel(context, 'DIRECTORY'),
+              const SizedBox(height: 4),
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(context).size.height * 0.35),
+                child: _projects.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Text('No projects found.',
+                            style: TextStyle(color: pal.textDim)),
+                      )
+                    : ListView(
+                        shrinkWrap: true,
+                        children: _projects.map((p) {
+                          final name = p['name']?.toString() ?? '';
+                          final active = name == _dir;
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                                active ? Icons.folder : Icons.folder_outlined,
+                                color: active ? GajalaColors.accent : pal.textDim,
+                                size: 20),
+                            title: Text(name),
+                            trailing: active
+                                ? const Icon(Icons.check, color: GajalaColors.accent, size: 18)
+                                : null,
+                            onTap: () => _switchDir(name),
+                          );
+                        }).toList(),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(BuildContext context, String t) => Text(t,
+      style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.6,
+          color: context.pal.textDim));
 }
