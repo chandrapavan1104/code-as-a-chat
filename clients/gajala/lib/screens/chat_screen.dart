@@ -35,7 +35,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   final _scroll = ScrollController();
   final List<ChatMessage> _msgs = [];
   bool _sending = false;
-  String? _sid;
+  String? _installId;         // stable per-install id
+  String? _sid;               // per-directory conversation id (installId::dir)
   XFile? _pending;   // image picked but not yet sent
   String? _dir;               // active project name (for the header)
   String _model = 'auto';     // pinned coding engine
@@ -44,29 +45,60 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _initSession();
-    _loadHistory();
-    if (widget.command == 'shell') _loadContext();
+    _bootstrap();
   }
 
-  /// Load the active directory + pinned model for the header.
-  Future<void> _loadContext() async {
+  /// Resolve the install id + active directory/model, then open THAT
+  /// directory's conversation. Each directory is its own thread; the model is
+  /// not part of the thread (switching models keeps the same conversation).
+  Future<void> _bootstrap() async {
+    _installId = await ref.read(sessionIdProvider.future);
+    if (widget.command != 'shell') {
+      _sid = _installId;                       // skill chats: single thread
+      Push.activeSession = _sid;
+      await _loadHistoryFor(_sid!);
+      return;
+    }
     final api = ref.read(apiProvider);
-    if (api == null) return;
-    try {
-      final results = await Future.wait([api.projects(), api.model()]);
-      if (!mounted) return;
-      setState(() {
-        _dir = results[0]['current_name']?.toString();
-        _model = results[1]['engine']?.toString() ?? 'auto';
-      });
-    } catch (_) {/* header just stays blank */}
+    String? dir;
+    var model = 'auto';
+    if (api != null) {
+      try {
+        final results = await Future.wait([api.projects(), api.model()]);
+        dir = results[0]['current_name']?.toString();
+        model = results[1]['engine']?.toString() ?? 'auto';
+      } catch (_) {/* header stays blank */}
+    }
+    if (!mounted) return;
+    setState(() {
+      _dir = dir;
+      _model = model;
+      _sid = _sidFor(dir);
+    });
+    Push.activeSession = _sid;
+    await _loadHistoryFor(_sid!);
   }
 
-  Future<void> _initSession() async {
-    _sid = await ref.read(sessionIdProvider.future);
-    // Mark this chat as "being viewed" so completion pushes for it are muted.
-    Push.activeSession = _sid;
+  /// Per-directory conversation id. Skill chats (and no-dir) use the bare id.
+  String _sidFor(String? dir) {
+    if (widget.command != 'shell' || dir == null || dir.isEmpty) {
+      return _installId ?? '';
+    }
+    final slug = dir.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+    return '$_installId::$slug';
+  }
+
+  /// Swap the visible conversation to another directory's thread.
+  Future<void> _switchConversation(String dir) async {
+    if (dir == _dir) return;
+    final sid = _sidFor(dir);
+    setState(() {
+      _dir = dir;
+      _sid = sid;
+      _msgs.clear();
+    });
+    Push.activeSession = sid;
+    await _loadHistoryFor(sid);
   }
 
   @override
@@ -86,32 +118,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
-  Future<void> _loadHistory() async {
+  /// Load a specific conversation's history (per-directory), rebuilding any
+  /// images, and show a welcome line if the thread is empty.
+  Future<void> _loadHistoryFor(String sid) async {
     final api = ref.read(apiProvider);
-    if (api != null && widget.command == 'shell') {
+    List<ChatMessage> loaded = const [];
+    if (api != null) {
       try {
-        final sid = await ref.read(sessionIdProvider.future);
         final history = await api.chatHistory(sid);
-        if (mounted && history.isNotEmpty) {
-          // Rebuild any images the agent sent from their stored [image:] markers.
-          final rebuilt = history.map((m) {
-            if (m.role != 'bot') return m;
-            final (clean, urls) = _splitImages(m.text, api);
-            if (urls.isEmpty) return m;
-            return ChatMessage('bot', clean, remoteImages: urls);
-          }).toList();
-          setState(() => _msgs.addAll(rebuilt));
-          _scrollEnd();
-          return;
-        }
-      } catch (_) { /* fall through to welcome */ }
+        loaded = history.map((m) {
+          if (m.role != 'bot') return m;
+          final (clean, urls) = _splitImages(m.text, api);
+          if (urls.isEmpty) return m;
+          return ChatMessage('bot', clean, remoteImages: urls);
+        }).toList();
+      } catch (_) {/* fall through to welcome */}
     }
-    if (mounted && _msgs.isEmpty) {
-      setState(() => _msgs.add(ChatMessage('bot',
-          widget.command == 'shell'
-              ? 'Em sangathi mava! Gajala ikkada 🔥\nCheppu — em kavali?'
-              : 'Send a /${widget.command} request, or just type.')));
-    }
+    if (!mounted) return;
+    setState(() {
+      _msgs.clear();
+      if (loaded.isNotEmpty) {
+        _msgs.addAll(loaded);
+      } else {
+        _msgs.add(ChatMessage('bot',
+            widget.command == 'shell'
+                ? 'Em sangathi mava! Gajala ikkada 🔥\nCheppu — em kavali?'
+                : 'Send a /${widget.command} request, or just type.'));
+      }
+    });
+    _scrollEnd();
   }
 
   Future<void> _pickImage() async {
@@ -134,7 +169,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if ((text.isEmpty && attach == null) || _sending) return;
     final api = ref.read(apiProvider);
     if (api == null) return;
-    final sid = await ref.read(sessionIdProvider.future);
+    final sid = _sid;
+    if (sid == null) return;
 
     // Explicit /command overrides the screen's command.
     var command = widget.command;
@@ -265,14 +301,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         currentDir: _dir,
         currentModel: _model,
         onChanged: (dir, model) {
-          if (dir == null && model == null) return;
-          setState(() {
-            if (dir != null) _dir = dir;
-            if (model != null) _model = model;
-            // A centered note so the chat records the context change.
-            _msgs.add(ChatMessage('system', 'Context → $_dir · ${_modelLabel(_model)}'));
-          });
-          _scrollEnd();
+          if (model != null) setState(() => _model = model);
+          if (dir != null && dir != _dir) {
+            // Switching directory swaps the whole conversation to that thread.
+            _switchConversation(dir);
+          } else if (model != null) {
+            // Same thread, just a different engine — note it inline.
+            setState(() => _msgs.add(
+                ChatMessage('system', 'Model → ${_modelLabel(_model)}')));
+            _scrollEnd();
+          }
         },
       ),
     );
