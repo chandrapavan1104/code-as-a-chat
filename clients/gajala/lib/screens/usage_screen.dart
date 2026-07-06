@@ -13,23 +13,75 @@ String _humanTokens(dynamic n) {
   return v.toStringAsFixed(0);
 }
 
-class UsageScreen extends ConsumerWidget {
+class UsageScreen extends ConsumerStatefulWidget {
   const UsageScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<UsageScreen> createState() => _UsageScreenState();
+}
+
+class _UsageScreenState extends ConsumerState<UsageScreen>
+    with WidgetsBindingObserver {
+  DateTime? _fetchedAt; // when the currently-shown data landed
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Always pull fresh on open — don't trust a value cached from a past visit.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Coming back from background with this screen up → refetch so usage is live.
+    if (state == AppLifecycleState.resumed && mounted) _refresh();
+  }
+
+  Future<void> _refresh() => ref.refresh(usageProvider.future);
+
+  String _stamp(DateTime t) {
+    final d = DateTime.now().difference(t);
+    if (d.inSeconds < 5) return 'updated just now';
+    if (d.inSeconds < 60) return 'updated ${d.inSeconds}s ago';
+    if (d.inMinutes < 60) return 'updated ${d.inMinutes}m ago';
+    final h = t.hour.toString().padLeft(2, '0');
+    final m = t.minute.toString().padLeft(2, '0');
+    return 'updated $h:$m';
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final usage = ref.watch(usageProvider);
+    // Record the moment fresh data arrives so we can show an "updated" stamp.
+    ref.listen(usageProvider, (_, next) {
+      if (next.hasValue && !next.isLoading) _fetchedAt = DateTime.now();
+    });
     return Scaffold(
-      appBar: AppBar(title: const Text('Codaur'), actions: [
-        IconButton(icon: const Icon(Icons.refresh),
-            onPressed: () => ref.invalidate(usageProvider)),
-      ]),
+      appBar: AppBar(
+        title: const Text('Codaur'),
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _refresh),
+        ],
+      ),
       body: usage.when(
         data: (providers) => RefreshIndicator(
-          onRefresh: () async => ref.invalidate(usageProvider),
+          onRefresh: _refresh,
           child: ListView(
             padding: const EdgeInsets.all(12),
             children: [
+              if (_fetchedAt != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8, left: 4),
+                  child: Text(_stamp(_fetchedAt!),
+                      style: TextStyle(color: context.pal.textDim, fontSize: 11)),
+                ),
               for (final p in providers) _ProviderCard(p),
             ],
           ),
