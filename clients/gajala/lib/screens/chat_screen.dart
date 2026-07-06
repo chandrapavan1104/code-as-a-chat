@@ -21,6 +21,17 @@ final _imgMarker = RegExp(r'\[image:\s*([^\]]+?)\s*\]');
   return (clean, urls);
 }
 
+/// Pulls a "[[move:dir]]" confirm-to-move marker out of a reply → (clean, dir).
+final _moveMarker = RegExp(r'\[\[move:\s*([a-z0-9\-]+)\s*\]\]', caseSensitive: false);
+(String, String?) _splitMove(String raw) {
+  String? target;
+  final clean = raw.replaceAllMapped(_moveMarker, (m) {
+    target = m.group(1);
+    return '';
+  }).trim();
+  return (clean, target);
+}
+
 class ChatScreen extends ConsumerStatefulWidget {
   final String command;   // 'shell' = Gajala agent; else a specific skill
   final String title;
@@ -40,6 +51,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   XFile? _pending;   // image picked but not yet sent
   String? _dir;               // active project name (for the header)
   String _model = 'auto';     // pinned coding engine
+  String? _lastUserText;      // last thing the user typed (to resend on "move")
 
   @override
   void initState() {
@@ -99,6 +111,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
     Push.activeSession = sid;
     await _loadHistoryFor(sid);
+  }
+
+  /// Confirm-to-move: switch to [dir] (server workspace + thread), then re-ask
+  /// the question there. Wired to the "Ask in {dir} chat" action on a move reply.
+  Future<void> _moveAndAsk(String dir) async {
+    if (_sending) return;
+    final prompt = _lastUserText;
+    final api = ref.read(apiProvider);
+    if (api != null) {
+      try {
+        await api.switchProject(dir);   // keep server workspace in lock-step
+      } catch (_) {}
+    }
+    await _switchConversation(dir);
+    if (prompt != null && prompt.isNotEmpty) {
+      _input.text = prompt;
+      await _send();
+    }
   }
 
   @override
@@ -171,6 +201,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (api == null) return;
     final sid = _sid;
     if (sid == null) return;
+    _lastUserText = text;
 
     // Explicit /command overrides the screen's command.
     var command = widget.command;
@@ -231,9 +262,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             _scrollEnd();
             break;
           case 'final':
-            final (clean, urls) = _splitImages(ev['result']?.toString() ?? '', api);
-            finish(ChatMessage('bot', clean.isEmpty && urls.isNotEmpty ? '' : (clean.isEmpty ? '(no result)' : clean),
-                remoteImages: urls));
+            final (imgClean, urls) = _splitImages(ev['result']?.toString() ?? '', api);
+            final (clean, moveTo) = _splitMove(imgClean);
+            finish(ChatMessage(
+                'bot',
+                clean.isEmpty && urls.isNotEmpty ? '' : (clean.isEmpty ? '(no result)' : clean),
+                remoteImages: urls,
+                moveTo: moveTo));
             break;
           case 'error':
             finish(ChatMessage('error', ev['message']?.toString() ?? 'Server error'));
@@ -327,7 +362,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             controller: _scroll,
             padding: const EdgeInsets.all(12),
             itemCount: _msgs.length,
-            itemBuilder: (_, i) => _Bubble(_msgs[i], imgHeaders),
+            itemBuilder: (_, i) => _Bubble(_msgs[i], imgHeaders,
+                onMove: _sending ? null : _moveAndAsk),
           ),
         ),
         Container(
@@ -392,7 +428,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 class _Bubble extends StatelessWidget {
   final ChatMessage m;
   final Map<String, String>? imgHeaders;   // auth headers for /api/file images
-  const _Bubble(this.m, this.imgHeaders);
+  final void Function(String dir)? onMove;  // confirm-to-move action
+  const _Bubble(this.m, this.imgHeaders, {this.onMove});
   @override
   Widget build(BuildContext context) {
     if (m.role == 'status') return _StatusBubble(m.text);
@@ -473,6 +510,20 @@ class _Bubble extends StatelessWidget {
               SelectableText(m.text,
                   style: TextStyle(
                       color: isError ? GajalaColors.danger : context.pal.text, height: 1.35)),
+            if (m.moveTo != null && onMove != null) ...[
+              const SizedBox(height: 8),
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  backgroundColor: GajalaColors.accent.withValues(alpha: 0.15),
+                  foregroundColor: GajalaColors.accent,
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.arrow_forward, size: 16),
+                label: Text('Ask in ${m.moveTo} chat'),
+                onPressed: () => onMove!(m.moveTo!),
+              ),
+            ],
           ],
         ),
       ),

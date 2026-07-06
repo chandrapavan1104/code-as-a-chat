@@ -56,7 +56,8 @@ class ChatMessage {
   String text;       // mutable so a live 'status' bubble can accumulate steps
   final String? localImage;         // absolute local file path (image the user sent)
   final List<String> remoteImages;  // full /api/file URLs (images the agent sent back)
+  final String? moveTo;             // dir to offer moving this question to (confirm-to-move)
   ChatMessage(this.role, this.text,
-      {this.localImage, List<String>? remoteImages})
+      {this.localImage, List<String>? remoteImages, this.moveTo})
       : remoteImages = remoteImages ?? const [];
 }
