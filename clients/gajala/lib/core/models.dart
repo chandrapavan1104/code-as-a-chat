@@ -54,5 +54,9 @@ class SystemStats {
 class ChatMessage {
   final String role; // user | bot | error | status
   String text;       // mutable so a live 'status' bubble can accumulate steps
-  ChatMessage(this.role, this.text);
+  final String? localImage;         // absolute local file path (image the user sent)
+  final List<String> remoteImages;  // full /api/file URLs (images the agent sent back)
+  ChatMessage(this.role, this.text,
+      {this.localImage, List<String>? remoteImages})
+      : remoteImages = remoteImages ?? const [];
 }

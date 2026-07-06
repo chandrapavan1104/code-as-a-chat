@@ -12,9 +12,11 @@ import time
 import json as _json
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 import psutil
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from server import config as cfg
@@ -22,9 +24,15 @@ from server import fcm
 from server.db import notes_store, diary_store, reminders_store
 from server.db import devices_store
 from server.db import store as memory
+from server.media import ensure_uploads_dir, is_served_path
 from server.skills.projects import _candidates as _project_candidates, _switch_view as _switch_workspace
 
 router = APIRouter(prefix="/api", tags=["app"])
+
+# Cap an inbound image upload. Phone screenshots/photos are a few MB; 25 MB is
+# generous headroom without inviting abuse.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".bmp"}
 
 
 # ── chat history (so the app's chat persists, synced with Gajala's memory) ─────
@@ -167,6 +175,39 @@ class DeviceIn(BaseModel):
 def register_device(d: DeviceIn):
     devices_store.upsert(d.fcm_token, d.platform, d.label)
     return {"registered": True, "count": devices_store.count()}
+
+
+# ── image upload / serve ──────────────────────────────────────────────────────
+
+@router.post("/upload")
+async def upload_image(request: Request, name: str = "image.jpg"):
+    """Store a raw image body and return its server path. The app sends the file
+    bytes directly (no multipart) with the original filename in `name`; the agent
+    then reads the returned path via the claude tool.
+
+    Returns {"path": "/abs/path", "name": "<original>"}.
+    """
+    ext = Path(name).suffix.lower()
+    if ext not in _IMAGE_EXTS:
+        ext = ".jpg"
+    body = await request.body()
+    if not body:
+        raise HTTPException(400, "empty upload")
+    if len(body) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"image too large (max {_MAX_UPLOAD_BYTES // (1024*1024)} MB)")
+    dest = ensure_uploads_dir() / f"{uuid.uuid4().hex}{ext}"
+    dest.write_bytes(body)
+    return {"path": str(dest), "name": name}
+
+
+@router.get("/file")
+def serve_file(path: str):
+    """Serve an image the app was told about (upload echo or an [image:] marker).
+    Sandboxed to the uploads dir + active workspace via is_served_path."""
+    p = Path(path).expanduser()
+    if not is_served_path(p):
+        raise HTTPException(404, "not found")
+    return FileResponse(str(p))
 
 
 @router.post("/push/test")

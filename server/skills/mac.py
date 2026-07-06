@@ -21,6 +21,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from server.skills.base import Skill
@@ -198,24 +199,19 @@ async def _bluetooth(arg: str) -> str:
 
 
 async def _screenshot(session_id: str | None) -> str:
-    fd, path = tempfile.mkstemp(suffix=".png", prefix="codeasachat_shot_")
-    os.close(fd)
-    try:
-        rc, out, err = await _run(["screencapture", "-x", path], timeout=20)
-        if rc != 0:
-            return f"[mac] screenshot failed: {err or out}"
-        ok = await notify.push_photo(path, caption="Screen capture",
-                                     chat_id=_chat_id(session_id))
-        if ok:
-            return "Screenshot sent to your phone."
-        return ("Captured the screen but the photo push failed. "
-                "If this persists, the python process may need Screen Recording "
-                "permission (System Settings → Privacy & Security).")
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+    # Save into the served uploads dir (not a temp file) so the app can fetch it
+    # via the [image:] marker; the Telegram path still gets a direct photo push.
+    from server.media import ensure_uploads_dir
+    path = str(ensure_uploads_dir() / f"shot_{uuid.uuid4().hex}.png")
+    rc, out, err = await _run(["screencapture", "-x", path], timeout=20)
+    if rc != 0:
+        return f"[mac] screenshot failed: {err or out}"
+    # Best-effort Telegram delivery (no-op / harmless when driven from the app).
+    await notify.push_photo(path, caption="Screen capture",
+                            chat_id=_chat_id(session_id))
+    # The [image:] marker is what the app renders; the shell layer preserves it
+    # verbatim into the final reply.
+    return f"Screenshot captured 📸\n[image: {path}]"
 
 
 async def _photo(session_id: str | None) -> str:

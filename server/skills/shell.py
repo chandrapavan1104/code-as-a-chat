@@ -14,6 +14,7 @@ because Haiku can plan and execute a sequence.
 
 import asyncio
 import json
+import re
 import shutil
 from server.skills.base import Skill
 from server.skills import register, get_skill
@@ -24,6 +25,12 @@ from server import config
 MAX_ITERATIONS = 7         # cap on tool calls per user turn
 RESULT_TRUNCATE = 2500     # cap each tool result before feeding back to Haiku
 HAIKU_TIMEOUT = 60         # seconds per Haiku call
+
+# Images a tool produced (e.g. /mac screenshot) are marked in its output as
+# "[image: /path]". Haiku might drop the marker when it rewrites the reply, so
+# we collect markers mechanically and re-attach any missing ones to the final
+# reply — the app renders them, Telegram shows the path.
+_IMAGE_MARKER_RE = re.compile(r"\[image:\s*[^\]]+\]")
 
 
 # ── live progress labels ──────────────────────────────────────────────────────
@@ -135,6 +142,10 @@ ATTACHMENTS & MEDIA:
   error, and suggest the fix — chain more tools if the fix needs project work.
 - Stickers: react in persona based on the emoji; inspect the image only if needed.
 - Only audio/video can't be processed yet — be honest about those.
+- SHOWING an image back: some tools return an "[image: /path]" marker (e.g. mac
+  screenshot). The app renders that image automatically — do NOT paste the file
+  path into your reply and do NOT repeat the marker. Just give a short caption
+  ("Here's your screen 📸"); the image attaches on its own.
 
 CONSTRAINTS:
 - Max 7 tool calls per turn. If you hit it, stop with "done" and explain what got finished.
@@ -396,6 +407,7 @@ class ShellSkill(Skill):
         recent = memory.get_recent(session_id, n=config.MEMORY_TURNS) if session_id else []
         context_block = self._format_context(recent)
         scratchpad: list[dict] = []
+        images: list[str] = []   # [image: …] markers gathered from tool outputs
 
         for iteration in range(MAX_ITERATIONS):
             agent_input = self._build_agent_input(context_block, prompt, scratchpad)
@@ -434,6 +446,7 @@ class ShellSkill(Skill):
 
             if action == "done":
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
+                final = self._attach_images(final, images)
                 self._remember(session_id, prompt, final)
                 return final
 
@@ -467,6 +480,9 @@ class ShellSkill(Skill):
 
                 if not isinstance(result, str):
                     result = str(result)
+
+                # Remember any image a tool produced, before truncation can clip it.
+                images.extend(_IMAGE_MARKER_RE.findall(result))
 
                 # Different-persona skills (e.g. diary/Anna) reply to the user
                 # directly — their voice must never be rewritten by this agent.
@@ -509,6 +525,23 @@ class ShellSkill(Skill):
                      "Try a more specific request.")
         self._remember(session_id, prompt, final)
         return final
+
+    @staticmethod
+    def _attach_images(reply: str, images: list[str]) -> str:
+        """Re-attach any [image: …] markers a tool produced that the agent's
+        reply dropped, so the app still renders them. Order-preserving, deduped."""
+        if not images:
+            return reply
+        present = set(_IMAGE_MARKER_RE.findall(reply))
+        seen: set[str] = set()
+        missing: list[str] = []
+        for m in images:
+            if m not in present and m not in seen:
+                seen.add(m)
+                missing.append(m)
+        if not missing:
+            return reply
+        return reply.rstrip() + "\n" + "\n".join(missing)
 
     @staticmethod
     def _partial_summary(scratchpad: list[dict], note: str = "") -> str:
