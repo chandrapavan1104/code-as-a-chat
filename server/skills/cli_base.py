@@ -48,6 +48,17 @@ class CLISubprocessSkill(Skill):
         next time. Client-assigned engines return None (we already know the id)."""
         return None
 
+    def _sync_context(self) -> None:
+        """Converge AGENTS.md ↔ CLAUDE.md ↔ GEMINI.md so whichever engine runs
+        reads — and leaves — the same shared context. Best-effort; never raises."""
+        if not getattr(config, "CONTEXT_AUTO_SYNC", True):
+            return
+        try:
+            from server.skills.context import sync_context_files
+            sync_context_files(config.WORKSPACE_DIR)
+        except Exception:
+            pass
+
     async def _spawn(self, cmd: list[str], cwd: str) -> tuple[int | None, str, str]:
         """Run one subprocess; returns (returncode, stdout, stderr). Timeout →
         returncode None with a marker in stderr."""
@@ -82,6 +93,11 @@ class CLISubprocessSkill(Skill):
             return f"[{self.name}] CLI '{self.cli_name}' not installed.\n{self.install_hint}"
 
         cwd = str(config.WORKSPACE_DIR)
+
+        # Read-side guard: converge the shared context BEFORE this engine acts, so
+        # a model taking over from a different one reads the latest notes — not a
+        # stale mirror. (The post-run sync below handles the write side.)
+        self._sync_context()
 
         # Resume this project's session for this engine, if we have one.
         resume_id = (cli_sessions_store.get(cwd, self.session_engine)
@@ -122,13 +138,8 @@ class CLISubprocessSkill(Skill):
             if sid:
                 cli_sessions_store.set(cwd, self.session_engine, sid)
 
-        # An agent may have edited its own context file (CLAUDE.md / AGENTS.md /
-        # GEMINI.md). Converge them so all engines stay on the same context.
-        if getattr(config, "CONTEXT_AUTO_SYNC", True):
-            try:
-                from server.skills.context import sync_context_files
-                sync_context_files(config.WORKSPACE_DIR)
-            except Exception:
-                pass  # never let context sync break a real result
+        # Write-side sync: this engine may have edited its own context file —
+        # converge them so the next engine (or the Mac) sees the update.
+        self._sync_context()
 
         return self.parse_output(stdout, stderr)
