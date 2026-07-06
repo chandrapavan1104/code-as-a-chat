@@ -12,7 +12,9 @@ class CodexSkill(CLISubprocessSkill):
     cli_name = "codex"
     install_hint = "Install: npm install -g @openai/codex"
 
-    def build_command(self, prompt: str) -> list[str]:
+    def build_command(self, prompt: str, resume_id: str | None = None) -> list[str]:
+        # resume_id unused for now — codex exec session-resume isn't wired yet
+        # (supports_sessions stays False); accepted for base-class uniformity.
         return [
             "codex", "exec",
             "--json",

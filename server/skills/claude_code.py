@@ -13,14 +13,26 @@ class ClaudeCodeSkill(CLISubprocessSkill):
                  "'Read the image/file at <path> and <question>'.")
     cli_name = "claude"
     install_hint = "Install: npm install -g @anthropic-ai/claude-code"
+    # Reuse one Claude session per project so turns build on each other and you
+    # can `claude --resume <id>` the same thread on the Mac.
+    supports_sessions = True
 
-    def build_command(self, prompt: str) -> list[str]:
-        return [
+    def build_command(self, prompt: str, resume_id: str | None = None) -> list[str]:
+        cmd = [
             "claude",
             "-p", prompt,
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
         ]
+        if resume_id:
+            cmd += ["--resume", resume_id]
+        return cmd
+
+    def extract_session_id(self, stdout: str) -> str | None:
+        try:
+            return json.loads(stdout).get("session_id")
+        except (json.JSONDecodeError, AttributeError):
+            return None
 
     def parse_output(self, stdout: str, stderr: str) -> str:
         try:

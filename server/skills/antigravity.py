@@ -12,7 +12,9 @@ class AntigravitySkill(CLISubprocessSkill):
     cli_name = "gemini"
     install_hint = "Install: npm install -g @google/gemini-cli"
 
-    def build_command(self, prompt: str) -> list[str]:
+    def build_command(self, prompt: str, resume_id: str | None = None) -> list[str]:
+        # resume_id unused for now (supports_sessions stays False); accepted for
+        # base-class uniformity.
         return [
             "gemini",
             "-p", prompt,
