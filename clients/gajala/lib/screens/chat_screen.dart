@@ -66,7 +66,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _bootstrap() async {
     _installId = await ref.read(sessionIdProvider.future);
     if (widget.command != 'shell') {
-      _sid = _installId;                       // skill chats: single thread
+      _sid = _sidFor(null);                    // per-engine thread (persisted)
       Push.activeSession = _sid;
       await _loadHistoryFor(_sid!);
       return;
@@ -91,13 +91,55 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     await _loadHistoryFor(_sid!);
   }
 
-  /// Per-directory conversation id. Skill chats (and no-dir) use the bare id.
+  /// Conversation id. The Gajala (shell) chat is per-directory — that dir IS the
+  /// thread. Each skill tab (claude/codex/gemini/…) keeps its own engine thread.
   String _sidFor(String? dir) {
-    if (widget.command != 'shell' || dir == null || dir.isEmpty) {
-      return _installId ?? '';
+    if (widget.command != 'shell') {
+      return '$_installId::${widget.command}';
     }
+    if (dir == null || dir.isEmpty) return _installId ?? '';
     final slug = dir.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
     return '$_installId::$slug';
+  }
+
+  /// The server owns the active project. If it changed — the agent used the
+  /// projects tool mid-turn, or it moved while we were backgrounded — follow it
+  /// so the header + thread key stay in sync and reopening lands on the right
+  /// thread. [reload] pulls the destination thread's history (used after we've
+  /// been away); mid-turn we keep the visible messages and just re-key + note it.
+  Future<void> _syncWorkspace(String? name, {bool reload = false}) async {
+    if (widget.command != 'shell' || name == null || name.isEmpty) return;
+    if (name == _dir) return;
+    final sid = _sidFor(name);
+    if (reload) {
+      setState(() {
+        _dir = name;
+        _sid = sid;
+        _msgs.clear();
+      });
+      Push.activeSession = sid;
+      await _loadHistoryFor(sid);
+    } else {
+      setState(() {
+        _dir = name;
+        _sid = sid;
+        _msgs.add(ChatMessage('system', 'Switched to $name'));
+      });
+      Push.activeSession = sid;
+      _scrollEnd();
+    }
+  }
+
+  /// Re-check the server's active project (shell chat only). Called on resume so
+  /// a switch made elsewhere — another screen, the Mac, an agent — is reflected.
+  Future<void> _refreshWorkspace() async {
+    if (widget.command != 'shell') return;
+    final api = ref.read(apiProvider);
+    if (api == null) return;
+    try {
+      final proj = await api.projects();
+      await _syncWorkspace(proj['current_name']?.toString(), reload: true);
+    } catch (_) {/* keep showing the current thread */}
   }
 
   /// Swap the visible conversation to another directory's thread.
@@ -143,6 +185,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // Only "viewing" this chat while it's on top AND the app is foregrounded.
     if (state == AppLifecycleState.resumed) {
       Push.activeSession = _sid;
+      _refreshWorkspace();   // catch a project switch made while we were away
     } else if (Push.activeSession == _sid) {
       Push.activeSession = null;
     }
@@ -176,7 +219,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 : 'Send a /${widget.command} request, or just type.'));
       }
     });
-    _scrollEnd();
+    _scrollEnd(animate: false);
   }
 
   Future<void> _pickImage() async {
@@ -227,6 +270,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
     final steps = <String>[];
     var replaced = false;
+    String? newWorkspace;   // project the server reports after the turn
     void finish(ChatMessage msg) {
       setState(() {
         final i = _msgs.indexOf(live);
@@ -262,6 +306,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             _scrollEnd();
             break;
           case 'final':
+            newWorkspace = ev['workspace']?.toString();
             final (imgClean, urls) = _splitImages(ev['result']?.toString() ?? '', api);
             final (clean, moveTo) = _splitMove(imgClean);
             finish(ChatMessage(
@@ -285,15 +330,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     } finally {
       setState(() => _sending = false);
       _scrollEnd();
+      // Follow a project switch the agent made during this turn (header + thread).
+      if (newWorkspace != null) _syncWorkspace(newWorkspace);
     }
   }
 
-  void _scrollEnd() => WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_scroll.hasClients) {
-          _scroll.animateTo(_scroll.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
-        }
+  /// Pin the view to the newest message. A single post-frame scroll lands short
+  /// when content is still laying out (long history, network images resolving
+  /// their height), which is why a reopened chat used to sit at an old position.
+  /// So we scroll now and again shortly after, and jump (not animate) on load.
+  void _scrollEnd({bool animate = true}) {
+    void go() {
+      if (!_scroll.hasClients) return;
+      final target = _scroll.position.maxScrollExtent;
+      if (animate) {
+        _scroll.animateTo(target,
+            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+      } else {
+        _scroll.jumpTo(target);
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      go();
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) WidgetsBinding.instance.addPostFrameCallback((_) => go());
       });
+    });
+  }
 
   static String _modelLabel(String e) => e == 'auto' ? 'auto' : e[0].toUpperCase() + e.substring(1);
 

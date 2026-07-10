@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from server import config, fcm, orchestrator
+from server.db import store as memory
 from server.scheduler import scheduler_loop
 
 
@@ -64,6 +65,20 @@ def _preview(text: str, limit: int = _PUSH_PREVIEW_CHARS) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
+def _persist_skill_turn(command: str, session_id: str | None,
+                        prompt: str, result: str) -> None:
+    """Persist a direct skill-chat turn (claude/codex/gemini/etc.) to memory so
+    the app can restore it on reopen. The shell path already records its own
+    turns via `_remember`, so skip it here to avoid double-writing."""
+    if command == "shell" or not session_id or not result or not result.strip():
+        return
+    try:
+        memory.append_turn(session_id, "user", prompt)
+        memory.append_turn(session_id, "assistant", result)
+    except Exception:
+        pass
+
+
 async def _push_reply(session_id: str, command: str, result: str) -> None:
     """Fire a chat-style completion push for a finished /run. Best-effort:
     no registered devices or no FCM key → silent no-op."""
@@ -101,13 +116,17 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
         result = await orchestrator.route(
             body.command, body.prompt, session_id=body.session_id
         )
+        _persist_skill_turn(body.command, body.session_id, body.prompt, result)
         # Ping the phone once the (possibly long) run finishes, if asked and we
         # have a session to deep-link back into. Runs after the response is sent.
         if body.notify and body.session_id:
             background_tasks.add_task(
                 _push_reply, body.session_id, body.command, result
             )
-        return {"command": body.command, "result": result}
+        # `workspace` lets the app follow project switches made *during* the turn
+        # (e.g. the agent used the projects tool) so its header + thread stay synced.
+        return {"command": body.command, "result": result,
+                "workspace": config.WORKSPACE_DIR.name}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -136,7 +155,12 @@ async def run_stream(body: RunRequest):
                 body.command, body.prompt,
                 session_id=body.session_id, on_event=on_event,
             )
-            await queue.put({"type": "final", "result": result})
+            _persist_skill_turn(body.command, body.session_id, body.prompt, result)
+            # `workspace` = the active project *after* the turn, so the app can
+            # follow a switch the agent made mid-turn (projects tool) and keep its
+            # header + conversation thread in sync.
+            await queue.put({"type": "final", "result": result,
+                             "workspace": config.WORKSPACE_DIR.name})
             if body.notify and body.session_id:
                 await _push_reply(body.session_id, body.command, result)
         except Exception as exc:
