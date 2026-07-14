@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/push.dart';
 import 'core/state.dart';
 import 'core/theme.dart';
+import 'core/widget_bridge.dart';
 import 'screens/chat_screen.dart';
 import 'screens/connect_screen.dart';
 import 'screens/dashboard_screen.dart';
@@ -15,6 +16,7 @@ void main() async {
     statusBarIconBrightness: Brightness.light,
   ));
   await Push.init();
+  await initHomeWidgets();   // register the widget background callback
   runApp(const ProviderScope(child: GajalaApp()));
 }
 
@@ -37,7 +39,10 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
         builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'),
       ));
     };
-    WidgetsBinding.instance.addPostFrameCallback((_) => Push.handleLaunchMessage());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Push.handleLaunchMessage();
+      handleWidgetLaunch();   // route Ask / Dump widget deep-links
+    });
   }
 
   @override

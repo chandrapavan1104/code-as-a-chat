@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_actions_desc">Lock the Mac, ask Gajala, or brain-dump a note.</string>
+    <string name="widget_codaur_desc">At-a-glance Codaur LLM usage. Tap to refresh.</string>
+</resources>

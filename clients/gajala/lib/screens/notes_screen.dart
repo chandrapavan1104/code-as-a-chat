@@ -13,13 +13,26 @@ const _kindColor = {
 };
 
 class NotesScreen extends ConsumerStatefulWidget {
-  const NotesScreen({super.key});
+  /// When true (e.g. opened from the Brain-dump home widget), pop the note
+  /// composer open right away for a fast capture.
+  final bool openComposer;
+  const NotesScreen({super.key, this.openComposer = false});
   @override
   ConsumerState<NotesScreen> createState() => _NotesScreenState();
 }
 
 class _NotesScreenState extends ConsumerState<NotesScreen> {
   String _filter = 'all';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.openComposer) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _addDialog(context);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

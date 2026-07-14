@@ -27,7 +27,44 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Deep-links from home_widget launch tiles (Ask, Brain dump). -->
+            <intent-filter>
+                <action android:name="es.antonborri.home_widget.action.LAUNCH" />
+            </intent-filter>
         </activity>
+
+        <!-- Quick-actions widget: Lock / Ask / Dump -->
+        <receiver
+            android:name=".GajalaActionsWidget"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_gajala_actions_info" />
+        </receiver>
+
+        <!-- Codaur usage glance widget -->
+        <receiver
+            android:name=".CodaurWidget"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_codaur_info" />
+        </receiver>
+
+        <!-- Runs the Dart background callback when a widget tile is tapped. -->
+        <receiver
+            android:name="es.antonborri.home_widget.HomeWidgetBackgroundReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="es.antonborri.home_widget.action.BACKGROUND" />
+            </intent-filter>
+        </receiver>
         <!-- Default FCM notification channel used for foreground/background pushes -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rounded dark card matching the app surface (GajalaColors.surface). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#17212B" />
+    <corners android:radius="20dp" />
+</shape>

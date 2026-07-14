@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Codaur usage glance. Tap anywhere to refresh in place (background fetch). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_card_bg"
+    android:padding="14dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="6dp">
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Codaur"
+            android:textColor="#2EA6FF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/ic_widget_refresh"
+            android:contentDescription="Refresh" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/codaur_line1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Tap to load usage…"
+        android:textColor="#E9EDF0"
+        android:textSize="13sp"
+        android:paddingTop="2dp"
+        android:maxLines="1"
+        android:ellipsize="end" />
+    <TextView
+        android:id="@+id/codaur_line2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#E9EDF0"
+        android:textSize="13sp"
+        android:paddingTop="2dp"
+        android:maxLines="1"
+        android:ellipsize="end" />
+    <TextView
+        android:id="@+id/codaur_line3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#E9EDF0"
+        android:textSize="13sp"
+        android:paddingTop="2dp"
+        android:maxLines="1"
+        android:ellipsize="end" />
+
+    <TextView
+        android:id="@+id/codaur_updated"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#8A99A8"
+        android:textSize="10sp"
+        android:paddingTop="6dp"
+        android:maxLines="1"
+        android:ellipsize="end" />
+</LinearLayout>
