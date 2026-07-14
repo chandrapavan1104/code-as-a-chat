@@ -49,6 +49,31 @@
                 android:paddingTop="4dp" />
         </LinearLayout>
 
+        <!-- Wake / Unlock -->
+        <LinearLayout
+            android:id="@+id/tile_wake"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_tile_bg"
+            android:padding="6dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_widget_unlock"
+                android:contentDescription="Wake / unlock Mac" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Wake"
+                android:textColor="#E9EDF0"
+                android:textSize="11sp"
+                android:paddingTop="4dp" />
+        </LinearLayout>
+
         <!-- Ask -->
         <LinearLayout
             android:id="@+id/tile_ask"
@@ -100,10 +125,10 @@
     </LinearLayout>
 
     <TextView
-        android:id="@+id/lock_status"
+        android:id="@+id/mac_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Tap Lock to sleep the Mac"
+        android:text="Lock or wake the Mac"
         android:textColor="#8A99A8"
         android:textSize="10sp"
         android:paddingTop="8dp"
