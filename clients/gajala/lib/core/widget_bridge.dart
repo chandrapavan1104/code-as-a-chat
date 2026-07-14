@@ -27,7 +27,10 @@ const _codaurWidget = 'CodaurWidget';
 Future<void> widgetCallback(Uri? uri) async {
   switch (uri?.host) {
     case 'lock':
-      await _performLock();
+      await _macAction('lock', busy: 'Locking…', ok: 'Locked ✓');
+      break;
+    case 'wake':
+      await _macAction('wake', busy: 'Waking…', ok: 'Woke ✓');
       break;
     case 'codaur':
       await refreshCodaurWidget();
@@ -79,24 +82,27 @@ Future<Dio?> _client() async {
   ));
 }
 
-Future<void> _setLockStatus(String s) async {
-  await HomeWidget.saveWidgetData<String>('lock_status', s);
+Future<void> _setMacStatus(String s) async {
+  await HomeWidget.saveWidgetData<String>('mac_status', s);
   await HomeWidget.updateWidget(name: _actionsWidget, androidName: _actionsWidget);
 }
 
-Future<void> _performLock() async {
-  await _setLockStatus('Locking…');
+/// Fire a mac quick action (lock / wake) in the background and reflect the
+/// outcome on the widget's status line.
+Future<void> _macAction(String action,
+    {required String busy, required String ok}) async {
+  await _setMacStatus(busy);
   try {
     final dio = await _client();
     if (dio == null) {
-      await _setLockStatus('Not connected — open the app');
+      await _setMacStatus('Not connected — open the app');
       return;
     }
     // No session_id → this quick action stays out of chat history.
-    await dio.post('/run', data: {'command': 'mac', 'prompt': 'lock'});
-    await _setLockStatus('Locked ✓ · ${_clock()}');
+    await dio.post('/run', data: {'command': 'mac', 'prompt': action});
+    await _setMacStatus('$ok · ${_clock()}');
   } catch (_) {
-    await _setLockStatus('Failed — tap to retry');
+    await _setMacStatus('Failed — tap to retry');
   }
 }
 

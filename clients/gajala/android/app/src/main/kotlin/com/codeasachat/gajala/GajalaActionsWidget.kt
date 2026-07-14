@@ -12,9 +12,11 @@ import es.antonborri.home_widget.HomeWidgetProvider
 /**
  * Home-screen quick actions:
  *  • Lock  → background call to /run (mac lock) — no need to open the app.
+ *  • Wake  → background call to /run (mac wake) — remote unlock when no password
+ *            is required after sleep / within the grace window.
  *  • Ask   → opens the Gajala chat.
  *  • Dump  → opens the Brain Dump note composer.
- * The lock status line is written back from Dart via HomeWidget.saveWidgetData.
+ * The mac status line is written back from Dart via HomeWidget.saveWidgetData.
  */
 class GajalaActionsWidget : HomeWidgetProvider() {
     override fun onUpdate(
@@ -30,6 +32,10 @@ class GajalaActionsWidget : HomeWidgetProvider() {
                     HomeWidgetBackgroundIntent.getBroadcast(context, Uri.parse("gajala://lock")),
                 )
                 setOnClickPendingIntent(
+                    R.id.tile_wake,
+                    HomeWidgetBackgroundIntent.getBroadcast(context, Uri.parse("gajala://wake")),
+                )
+                setOnClickPendingIntent(
                     R.id.tile_ask,
                     HomeWidgetLaunchIntent.getActivity(
                         context, MainActivity::class.java, Uri.parse("gajala://ask"),
@@ -42,8 +48,8 @@ class GajalaActionsWidget : HomeWidgetProvider() {
                     ),
                 )
                 setTextViewText(
-                    R.id.lock_status,
-                    widgetData.getString("lock_status", null) ?: "Tap Lock to sleep the Mac",
+                    R.id.mac_status,
+                    widgetData.getString("mac_status", null) ?: "Lock or wake the Mac",
                 )
             }
             appWidgetManager.updateAppWidget(id, views)

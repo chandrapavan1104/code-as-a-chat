@@ -78,6 +78,24 @@ async def _sleep() -> str:
     return "Mac going to sleep." if rc == 0 else f"[mac] sleep failed: {err or out}"
 
 
+async def _wake() -> str:
+    # Assert user activity for a moment, which wakes the (display-)slept Mac.
+    # This is the closest thing to a remote "unlock": it returns you to the
+    # desktop when no password is required after sleep (or you're within the
+    # grace window). macOS blocks typing a password into a *truly* locked screen
+    # for security, so a password-locked screen still needs Touch ID / the
+    # keyboard at the Mac itself.
+    rc, out, err = await _run(["caffeinate", "-u", "-t", "1"])
+    if rc == 0:
+        return ("Mac display woken 🌅\n"
+                "Unlocked if no password is required after sleep (or within the "
+                "grace window). A password-locked screen still needs Touch ID / "
+                "password at the Mac. Tip: System Settings → Lock Screen → "
+                "'Require password after sleep begins: 5 minutes' makes a quick "
+                "wake a real unlock.")
+    return f"[mac] wake failed: {err or out}"
+
+
 async def _say(text: str) -> str:
     if not text:
         return "Usage: /mac say <text>"
@@ -249,13 +267,15 @@ async def _photo(session_id: str | None) -> str:
 
 class MacSkill(Skill):
     name = "mac"
-    description = ("Remote-control the Mac: lock, sleep, say, notify, "
-                   "screenshot, photo, open")
+    description = ("Remote-control the Mac: lock, wake/unlock, sleep, say, "
+                   "notify, screenshot, photo, open")
     agent_doc = ('Remote-control the physical Mac. Flex / utility. '
-                 'args: "lock" | "sleep" | "say <text>" | "notify <text>" | "screenshot" | '
+                 'args: "lock" | "wake" (a.k.a. unlock) | "sleep" | "say <text>" | '
+                 '"notify <text>" | "screenshot" | '
                  '"photo" (webcam) | "open <url>" | '
                  '"bluetooth on|off|toggle|list|connect <name>|disconnect <name>". '
-                 'Examples: "lock my mac"->"lock", "make my mac say hi"->"say hi", '
+                 'Examples: "lock my mac"->"lock", "unlock my mac"->"wake", '
+                 '"wake my mac"->"wake", "make my mac say hi"->"say hi", '
                  '"take a screenshot"->"screenshot", "turn off bluetooth"->"bluetooth off", '
                  '"connect my keyboard"->"bluetooth connect keyboard", '
                  '"list bluetooth devices"->"bluetooth list". '
@@ -269,6 +289,8 @@ class MacSkill(Skill):
 
         if cmd == "lock":
             return await _lock()
+        if cmd in ("wake", "unlock", "wakeup"):
+            return await _wake()
         if cmd == "sleep":
             return await _sleep()
         if cmd == "say":
@@ -287,6 +309,7 @@ class MacSkill(Skill):
         return (
             "Mac control:\n"
             "  /mac lock              lock the screen\n"
+            "  /mac wake              wake the display (unlock if no pw required)\n"
             "  /mac sleep             sleep the Mac\n"
             "  /mac say <text>        speak through the speakers\n"
             "  /mac notify <text>     on-screen banner\n"
