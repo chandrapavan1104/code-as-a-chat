@@ -53,18 +53,41 @@ user already uses talk to the outside.
 
 ## Current State
 Working: full skill set (CLI runners, notes, diary, reminders, projects, ports,
-sessions browser, filemanager, sysmon, usage, Mac control incl. Bluetooth), shell
-agent (with one-retry resilience + partial-result fallback), live-progress
-streaming over `/run/stream` (status bubble in the app swaps for the final
-reply), Telegram bot, Flutter app (light/dark), FCM push end-to-end (reminders,
-test push, chat-reply completion pings). Deployed on a Mac Mini via launchd +
-Tailscale. Battery alerts disabled on this always-plugged host.
+sessions browser, filemanager, sysmon, usage, Mac control incl. Bluetooth +
+wake/unlock). Shell agent with one-retry resilience + partial-result fallback,
+plus an **OpenAI backup brain** (`SHELL_LLM_PROVIDER` auto|claude|openai) so it
+keeps working when Claude usage runs out. Live-progress streaming over
+`/run/stream`. **Session reuse** per (workspace, engine) for claude/codex/gemini
+with cross-model `.md` sync; `general` home base is the default workspace;
+**per-directory app conversations** whose thread follows the active project
+everywhere (incl. agent-driven switches) with confirm-to-move; pinned coding
+engine. **Images** send + receive (screenshots to the agent, images back).
+Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
+**Android home-screen widgets** (Lock / Wake / Ask / Brain-dump + a Codaur usage
+glance). Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled
+on this always-plugged host.
 
 ## Changelog (most recent first)
+- 2026-07-13 — Android home-screen widgets via `home_widget` (Gajala quick
+  actions: Lock / Wake / Ask / Brain-dump; Codaur usage glance) + remote mac
+  **wake/unlock** action (`caffeinate -u`). Honest limit: macOS blocks typing a
+  password into a truly-locked screen, so "unlock" = wake (real unlock only when
+  no password is required after sleep / within the grace window).
 - 2026-07-13 — Backup brain for the shell agent: `_haiku` (used by
   shell/notes/diary/reminders) falls back to the OpenAI API when Claude fails,
   via `SHELL_LLM_PROVIDER` (auto | claude | openai) + `OPENAI_SHELL_MODEL`.
   Keeps the assistant working when Claude usage runs out.
+- 2026-07-09 — App chat follows the active project everywhere: server reports
+  `workspace` after each turn so the header + thread key stay synced even when an
+  agent switches projects mid-turn; skill tabs now persist + get per-engine
+  threads; reliable scroll-to-latest. Codaur/usage screen auto-refreshes on open
+  + app-resume.
+- 2026-07-05 — Per-directory conversations + confirm-to-move; `general` home base
+  as the default workspace; shared-context (`.md`) pre-run sync guard.
+- 2026-07-04 — Session reuse per (workspace, engine) for all three engines
+  (claude/codex/gemini) with cross-model `.md` sync; chat `dir · model` header +
+  switcher; pinned coding engine. Image send + receive (upload → agent, images
+  back). Repo story-log under `docs/story/`.
 - 2026-07-04 — Live progress for long agent turns: `/run/stream` NDJSON
   endpoint, `shell.py` on_event callback, app renders a live status bubble
   instead of a silent wait; chat-reply completion pushes to Gajala as a
@@ -78,3 +101,8 @@ Tailscale. Battery alerts disabled on this always-plugged host.
 - Push from more places (note/diary nudges).
 - CI for the Flutter app; publish app as needed.
 - Rotate any credentials shared during setup.
+- At-rest security: FileVault is OFF and `.env` is world-readable — consider
+  enabling FileVault (mind the headless unlock caveat) and `chmod 600 .env` +
+  the SQLite stores.
+- Optional widget follow-ups: Sleep tile, Wake-on-LAN (wake from full sleep),
+  light-theme widget styling.
