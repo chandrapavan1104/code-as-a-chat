@@ -61,6 +61,10 @@ test push, chat-reply completion pings). Deployed on a Mac Mini via launchd +
 Tailscale. Battery alerts disabled on this always-plugged host.
 
 ## Changelog (most recent first)
+- 2026-07-13 — Backup brain for the shell agent: `_haiku` (used by
+  shell/notes/diary/reminders) falls back to the OpenAI API when Claude fails,
+  via `SHELL_LLM_PROVIDER` (auto | claude | openai) + `OPENAI_SHELL_MODEL`.
+  Keeps the assistant working when Claude usage runs out.
 - 2026-07-04 — Live progress for long agent turns: `/run/stream` NDJSON
   endpoint, `shell.py` on_event callback, app renders a live status bubble
   instead of a silent wait; chat-reply completion pushes to Gajala as a

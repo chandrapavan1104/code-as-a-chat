@@ -87,6 +87,18 @@ API_TOKEN: str = _load_or_create_api_token()
 # 'haiku' is fast and cheap; override to 'sonnet' / 'opus' / full model name if you want.
 SHELL_MODEL: str = os.getenv("SHELL_MODEL", "haiku")
 
+# Backup brain for when Claude usage runs out. The shell/notes/diary/reminders
+# LLM calls go through Claude Haiku by default; if that call fails (quota, rate
+# limit, auth, CLI missing), they fall back to the OpenAI API — provided
+# OPENAI_API_KEY is set.
+#   SHELL_LLM_PROVIDER = auto   → Claude first, OpenAI on failure (default)
+#                        openai → skip Claude entirely (conserve Claude usage)
+#                        claude → Claude only, no fallback (original behavior)
+SHELL_LLM_PROVIDER: str = os.getenv("SHELL_LLM_PROVIDER", "auto")
+# OpenAI model used for that fallback. gpt-4o-mini is cheap, fast, and plenty
+# for routing + short mobile replies; override to taste.
+OPENAI_SHELL_MODEL: str = os.getenv("OPENAI_SHELL_MODEL", "gpt-4o-mini")
+
 # How many recent turn-pairs the shell pulls from memory into Haiku's context.
 # Higher = better continuity, more tokens per call.
 # Bumped from 5 to 12 after losing project-priority context across long chats.
