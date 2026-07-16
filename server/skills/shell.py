@@ -14,8 +14,10 @@ because Haiku can plan and execute a sequence.
 
 import asyncio
 import json
+import logging
 import re
 import shutil
+import httpx
 from server.skills.base import Skill
 from server.skills import register, get_skill
 from server.db import store as memory
@@ -25,6 +27,8 @@ from server import config
 MAX_ITERATIONS = 7         # cap on tool calls per user turn
 RESULT_TRUNCATE = 2500     # cap each tool result before feeding back to Haiku
 HAIKU_TIMEOUT = 60         # seconds per Haiku call
+
+_log = logging.getLogger(__name__)
 
 # Images a tool produced (e.g. /mac screenshot) are marked in its output as
 # "[image: /path]". Haiku might drop the marker when it rewrites the reply, so
@@ -233,6 +237,54 @@ def get_agent_system() -> str:
 
 async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIMEOUT,
                  model: str | None = None) -> str:
+    """One-shot LLM call for the shell brain (and notes/diary/reminders).
+
+    Claude Haiku is the default. When Claude usage runs out — or any Claude call
+    fails — this transparently falls back to the OpenAI API so the assistant
+    keeps working, controlled by SHELL_LLM_PROVIDER (auto | claude | openai)."""
+    provider = getattr(config, "SHELL_LLM_PROVIDER", "auto").lower()
+
+    # Proactively skip Claude to conserve usage.
+    if provider == "openai":
+        return await _openai_chat(system_prompt, user_message, timeout)
+
+    try:
+        return await _claude_cli(system_prompt, user_message, timeout, model)
+    except Exception as exc:
+        # 'claude' = no fallback (original behavior). 'auto' = try OpenAI next.
+        if provider != "claude" and config.OPENAI_API_KEY:
+            _log.warning("Claude shell call failed (%s) — falling back to OpenAI", exc)
+            return await _openai_chat(system_prompt, user_message, timeout)
+        raise
+
+
+async def _openai_chat(system_prompt: str, user_message: str,
+                       timeout: int = HAIKU_TIMEOUT) -> str:
+    """Fallback brain: a one-shot OpenAI chat completion. Same text-in/text-out
+    contract as the Claude path so every caller works unchanged."""
+    if not config.OPENAI_API_KEY:
+        raise RuntimeError("no LLM available: Claude failed and OPENAI_API_KEY is unset")
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+            json={
+                "model": config.OPENAI_SHELL_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                "temperature": 0,
+            },
+        )
+    if r.status_code != 200:
+        raise RuntimeError(f"openai fallback failed: {r.status_code} {r.text[:200]}")
+    data = r.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
+async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIKU_TIMEOUT,
+                      model: str | None = None) -> str:
     """One-shot LLM call via the Claude CLI. Tools disabled — pure text in/out.
     Defaults to the fast shell model; pass `model=` for quality-sensitive skills."""
     if shutil.which("claude") is None:
