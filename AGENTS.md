@@ -69,9 +69,20 @@ Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 glance). **Codaur usage refreshes every 30 seconds while visible**, bypasses
 caches, and drops expired quota snapshots instead of presenting stale limits.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
-always-plugged host.
+always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
+bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
+app-side fixes (`build` skill → APK link) and gates server changes for your OK;
+`/fix ship` merges, and a detached `restart_guard` health-checks + auto-rolls-back
+so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-07-17 — Self-healing fix agent (MVP): `fix` skill runs codex on this repo
+  to diagnose + minimally fix reported bugs, gated by a git diff — app-only
+  changes auto-build via the new `build` skill (rebuild + deploy APK), server
+  changes are quarantined on a branch until `/fix ship`. `restart_guard` runs
+  detached so server restarts health-check + auto-roll-back (no lockout).
+  Guardrails: one bounded codex run (FIX_TIMEOUT), triage prompt that stops +
+  asks on non-code / out-of-scope issues.
 - 2026-07-16 — Per-engine model switching: pick the model within each engine
   (claude opus/sonnet/haiku, codex gpt-5.6-sol/terra/…, gemini 2.5-pro/flash).
   `prefs` stores a model per engine (codex presets read live from its model
