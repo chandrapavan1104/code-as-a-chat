@@ -1,5 +1,5 @@
 import json
-from server import config
+from server import config, prefs
 from server.skills.cli_base import CLISubprocessSkill
 from server.skills import register
 
@@ -20,11 +20,14 @@ class CodexSkill(CLISubprocessSkill):
 
     def build_command(self, prompt: str, resume_id: str | None = None,
                       new_id: str | None = None) -> list[str]:
+        # Phone-pinned model wins; else the config default.
+        model_flags = ["--model", prefs.get_coding_model("codex") or config.CODEX_MODEL]
         if resume_id:
             # `codex exec resume <id>` continues the thread; cwd comes from the
             # subprocess (resume has no -C flag).
-            return ["codex", "exec", "resume", resume_id, *self._FLAGS, prompt]
-        return ["codex", "exec", *self._FLAGS,
+            return ["codex", "exec", "resume", resume_id, *self._FLAGS,
+                    *model_flags, prompt]
+        return ["codex", "exec", *self._FLAGS, *model_flags,
                 "-C", str(config.WORKSPACE_DIR), prompt]
 
     def extract_session_id(self, stdout: str) -> str | None:

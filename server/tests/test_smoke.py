@@ -25,3 +25,18 @@ def test_skills_register():
     from server.skills import discover, registry
     discover()  # import every skill module so each self-registers
     assert {"shell", "mac", "notes", "reminders"} <= set(registry)
+
+
+def test_usage_ignores_expired_rate_limits(monkeypatch):
+    from server import api_v2
+
+    monkeypatch.setattr(api_v2.time, "time", lambda: 2_000)
+    report = {"limitUsage": [
+        {"window": "5h", "usedPercent": 80, "resetsAt": 1_999},
+        {"window": "7d", "usedPercent": 25, "resetsAt": 2_001},
+    ]}
+
+    assert api_v2._rate_pcts(report) == (None, 25)
+    assert api_v2._limits(report) == [
+        {"label": "weekly", "pct": 25.0, "detail": None},
+    ]

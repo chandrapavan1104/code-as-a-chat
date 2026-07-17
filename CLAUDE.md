@@ -61,13 +61,28 @@ keeps working when Claude usage runs out. Live-progress streaming over
 with cross-model `.md` sync; `general` home base is the default workspace;
 **per-directory app conversations** whose thread follows the active project
 everywhere (incl. agent-driven switches) with confirm-to-move; pinned coding
-engine. **Images** send + receive (screenshots to the agent, images back).
+engine **+ per-engine model** (claude opus/sonnet/haiku, codex gpt-5.6-sol/…,
+gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
+**Images** send + receive (screenshots to the agent, images back).
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 **Android home-screen widgets** (Lock / Wake / Ask / Brain-dump + a Codaur usage
-glance). Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled
-on this always-plugged host.
+glance). **Codaur usage refreshes every 30 seconds while visible**, bypasses
+caches, and drops expired quota snapshots instead of presenting stale limits.
+Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
+always-plugged host.
 
 ## Changelog (most recent first)
+- 2026-07-16 — Per-engine model switching: pick the model within each engine
+  (claude opus/sonnet/haiku, codex gpt-5.6-sol/terra/…, gemini 2.5-pro/flash).
+  `prefs` stores a model per engine (codex presets read live from its model
+  cache); CLI wrappers pass `--model`; `/api/model` GET/POST carries models +
+  presets; new `model` skill lets the shell agent actually switch from chat
+  ("switch to opus") instead of hallucinating it; app context sheet gains a
+  per-engine model picker.
+- 2026-07-15 — Fixed stale Codaur usage end-to-end: repaired Claude's status-line
+  capture path after the Desktop → Projects migration, added foreground polling
+  every 30 seconds, cache-busting/no-store responses, expired-window filtering,
+  and a generic limit fallback for the Android usage widget.
 - 2026-07-13 — Android home-screen widgets via `home_widget` (Gajala quick
   actions: Lock / Wake / Ask / Brain-dump; Codaur usage glance) + remote mac
   **wake/unlock** action (`caffeinate -u`). Honest limit: macOS blocks typing a

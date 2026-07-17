@@ -663,6 +663,8 @@ class _ContextSheetState extends State<_ContextSheet> {
   List<Map<String, dynamic>> _sessions = [];
   String? _dir;
   late String _model;
+  Map<String, String> _engineModels = {};   // engine → pinned model ('' = default)
+  Map<String, List<String>> _presets = {};   // engine → selectable models
   bool _busy = false;
 
   @override
@@ -677,13 +679,35 @@ class _ContextSheetState extends State<_ContextSheet> {
     try {
       final proj = await widget.api.projects();
       final sess = await widget.api.activeSessions();
+      final mdl = await widget.api.model();
       if (!mounted) return;
       setState(() {
         _projects = List<Map<String, dynamic>>.from(proj['projects'] ?? []);
         _dir = proj['current_name']?.toString() ?? _dir;
         _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []);
+        _engineModels = (mdl['models'] as Map?)
+                ?.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())) ??
+            {};
+        _presets = (mdl['presets'] as Map?)?.map((k, v) =>
+                MapEntry(k.toString(), List<String>.from(v ?? const []))) ??
+            {};
       });
     } catch (_) {/* leave lists empty */}
+  }
+
+  /// Pin a model for the currently selected engine.
+  Future<void> _pinEngineModel(String engine, String model) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final now = await widget.api.setEngineModel(engine, model);
+      if (mounted) {
+        setState(() => _engineModels =
+            now.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())));
+      }
+    } catch (_) {} finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<void> _switchDir(String name) async {
@@ -757,6 +781,38 @@ class _ContextSheetState extends State<_ContextSheet> {
                     : 'Coding runs on ${_ChatScreenState._modelLabel(_model)} unless you name another.',
                 style: TextStyle(fontSize: 11.5, color: pal.textDim),
               ),
+              // Per-engine model picker — only meaningful once an engine is pinned.
+              if (_model != 'auto' && (_presets[_model]?.isNotEmpty ?? false)) ...[
+                const SizedBox(height: 16),
+                _sectionLabel(context,
+                    '${_ChatScreenState._modelLabel(_model).toUpperCase()} MODEL'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8, runSpacing: 8,
+                  children: [
+                    for (final m in ['default', ...?_presets[_model]])
+                      Builder(builder: (_) {
+                        final cur = _engineModels[_model] ?? '';
+                        final on = m == 'default' ? cur.isEmpty : cur == m;
+                        return ChoiceChip(
+                          label: Text(m),
+                          selected: on,
+                          onSelected: _busy
+                              ? null
+                              : (_) => _pinEngineModel(
+                                  _model, m == 'default' ? '' : m),
+                        );
+                      }),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  (_engineModels[_model] ?? '').isEmpty
+                      ? 'Using the CLI default model.'
+                      : '${_ChatScreenState._modelLabel(_model)} → ${_engineModels[_model]}',
+                  style: TextStyle(fontSize: 11.5, color: pal.textDim),
+                ),
+              ],
               if (resumable.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 _sectionLabel(context, 'CONTINUE ON MAC'),

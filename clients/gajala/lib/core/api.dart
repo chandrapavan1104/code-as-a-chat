@@ -194,12 +194,21 @@ class GajalaApi {
     return r.data['engine']?.toString() ?? engine;
   }
 
+  /// Pin a specific model for one engine (claude: opus/sonnet/haiku, codex:
+  /// gpt-5.6-sol/…, gemini: gemini-2.5-pro/…). Returns the per-engine model map.
+  Future<Map<String, dynamic>> setEngineModel(String engine, String model) async {
+    final r = await _dio.post('/api/model', data: {'engine': engine, 'model': model});
+    return Map<String, dynamic>.from(r.data['models'] ?? {});
+  }
+
   /// Active CLI sessions for the current project + "continue on Mac" commands.
   Future<Map<String, dynamic>> activeSessions() async =>
       Map<String, dynamic>.from((await _dio.get('/api/sessions/active')).data);
 
   Future<List<Map<String, dynamic>>> usage() async {
-    final r = await _dio.get('/api/usage');
+    final r = await _dio.get('/api/usage',
+        options: Options(headers: {'Cache-Control': 'no-cache'}),
+        queryParameters: {'_': DateTime.now().millisecondsSinceEpoch});
     return List<Map<String, dynamic>>.from(r.data['providers']);
   }
 }
