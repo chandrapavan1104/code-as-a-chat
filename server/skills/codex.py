@@ -49,6 +49,7 @@ class CodexSkill(CLISubprocessSkill):
         # Usage info is in the `turn.completed` event.
         final_text: str | None = None
         usage: dict | None = None
+        error_text: str | None = None
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -66,8 +67,14 @@ class CodexSkill(CLISubprocessSkill):
                     final_text = item.get("text", "")
             elif etype == "turn.completed":
                 usage = event.get("usage")
+            elif etype in ("error", "turn.failed"):
+                msg = event.get("message") or (event.get("error") or {}).get("message")
+                if msg:
+                    error_text = str(msg)
 
         if not final_text:
+            if error_text:
+                return _codex_error_hint(error_text, stderr)
             return f"[codex] (no agent_message event)\n{stdout[:500]}"
 
         if usage:
@@ -76,6 +83,22 @@ class CodexSkill(CLISubprocessSkill):
                 f"out={usage.get('output_tokens', 0)}"
             )
         return final_text
+
+
+def _codex_error_hint(message: str, stderr: str) -> str:
+    """Turn a codex failure into a clean, actionable line. The common one is a
+    model/CLI-version skew (the codex desktop app updates its shared model cache
+    past the installed CLI), which surfaces as 'requires a newer version' or a
+    'models cache' load error — fixable by upgrading the CLI + refreshing cache."""
+    low = (message + " " + stderr).lower()
+    if ("newer version" in low or "models cache" in low
+            or "model metadata" in low or "not found" in low):
+        return (f"[codex] {message}\n\n"
+                "This is a codex CLI/model version skew. Fix on the Mac:\n"
+                "  npm install -g @openai/codex@latest\n"
+                "  rm ~/.codex/models_cache.json   # refetched on next run\n"
+                "Or pick a model your CLI already supports (e.g. gpt-5.5).")
+    return f"[codex] {message}"
 
 
 register(CodexSkill())
