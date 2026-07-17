@@ -102,6 +102,22 @@ OPENAI_SHELL_MODEL: str = os.getenv("OPENAI_SHELL_MODEL", "gpt-4o-mini")
 # Model the codex skill passes to `codex exec --model`.
 CODEX_MODEL: str = os.getenv("CODEX_MODEL", "gpt-5")
 
+# ── self-healing / fix agent ──────────────────────────────────────────────────
+# This repo (the app the fix agent edits). Derived from this file's location so
+# it works wherever the project lives; override with REPO_DIR if needed.
+REPO_DIR: Path = Path(os.getenv("REPO_DIR", str(Path(__file__).resolve().parent.parent)))
+# The buildable Flutter copy (has the gitignored google-services.json / signing).
+# The build skill syncs the repo's tracked app sources here before building.
+FLUTTER_APP_DIR: Path = Path(os.getenv("FLUTTER_APP_DIR", str(Path.home() / "dev" / "gajala")))
+FLUTTER_BIN_DIR: str = os.getenv("FLUTTER_BIN_DIR", str(Path.home() / "dev" / "flutter" / "bin"))
+# Where the built APK is served from, and the URL to hand back to the phone.
+APK_DEST: Path = Path(os.getenv("APK_DEST", str(Path.home() / "apk-share" / "gajala.apk")))
+APK_URL: str = os.getenv("APK_URL", "http://100.93.9.34:8765/gajala.apk")
+# Engine the fix agent uses for the actual code changes (codex conserves Claude).
+FIX_ENGINE: str = os.getenv("FIX_ENGINE", "codex")
+# Hard wall-clock ceiling for one fix attempt (seconds) — a loop/hang guard.
+FIX_TIMEOUT: int = int(os.getenv("FIX_TIMEOUT", "600"))
+
 # How many recent turn-pairs the shell pulls from memory into Haiku's context.
 # Higher = better continuity, more tokens per call.
 # Bumped from 5 to 12 after losing project-priority context across long chats.
