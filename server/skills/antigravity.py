@@ -1,5 +1,6 @@
 import json
 import uuid
+from server import prefs
 from server.skills.cli_base import CLISubprocessSkill
 from server.skills import register
 
@@ -29,6 +30,9 @@ class AntigravitySkill(CLISubprocessSkill):
             "--output-format", "json",
             "--skip-trust",
         ]
+        model = prefs.get_coding_model("gemini")  # engine key is "gemini"
+        if model:
+            cmd += ["-m", model]
         if resume_id:
             cmd += ["--resume", resume_id]
         elif new_id:

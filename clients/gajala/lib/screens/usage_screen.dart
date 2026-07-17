@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
@@ -22,7 +23,12 @@ class UsageScreen extends ConsumerStatefulWidget {
 
 class _UsageScreenState extends ConsumerState<UsageScreen>
     with WidgetsBindingObserver {
+  static const _refreshInterval = Duration(seconds: 30);
+
   DateTime? _fetchedAt; // when the currently-shown data landed
+  Timer? _refreshTimer;
+  bool _refreshing = false;
+  bool _foreground = true;
 
   @override
   void initState() {
@@ -30,21 +36,36 @@ class _UsageScreenState extends ConsumerState<UsageScreen>
     WidgetsBinding.instance.addObserver(this);
     // Always pull fresh on open — don't trust a value cached from a past visit.
     WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+    _refreshTimer = Timer.periodic(_refreshInterval, (_) {
+      if (_foreground && mounted) _refresh();
+    });
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
     // Coming back from background with this screen up → refetch so usage is live.
-    if (state == AppLifecycleState.resumed && mounted) _refresh();
+    if (_foreground && mounted) _refresh();
   }
 
-  Future<void> _refresh() => ref.refresh(usageProvider.future);
+  Future<void> _refresh() async {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      ref.invalidate(usageProvider);
+      await ref.read(usageProvider.future);
+      if (mounted) setState(() => _fetchedAt = DateTime.now());
+    } finally {
+      _refreshing = false;
+    }
+  }
 
   String _stamp(DateTime t) {
     final d = DateTime.now().difference(t);
@@ -59,10 +80,6 @@ class _UsageScreenState extends ConsumerState<UsageScreen>
   @override
   Widget build(BuildContext context) {
     final usage = ref.watch(usageProvider);
-    // Record the moment fresh data arrives so we can show an "updated" stamp.
-    ref.listen(usageProvider, (_, next) {
-      if (next.hasValue && !next.isLoading) _fetchedAt = DateTime.now();
-    });
     return Scaffold(
       appBar: AppBar(
         title: const Text('Codaur'),

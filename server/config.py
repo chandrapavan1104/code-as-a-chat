@@ -99,6 +99,9 @@ SHELL_LLM_PROVIDER: str = os.getenv("SHELL_LLM_PROVIDER", "auto")
 # for routing + short mobile replies; override to taste.
 OPENAI_SHELL_MODEL: str = os.getenv("OPENAI_SHELL_MODEL", "gpt-4o-mini")
 
+# Model the codex skill passes to `codex exec --model`.
+CODEX_MODEL: str = os.getenv("CODEX_MODEL", "gpt-5")
+
 # How many recent turn-pairs the shell pulls from memory into Haiku's context.
 # Higher = better continuity, more tokens per call.
 # Bumped from 5 to 12 after losing project-priority context across long chats.

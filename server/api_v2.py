@@ -15,7 +15,7 @@ import subprocess
 import uuid
 from pathlib import Path
 import psutil
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -271,24 +271,51 @@ def active_cli_sessions():
 @router.get("/model")
 def get_model():
     from server import prefs
-    return {"engine": prefs.get_coding_engine(), "options": list(prefs.CODING_ENGINES)}
+    return {
+        "engine": prefs.get_coding_engine(),
+        "options": list(prefs.CODING_ENGINES),
+        "models": prefs.get_coding_models(),   # per-engine pinned model ('' = default)
+        "presets": prefs.model_presets(),      # per-engine selectable models
+    }
 
 
 class ModelSet(BaseModel):
-    engine: str
+    engine: str | None = None
+    model: str | None = None
 
 
 @router.post("/model")
 def set_model(m: ModelSet):
+    """Set the active coding engine and/or the model for an engine. Both fields
+    are optional: {engine} switches engine; {engine, model} also pins that
+    engine's model; {model} alone pins the model on the currently active engine."""
     from server import prefs
     try:
-        engine = prefs.set_coding_engine(m.engine)
+        if m.engine is not None:
+            prefs.set_coding_engine(m.engine)
+        if m.model is not None:
+            # Model applies to the engine named in the body, else the active one.
+            target = (m.engine if m.engine and m.engine != "auto"
+                      else prefs.get_coding_engine())
+            if target in prefs.MODEL_ENGINES:
+                prefs.set_coding_model(target, m.model)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"engine": engine}
+    return {"engine": prefs.get_coding_engine(), "models": prefs.get_coding_models()}
 
 
 # ── usage (LLM provider quota/activity via codaur) ────────────────────────────
+
+def _limit_is_current(limit: dict) -> bool:
+    """A quota percentage stops being truthful once its window has reset."""
+    resets_at = limit.get("resetsAt", limit.get("resets_at"))
+    if resets_at is None:
+        return True
+    try:
+        return float(resets_at) > time.time()
+    except (TypeError, ValueError):
+        return True
+
 
 def _rate_pcts(rep: dict) -> tuple:
     """Extract (5-hour %, weekly %) from a codaur provider report.
@@ -299,6 +326,8 @@ def _rate_pcts(rep: dict) -> tuple:
     """
     primary = secondary = None
     for lu in rep.get("limitUsage") or []:
+        if not _limit_is_current(lu):
+            continue
         pct = lu.get("usedPercent")
         if pct is None:
             continue
@@ -309,8 +338,12 @@ def _rate_pcts(rep: dict) -> tuple:
             secondary = pct
     if primary is None or secondary is None:            # legacy fallback
         snap = rep.get("latestRateLimitSnapshot") or {}
-        primary = primary if primary is not None else (snap.get("primary") or {}).get("used_percent")
-        secondary = secondary if secondary is not None else (snap.get("secondary") or {}).get("used_percent")
+        legacy_primary = snap.get("primary") or {}
+        legacy_secondary = snap.get("secondary") or {}
+        if primary is None and _limit_is_current(legacy_primary):
+            primary = legacy_primary.get("used_percent")
+        if secondary is None and _limit_is_current(legacy_secondary):
+            secondary = legacy_secondary.get("used_percent")
     return primary, secondary
 
 
@@ -323,6 +356,8 @@ def _limits(rep: dict) -> list:
     single daily-request window, so the app renders whatever comes back."""
     out = []
     for lu in rep.get("limitUsage") or []:
+        if not _limit_is_current(lu):
+            continue
         pct = lu.get("usedPercent")
         if pct is None:
             continue
@@ -363,14 +398,25 @@ def _codaur_plans() -> dict:
 
 
 @router.get("/usage")
-def usage():
+def usage(response: Response):
+    # Usage is inherently live data. Do not let a client or reverse proxy serve
+    # an earlier Codaur report when Gajala polls this endpoint.
+    response.headers["Cache-Control"] = "no-store"
     if shutil.which("codaur") is None:
         raise HTTPException(503, "codaur not installed")
     try:
-        out = subprocess.run(["codaur", "--provider", "all", "--json"],
-                             capture_output=True, text=True, timeout=60).stdout
+        result = subprocess.run(["codaur", "--provider", "all", "--json"],
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown error").strip()
+            raise HTTPException(502, f"codaur failed: {detail[:500]}")
+        out = result.stdout
         brace = out.find("{")
-        data = _json.loads(out[brace:]) if brace >= 0 else {}
+        if brace < 0:
+            raise HTTPException(502, "codaur returned no JSON")
+        data = _json.loads(out[brace:])
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"codaur failed: {e}")
 

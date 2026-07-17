@@ -111,7 +111,9 @@ Future<void> refreshCodaurWidget() async {
   try {
     final dio = await _client();
     if (dio == null) return;
-    final r = await dio.get('/api/usage');
+    final r = await dio.get('/api/usage',
+        options: Options(headers: {'Cache-Control': 'no-cache'}),
+        queryParameters: {'_': DateTime.now().millisecondsSinceEpoch});
     final providers = List<Map<String, dynamic>>.from(r.data['providers'] ?? const []);
     final lines = providers.take(3).map(_codaurLine).toList();
     for (var i = 0; i < 3; i++) {
@@ -126,7 +128,9 @@ Future<void> refreshCodaurWidget() async {
 String _codaurLine(Map<String, dynamic> p) {
   final name = (p['provider'] ?? '?').toString();
   final today = p['today_tokens'];
-  final pct = p['primary_pct'];
+  final limits = p['limits'] as List?;
+  final pct = p['primary_pct'] ??
+      (limits != null && limits.isNotEmpty ? limits.first['pct'] : null);
   final parts = <String>[name.padRight(7)];
   if (today != null) {
     parts.add(_humanTokens(today));
