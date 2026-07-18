@@ -664,6 +664,7 @@ class _ContextSheetState extends State<_ContextSheet> {
   String? _dir;
   late String _model;
   Map<String, String> _engineModels = {};   // engine → pinned model ('' = default)
+  Map<String, String> _engineBackups = {};   // engine → backup model ('' = none)
   Map<String, List<String>> _presets = {};   // engine → selectable models
   bool _busy = false;
 
@@ -688,6 +689,9 @@ class _ContextSheetState extends State<_ContextSheet> {
         _engineModels = (mdl['models'] as Map?)
                 ?.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())) ??
             {};
+        _engineBackups = (mdl['backup_models'] as Map?)
+                ?.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())) ??
+            {};
         _presets = (mdl['presets'] as Map?)?.map((k, v) =>
                 MapEntry(k.toString(), List<String>.from(v ?? const []))) ??
             {};
@@ -703,6 +707,21 @@ class _ContextSheetState extends State<_ContextSheet> {
       final now = await widget.api.setEngineModel(engine, model);
       if (mounted) {
         setState(() => _engineModels =
+            now.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())));
+      }
+    } catch (_) {} finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Pin the backup model (used if the primary fails) for the selected engine.
+  Future<void> _pinEngineBackup(String engine, String backup) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final now = await widget.api.setEngineBackup(engine, backup);
+      if (mounted) {
+        setState(() => _engineBackups =
             now.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())));
       }
     } catch (_) {} finally {
@@ -810,6 +829,34 @@ class _ContextSheetState extends State<_ContextSheet> {
                   (_engineModels[_model] ?? '').isEmpty
                       ? 'Using the CLI default model.'
                       : '${_ChatScreenState._modelLabel(_model)} → ${_engineModels[_model]}',
+                  style: TextStyle(fontSize: 11.5, color: pal.textDim),
+                ),
+                const SizedBox(height: 16),
+                _sectionLabel(context, 'BACKUP MODEL (IF PRIMARY FAILS)'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8, runSpacing: 8,
+                  children: [
+                    for (final m in ['none', ...?_presets[_model]])
+                      Builder(builder: (_) {
+                        final cur = _engineBackups[_model] ?? '';
+                        final on = m == 'none' ? cur.isEmpty : cur == m;
+                        return ChoiceChip(
+                          label: Text(m),
+                          selected: on,
+                          onSelected: _busy
+                              ? null
+                              : (_) => _pinEngineBackup(
+                                  _model, m == 'none' ? '' : m),
+                        );
+                      }),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  (_engineBackups[_model] ?? '').isEmpty
+                      ? 'No backup — a failed run just errors.'
+                      : 'If ${_engineModels[_model].toString().isEmpty ? "the primary" : _engineModels[_model]} fails, retry on ${_engineBackups[_model]}.',
                   style: TextStyle(fontSize: 11.5, color: pal.textDim),
                 ),
               ],

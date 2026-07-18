@@ -1,6 +1,5 @@
 import json
 import uuid
-from server import prefs
 from server.skills.cli_base import CLISubprocessSkill
 from server.skills import register
 
@@ -22,7 +21,7 @@ class AntigravitySkill(CLISubprocessSkill):
         return str(uuid.uuid4())
 
     def build_command(self, prompt: str, resume_id: str | None = None,
-                      new_id: str | None = None) -> list[str]:
+                      new_id: str | None = None, model: str = "") -> list[str]:
         cmd = [
             "gemini",
             "-p", prompt,
@@ -30,8 +29,7 @@ class AntigravitySkill(CLISubprocessSkill):
             "--output-format", "json",
             "--skip-trust",
         ]
-        model = prefs.get_coding_model("gemini")  # engine key is "gemini"
-        if model:
+        if model:  # resolved by cli_base (primary/backup); '' = CLI default
             cmd += ["-m", model]
         if resume_id:
             cmd += ["--resume", resume_id]

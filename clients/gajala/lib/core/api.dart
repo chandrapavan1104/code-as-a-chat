@@ -201,6 +201,13 @@ class GajalaApi {
     return Map<String, dynamic>.from(r.data['models'] ?? {});
   }
 
+  /// Pin the BACKUP model for one engine — used automatically if the primary
+  /// run fails. Returns the per-engine backup-model map.
+  Future<Map<String, dynamic>> setEngineBackup(String engine, String backup) async {
+    final r = await _dio.post('/api/model', data: {'engine': engine, 'backup': backup});
+    return Map<String, dynamic>.from(r.data['backup_models'] ?? {});
+  }
+
   /// Active CLI sessions for the current project + "continue on Mac" commands.
   Future<Map<String, dynamic>> activeSessions() async =>
       Map<String, dynamic>.from((await _dio.get('/api/sessions/active')).data);

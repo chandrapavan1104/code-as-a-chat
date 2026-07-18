@@ -1,5 +1,4 @@
 import json
-from server import prefs
 from server.skills.cli_base import CLISubprocessSkill
 from server.skills import register
 
@@ -19,15 +18,14 @@ class ClaudeCodeSkill(CLISubprocessSkill):
     supports_sessions = True
 
     def build_command(self, prompt: str, resume_id: str | None = None,
-                      new_id: str | None = None) -> list[str]:
+                      new_id: str | None = None, model: str = "") -> list[str]:
         cmd = [
             "claude",
             "-p", prompt,
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
         ]
-        model = prefs.get_coding_model("claude")  # e.g. opus / sonnet / haiku
-        if model:
+        if model:  # e.g. opus / sonnet / haiku — resolved by cli_base (primary/backup)
             cmd += ["--model", model]
         if resume_id:  # claude mints its own id; we only resume, never set new_id
             cmd += ["--resume", resume_id]

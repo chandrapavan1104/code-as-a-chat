@@ -33,11 +33,31 @@ class CLISubprocessSkill(Skill):
         return None
 
     def build_command(self, prompt: str, resume_id: str | None = None,
-                      new_id: str | None = None) -> list[str]:
+                      new_id: str | None = None, model: str = "") -> list[str]:
         """Return the full argv to spawn. Subclasses must override.
         `resume_id` — continue this stored session (mutually exclusive with new_id).
-        `new_id`    — open a new session with this client-minted id (gemini)."""
+        `new_id`    — open a new session with this client-minted id (gemini).
+        `model`     — concrete model to run ('' = the CLI's own default)."""
         raise NotImplementedError
+
+    def _default_model(self) -> str:
+        """Model to use when nothing is pinned ('' = the CLI's built-in default).
+        Codex overrides this to config.CODEX_MODEL."""
+        return ""
+
+    def _primary_model(self) -> str:
+        from server import prefs
+        return prefs.get_coding_model(self.session_engine) or self._default_model()
+
+    def _backup_model(self) -> str:
+        from server import prefs
+        return prefs.get_backup_model(self.session_engine)
+
+    def _failed(self, rc: int | None, stdout: str) -> bool:
+        """Did this run fail (→ worth trying the backup model)? Default: the
+        process exited non-zero. Codex overrides to also catch a failed turn that
+        still exits 0."""
+        return rc not in (0, None)
 
     def parse_output(self, stdout: str, stderr: str) -> str:
         """Convert raw stdout/stderr into the user-facing string. Default: stdout."""
@@ -84,6 +104,32 @@ class CLISubprocessSkill(Skill):
                 stdout_b.decode(errors="replace"),
                 stderr_b.decode(errors="replace"))
 
+    async def _attempt(self, prompt: str, cwd: str, model: str):
+        """One model's run: resume the stored session if any, and if that resume
+        fails, retry once fresh. Returns (rc, stdout, stderr, new_id, resume_id)."""
+        resume_id = (cli_sessions_store.get(cwd, self.session_engine)
+                     if self.supports_sessions else None)
+
+        def _fresh():
+            nid = self.new_session_id() if self.supports_sessions else None
+            return self.build_command(prompt, resume_id=None, new_id=nid, model=model), nid
+
+        if resume_id:
+            cmd, new_id = self.build_command(prompt, resume_id=resume_id, model=model), None
+        else:
+            cmd, new_id = _fresh()
+        rc, stdout, stderr = await self._spawn(cmd, cwd)
+
+        # A stored session can go stale (deleted, or the CLI rejects the id). If a
+        # resume attempt failed, forget it and retry once with a fresh session so
+        # the user never gets stuck behind a dead id.
+        if rc not in (0, None) and resume_id:
+            cli_sessions_store.clear(cwd, self.session_engine)
+            resume_id = None
+            cmd, new_id = _fresh()
+            rc, stdout, stderr = await self._spawn(cmd, cwd)
+        return rc, stdout, stderr, new_id, resume_id
+
     async def run(self, prompt: str = "", **kwargs) -> str:
         prompt = prompt.strip()
         if not prompt:
@@ -99,29 +145,19 @@ class CLISubprocessSkill(Skill):
         # stale mirror. (The post-run sync below handles the write side.)
         self._sync_context()
 
-        # Resume this project's session for this engine, if we have one.
-        resume_id = (cli_sessions_store.get(cwd, self.session_engine)
-                     if self.supports_sessions else None)
+        primary = self._primary_model()
+        backup = self._backup_model()
 
-        def _fresh():
-            """A brand-new session (no resume). Returns (cmd, client_minted_id)."""
-            nid = self.new_session_id() if self.supports_sessions else None
-            return self.build_command(prompt, resume_id=None, new_id=nid), nid
+        rc, stdout, stderr, new_id, resume_id = await self._attempt(prompt, cwd, primary)
 
-        if resume_id:
-            cmd, new_id = self.build_command(prompt, resume_id=resume_id), None
-        else:
-            cmd, new_id = _fresh()
-        rc, stdout, stderr = await self._spawn(cmd, cwd)
-
-        # A stored session can go stale (deleted, or the CLI rejects the id). If a
-        # resume attempt failed, forget it and retry once with a fresh session so
-        # the user never gets stuck behind a dead id.
-        if rc not in (0, None) and resume_id:
-            cli_sessions_store.clear(cwd, self.session_engine)
-            resume_id = None
-            cmd, new_id = _fresh()
-            rc, stdout, stderr = await self._spawn(cmd, cwd)
+        # If the primary model failed and a distinct backup is set, retry once on
+        # it with a fresh session (a different model shouldn't resume the old one).
+        fell_back = False
+        if self._failed(rc, stdout) and backup and backup != primary:
+            if self.supports_sessions:
+                cli_sessions_store.clear(cwd, self.session_engine)
+            rc, stdout, stderr, new_id, resume_id = await self._attempt(prompt, cwd, backup)
+            fell_back = True
 
         if rc is None:
             return f"[{self.name}] Timed out after {self.timeout}s"
@@ -142,4 +178,8 @@ class CLISubprocessSkill(Skill):
         # converge them so the next engine (or the Mac) sees the update.
         self._sync_context()
 
-        return self.parse_output(stdout, stderr)
+        out = self.parse_output(stdout, stderr)
+        if fell_back:
+            out = (f"⚠️ {primary or 'primary model'} failed — retried on backup "
+                   f"{backup}.\n\n{out}")
+        return out
