@@ -24,9 +24,11 @@ import time
 from pathlib import Path
 
 from server import config
+from server.db import errors_store
 from server.skills.base import Skill
 from server.skills import register
 from server.skills.build_app import build_and_deploy
+from server.skills.errors import format_errors
 
 _STATE = Path.home() / ".codeasachat" / "state.json"
 
@@ -179,7 +181,13 @@ class FixSkill(Skill):
         await _git(repo, "checkout", "-b", branch)
 
         try:
-            summary, error = await _run_codex(repo, task, config.FIX_TIMEOUT)
+            # Give the agent the actual captured errors, not just the description.
+            errs = errors_store.recent(8)
+            task_ctx = task
+            if errs:
+                task_ctx = (f"{task}\n\n=== RECENTLY CAPTURED ERRORS (server + app, "
+                            f"may be related) ===\n{format_errors(errs, detail=True)}")
+            summary, error = await _run_codex(repo, task_ctx, config.FIX_TIMEOUT)
 
             _, status2 = await _git(repo, "status", "--porcelain")
             changed = _changed_files(status2)

@@ -309,6 +309,30 @@ def set_model(m: ModelSet):
             "backup_models": prefs.get_backup_models()}
 
 
+# ── error/crash capture (the fix agent's eyes) ────────────────────────────────
+
+class ClientError(BaseModel):
+    kind: str = "flutter"
+    message: str
+    stack: str | None = None
+    context: dict | None = None
+
+
+@router.post("/clienterror")
+def report_client_error(e: ClientError):
+    """The Gajala app POSTs its crashes/errors here so the fix agent can see them."""
+    from server.db import errors_store
+    errors_store.add("app", e.kind, e.message, detail=e.stack or "",
+                     context=e.context or {})
+    return {"ok": True}
+
+
+@router.get("/errors")
+def list_errors(limit: int = 30, source: str | None = None):
+    from server.db import errors_store
+    return {"errors": errors_store.recent(limit, source)}
+
+
 # ── usage (LLM provider quota/activity via codaur) ────────────────────────────
 
 def _limit_is_current(limit: dict) -> bool:

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'core/errors.dart';
 import 'core/push.dart';
 import 'core/state.dart';
 import 'core/theme.dart';
@@ -11,6 +12,7 @@ import 'screens/dashboard_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  ErrorReporter.install();   // capture crashes → server → the fix agent
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,

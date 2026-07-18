@@ -1,11 +1,13 @@
 import asyncio
 import json
+import traceback
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from server import config, fcm, orchestrator
 from server.db import store as memory
+from server.db import errors_store
 from server.scheduler import scheduler_loop
 
 
@@ -24,6 +26,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Code-as-a-Chat Orchestrator", version="0.2.0", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def _capture_unhandled(request: Request, exc: Exception):
+    """Record any unhandled server exception (the fix agent's eyes) then return a
+    clean 500. HTTPExceptions have their own handler and don't reach here."""
+    errors_store.add(
+        "server", "exception", f"{type(exc).__name__}: {exc}",
+        detail=traceback.format_exc(),
+        context={"path": request.url.path, "method": request.method},
+    )
+    return JSONResponse(status_code=500, content={"detail": "internal error"})
 
 
 # ── auth gateway ──────────────────────────────────────────────────────────────
@@ -128,6 +142,9 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
         return {"command": body.command, "result": result,
                 "workspace": config.WORKSPACE_DIR.name}
     except Exception as exc:
+        errors_store.add("server", "run", f"{type(exc).__name__}: {exc}",
+                         detail=traceback.format_exc(),
+                         context={"command": body.command})
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -164,6 +181,9 @@ async def run_stream(body: RunRequest):
             if body.notify and body.session_id:
                 await _push_reply(body.session_id, body.command, result)
         except Exception as exc:
+            errors_store.add("server", "run_stream", f"{type(exc).__name__}: {exc}",
+                             detail=traceback.format_exc(),
+                             context={"command": body.command})
             await queue.put({"type": "error", "message": str(exc)})
         finally:
             await queue.put(None)   # sentinel → close the stream
