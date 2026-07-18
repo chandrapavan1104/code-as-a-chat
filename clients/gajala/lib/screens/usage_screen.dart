@@ -34,8 +34,6 @@ class _UsageScreenState extends ConsumerState<UsageScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Always pull fresh on open — don't trust a value cached from a past visit.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
     _refreshTimer = Timer.periodic(_refreshInterval, (_) {
       if (_foreground && mounted) _refresh();
     });
