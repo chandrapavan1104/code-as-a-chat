@@ -80,11 +80,13 @@ def _resolve(text: str) -> tuple[str | None, str | None, str | None]:
 def _status() -> str:
     engine = prefs.get_coding_engine()
     models = prefs.get_coding_models()
+    backups = prefs.get_backup_models()
     presets = prefs.model_presets()
     lines = [f"Coding engine: {engine}"]
     for e in prefs.MODEL_ENGINES:
         cur = models.get(e) or "(default)"
-        lines.append(f"  {e}: {cur}   options: {', '.join(presets[e])}")
+        bak = backups.get(e) or "(none)"
+        lines.append(f"  {e}: {cur}  · backup: {bak}   options: {', '.join(presets[e])}")
     return "\n".join(lines)
 
 
@@ -96,27 +98,41 @@ class ModelSwitchSkill(Skill):
         "Switch which engine/model does the coding. args: an engine "
         '("claude"|"codex"|"gemini"|"auto"), a Claude alias ("opus"|"sonnet"|"haiku"), '
         'a codex model ("sol"|"terra"|"gpt-5.5" …), or "<engine> <model>". '
+        'Add the word "backup" to set the fallback model instead of the primary '
+        '(used automatically if the primary fails). '
         'Examples: "switch to opus"->"opus", "use sonnet"->"sonnet", '
         '"use codex"->"codex", "use sol in codex"->"codex sol", '
-        '"switch to gpt-5.5"->"gpt-5.5", "use gemini flash"->"gemini flash". '
+        '"set codex backup to gpt-5.5"->"codex backup gpt-5.5", '
+        '"backup sonnet"->"backup sonnet". '
         'Empty arg shows the current selection.'
     )
 
     async def run(self, prompt: str = "", **kwargs) -> str:
+        # "backup" anywhere in the message → set the fallback model, not the primary.
+        is_backup = "backup" in prompt.lower().split()
+        if is_backup:
+            prompt = " ".join(w for w in prompt.split() if w.lower() != "backup")
+
         engine, model, err = _resolve(prompt)
         if engine is None and model is None:
             return (err + "\n\n" + _status()) if err else _status()
+
+        target = (engine if engine and engine != "auto"
+                  else prefs.get_coding_engine())
+
+        if is_backup:
+            if model and target in prefs.MODEL_ENGINES:
+                prefs.set_backup_model(target, model)
+                return f"Backup set: {target} backup → {model}"
+            return "Tell me the backup model, e.g. 'codex backup gpt-5.5'."
 
         done = []
         if engine is not None:
             prefs.set_coding_engine(engine)
             done.append(f"engine → {engine}")
-        if model:
-            target = (engine if engine and engine != "auto"
-                      else prefs.get_coding_engine())
-            if target in prefs.MODEL_ENGINES:
-                prefs.set_coding_model(target, model)
-                done.append(f"{target} model → {model}")
+        if model and target in prefs.MODEL_ENGINES:
+            prefs.set_coding_model(target, model)
+            done.append(f"{target} model → {model}")
         return "Coding set: " + ", ".join(done) if done else _status()
 
 

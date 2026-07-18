@@ -274,34 +274,39 @@ def get_model():
     return {
         "engine": prefs.get_coding_engine(),
         "options": list(prefs.CODING_ENGINES),
-        "models": prefs.get_coding_models(),   # per-engine pinned model ('' = default)
-        "presets": prefs.model_presets(),      # per-engine selectable models
+        "models": prefs.get_coding_models(),          # per-engine pinned model ('' = default)
+        "backup_models": prefs.get_backup_models(),   # per-engine backup model ('' = none)
+        "presets": prefs.model_presets(),             # per-engine selectable models
     }
 
 
 class ModelSet(BaseModel):
     engine: str | None = None
     model: str | None = None
+    backup: str | None = None
 
 
 @router.post("/model")
 def set_model(m: ModelSet):
-    """Set the active coding engine and/or the model for an engine. Both fields
-    are optional: {engine} switches engine; {engine, model} also pins that
-    engine's model; {model} alone pins the model on the currently active engine."""
+    """Set the active coding engine and/or a model for an engine. All fields
+    optional: {engine} switches engine; {engine, model} pins that engine's model;
+    {engine, backup} pins its backup model (used if the primary run fails);
+    {model}/{backup} alone apply to the currently active engine."""
     from server import prefs
     try:
         if m.engine is not None:
             prefs.set_coding_engine(m.engine)
-        if m.model is not None:
-            # Model applies to the engine named in the body, else the active one.
-            target = (m.engine if m.engine and m.engine != "auto"
-                      else prefs.get_coding_engine())
-            if target in prefs.MODEL_ENGINES:
-                prefs.set_coding_model(target, m.model)
+        target = (m.engine if m.engine and m.engine != "auto"
+                  else prefs.get_coding_engine())
+        if m.model is not None and target in prefs.MODEL_ENGINES:
+            prefs.set_coding_model(target, m.model)
+        if m.backup is not None and target in prefs.MODEL_ENGINES:
+            prefs.set_backup_model(target, m.backup)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"engine": prefs.get_coding_engine(), "models": prefs.get_coding_models()}
+    return {"engine": prefs.get_coding_engine(),
+            "models": prefs.get_coding_models(),
+            "backup_models": prefs.get_backup_models()}
 
 
 # ── usage (LLM provider quota/activity via codaur) ────────────────────────────

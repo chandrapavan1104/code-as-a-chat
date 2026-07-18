@@ -1,5 +1,5 @@
 import json
-from server import config, prefs
+from server import config
 from server.skills.cli_base import CLISubprocessSkill
 from server.skills import register
 
@@ -18,10 +18,27 @@ class CodexSkill(CLISubprocessSkill):
     _FLAGS = ["--json", "--skip-git-repo-check",
               "--dangerously-bypass-approvals-and-sandbox"]
 
+    def _default_model(self) -> str:
+        return config.CODEX_MODEL
+
+    def _failed(self, rc: int | None, stdout: str) -> bool:
+        # codex exec can print an error / turn.failed event and still exit 0.
+        if rc not in (0, None):
+            return True
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                if json.loads(line).get("type") in ("error", "turn.failed"):
+                    return True
+            except json.JSONDecodeError:
+                continue
+        return False
+
     def build_command(self, prompt: str, resume_id: str | None = None,
-                      new_id: str | None = None) -> list[str]:
-        # Phone-pinned model wins; else the config default.
-        model_flags = ["--model", prefs.get_coding_model("codex") or config.CODEX_MODEL]
+                      new_id: str | None = None, model: str = "") -> list[str]:
+        model_flags = ["--model", model or config.CODEX_MODEL]
         if resume_id:
             # `codex exec resume <id>` continues the thread; cwd comes from the
             # subprocess (resume has no -C flag).

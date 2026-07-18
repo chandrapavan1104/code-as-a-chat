@@ -99,3 +99,26 @@ def set_coding_model(engine: str, model: str) -> str:
     state["coding_models"] = models
     _save(state)
     return models[engine]
+
+
+def get_backup_models() -> dict:
+    """Per-engine BACKUP model. If a coding run fails on the primary model, the
+    CLI wrapper retries once on this one. Empty string = no backup."""
+    m = _load().get("coding_backup_models") or {}
+    return {e: (m.get(e) or "") for e in MODEL_ENGINES}
+
+
+def get_backup_model(engine: str) -> str:
+    return get_backup_models().get((engine or "").lower(), "")
+
+
+def set_backup_model(engine: str, model: str) -> str:
+    engine = (engine or "").lower()
+    if engine not in MODEL_ENGINES:
+        raise ValueError(f"unknown engine {engine!r}; pick one of {MODEL_ENGINES}")
+    state = _load()
+    models = state.get("coding_backup_models") or {}
+    models[engine] = (model or "").strip()
+    state["coding_backup_models"] = models
+    _save(state)
+    return models[engine]

@@ -76,6 +76,13 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-07-17 — Per-engine BACKUP model: each engine (claude/codex/gemini) can
+  have a fallback model; if a coding run fails on the primary, `cli_base` retries
+  once on the backup with a fresh session (codex `_failed` also catches a
+  turn.failed that exits 0 — e.g. model version skew). Stored in prefs
+  (`coding_backup_models`), set via `/api/model` (`backup` field), the `model`
+  skill ("codex backup gpt-5.5"), or the app's context sheet. Defaults set:
+  claude opus→sonnet, codex gpt-5.6-sol→gpt-5.5, gemini→2.5-flash.
 - 2026-07-17 — Self-healing fix agent (MVP): `fix` skill runs codex on this repo
   to diagnose + minimally fix reported bugs, gated by a git diff — app-only
   changes auto-build via the new `build` skill (rebuild + deploy APK), server
