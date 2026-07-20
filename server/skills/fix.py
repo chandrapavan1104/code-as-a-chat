@@ -77,7 +77,9 @@ The user hit a problem and wants a fix. Work ONLY inside this repo.
 
 Do this:
 1. Diagnose the ROOT cause from their description (and any screenshot paths given —
-   read the image file). Look at the relevant code before changing anything.
+   read the image file). TRACE THE EXACT CODE PATH of the symptom they describe
+   before changing anything — find the specific line that produces the wrong
+   behaviour. Do not fix an adjacent/plausible-looking thing; fix the actual cause.
 2. Make the SMALLEST correct fix. Touch as few files as possible. Do NOT refactor,
    reformat, rename, or "improve" unrelated code. No new dependencies unless
    strictly required.
@@ -97,8 +99,16 @@ STOP and explain instead of changing code if ANY of these are true:
 In those cases make NO changes and clearly state: the diagnosis, and exactly what
 you need from the user (a decision, info, or an action on their side).
 
-End with a 2-4 line summary: what was wrong and what you changed (or why you
-didn't). Be concise."""
+BE HONEST ABOUT CONFIDENCE. You usually cannot run the app or reproduce a UI /
+behavioural bug, so you often CANNOT confirm your change actually fixes it. If so,
+say plainly that the fix is UNVERIFIED — a hypothesis — name what would confirm it
+(a specific thing for the user to test), and never imply it's definitely fixed. If
+there is no captured error and you can't pin the exact cause from the code, prefer
+asking the user for one concrete detail (exact steps, what they see vs expect)
+over guessing.
+
+End with a 2-4 line summary: what was wrong, what you changed, and — if you
+couldn't verify it — say so and how to confirm. Be concise."""
 
 
 async def _run_codex(repo: str, task: str, timeout: int) -> tuple[str, str | None]:

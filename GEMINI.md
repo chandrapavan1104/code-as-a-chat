@@ -79,6 +79,13 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-07-19 — Fixed "Gajala typing…" stuck forever on long turns: the reply was
+  completing + persisting server-side, but a dropped mobile/Tailscale stream left
+  the app hanging (and the FCM ping is suppressed while foregrounded). The app now
+  recovers — on an abnormal stream end it polls chat history for the persisted
+  reply and shows it. Also tightened the fix agent's repair prompt: trace the exact
+  symptom's code path, and be honest that UI/behavioural fixes are UNVERIFIED
+  hypotheses (say how to confirm) instead of implying they're fixed.
 - 2026-07-19 — In-app updater: the build skill stamps a fresh versionCode via
   `--build-number=<epoch>` (no pubspec churn) and writes `apk_version.json`;
   `GET /api/appversion` serves it; the app compares its own buildNumber and shows

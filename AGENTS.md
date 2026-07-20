@@ -66,8 +66,7 @@ gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
 **Images** send + receive (screenshots to the agent, images back).
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 **15-second heartbeats on long `/run/stream` turns** so silent CLI work does not
-lose the phone's HTTPS stream through an idle connection; disconnected streams
-also leave the server-side turn running so its reply is persisted and pushed;
+lose the phone's HTTPS stream through an idle connection;
 **Android home-screen widgets** (Lock / Wake / Ask / Brain-dump + a Codaur usage
 glance). **Codaur usage refreshes every 30 seconds while visible**, bypasses
 caches, drops expired quota snapshots instead of presenting stale limits, and
@@ -80,15 +79,22 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-07-19 — Fixed "Gajala typing…" stuck forever on long turns: the reply was
+  completing + persisting server-side, but a dropped mobile/Tailscale stream left
+  the app hanging (and the FCM ping is suppressed while foregrounded). The app now
+  recovers — on an abnormal stream end it polls chat history for the persisted
+  reply and shows it. Also tightened the fix agent's repair prompt: trace the exact
+  symptom's code path, and be honest that UI/behavioural fixes are UNVERIFIED
+  hypotheses (say how to confirm) instead of implying they're fixed.
 - 2026-07-19 — In-app updater: the build skill stamps a fresh versionCode via
   `--build-number=<epoch>` (no pubspec churn) and writes `apk_version.json`;
   `GET /api/appversion` serves it; the app compares its own buildNumber and shows
   an "Update available" banner on the dashboard that downloads the APK and
   launches the system installer (open_filex, REQUEST_INSTALL_PACKAGES). Closes
   the self-heal loop on the phone — no more copy-paste APK link.
-- 2026-07-19 — Hardened `/run/stream` for long/backgrounded turns: 15-second
-  NDJSON heartbeats prevent idle drops, and a phone disconnect no longer cancels
-  the server-side agent before it can persist and push the completed reply.
+- 2026-07-19 — Added 15-second NDJSON heartbeats to `/run/stream`; long silent
+  coding/repair calls now keep the HTTPS response alive instead of surfacing
+  Dart's `Connection closed while receiving data` error.
 - 2026-07-18 — Fixed an intermittent Codaur 502 on screen open: the provider's
   initial load and a redundant post-frame refresh were launching overlapping
   Codaur CLI requests. The normal initial load now runs once; manual, resume,
