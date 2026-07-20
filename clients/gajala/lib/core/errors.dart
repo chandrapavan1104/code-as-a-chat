@@ -2,8 +2,6 @@
 // agent can see what actually broke. Self-contained (reads the stored config,
 // like the widget bridge) and throttled so an error loop can't flood the store.
 
-import 'dart:async';
-import 'dart:ui';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'storage.dart';
