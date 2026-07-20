@@ -66,7 +66,8 @@ gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
 **Images** send + receive (screenshots to the agent, images back).
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 **15-second heartbeats on long `/run/stream` turns** so silent CLI work does not
-lose the phone's HTTPS stream through an idle connection;
+lose the phone's HTTPS stream through an idle connection; disconnected streams
+also leave the server-side turn running so its reply is persisted and pushed;
 **Android home-screen widgets** (Lock / Wake / Ask / Brain-dump + a Codaur usage
 glance). **Codaur usage refreshes every 30 seconds while visible**, bypasses
 caches, drops expired quota snapshots instead of presenting stale limits, and
@@ -85,9 +86,9 @@ so a bad server change can't lock you out.
   an "Update available" banner on the dashboard that downloads the APK and
   launches the system installer (open_filex, REQUEST_INSTALL_PACKAGES). Closes
   the self-heal loop on the phone — no more copy-paste APK link.
-- 2026-07-19 — Added 15-second NDJSON heartbeats to `/run/stream`; long silent
-  coding/repair calls now keep the HTTPS response alive instead of surfacing
-  Dart's `Connection closed while receiving data` error.
+- 2026-07-19 — Hardened `/run/stream` for long/backgrounded turns: 15-second
+  NDJSON heartbeats prevent idle drops, and a phone disconnect no longer cancels
+  the server-side agent before it can persist and push the completed reply.
 - 2026-07-18 — Fixed an intermittent Codaur 502 on screen open: the provider's
   initial load and a redundant post-frame refresh were launching overlapping
   Codaur CLI requests. The normal initial load now runs once; manual, resume,
