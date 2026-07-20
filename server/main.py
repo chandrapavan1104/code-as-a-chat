@@ -72,6 +72,9 @@ class RunRequest(BaseModel):
 # Longest reply preview carried in a completion push (Android collapses more).
 _PUSH_PREVIEW_CHARS = 160
 _STREAM_HEARTBEAT_SECONDS = 15
+# Keep disconnected stream workers alive until they persist the reply and send
+# the completion push. The event loop otherwise only retains weak references.
+_stream_workers: set[asyncio.Task] = set()
 
 
 def _preview(text: str, limit: int = _PUSH_PREVIEW_CHARS) -> str:
@@ -191,6 +194,8 @@ async def run_stream(body: RunRequest):
 
     async def frames():
         task = asyncio.create_task(worker())
+        _stream_workers.add(task)
+        task.add_done_callback(_stream_workers.discard)
         try:
             while True:
                 try:
@@ -207,7 +212,8 @@ async def run_stream(body: RunRequest):
                     break
                 yield json.dumps(ev) + "\n"
         finally:
-            if not task.done():
-                task.cancel()
+            # A backgrounded phone may lose its response stream. The worker must
+            # still finish so its reply is persisted and the user receives FCM.
+            pass
 
     return StreamingResponse(frames(), media_type="application/x-ndjson")

@@ -320,19 +320,55 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             break;
         }
       }
-      // Stream ended without a terminal frame (rare) — don't leave a dangling
-      // status bubble.
+      // Stream ended without a terminal frame — the mobile/Tailscale link
+      // dropped before 'final'. The server persists the reply and keeps working
+      // after a disconnect, so recover it from history instead of hanging.
       if (!replaced) {
-        finish(ChatMessage('error', 'Connection ended before a reply'));
+        setState(() => live.text = 'Reconnecting…');
+        final recovered = await _recoverReply(sid, text);
+        finish(recovered ?? ChatMessage('system',
+            'Connection dropped mid-reply — it\'s still being written on the Mac. '
+            'Reopen this chat in a moment to see it.'));
       }
     } catch (e) {
-      finish(ChatMessage('error', friendlyError(e)));
+      // A stream error can also mean a dropped connection while the server
+      // finishes the turn — try to recover the persisted reply before erroring.
+      if (!replaced) {
+        setState(() => live.text = 'Reconnecting…');
+        final recovered = await _recoverReply(sid, text);
+        finish(recovered ?? ChatMessage('error', friendlyError(e)));
+      }
     } finally {
       setState(() => _sending = false);
       _scrollEnd();
       // Follow a project switch the agent made during this turn (header + thread).
       if (newWorkspace != null) _syncWorkspace(newWorkspace);
     }
+  }
+
+  /// The live stream dropped before the final frame. The server still finishes
+  /// the turn and persists the reply, so poll history until the answer to
+  /// [userText] lands and return it. Null if it doesn't arrive in time.
+  Future<ChatMessage?> _recoverReply(String sid, String userText) async {
+    final api = ref.read(apiProvider);
+    final want = userText.trim();
+    if (api == null || want.isEmpty) return null;   // can't match image-only sends
+    for (var i = 0; i < 30 && mounted && _sid == sid; i++) {
+      await Future.delayed(const Duration(seconds: 4));
+      try {
+        final h = await api.chatHistory(sid);
+        for (var j = h.length - 1; j >= 1; j--) {
+          if (h[j].role == 'bot' &&
+              h[j - 1].role == 'user' &&
+              h[j - 1].text.trim() == want) {
+            final (clean, urls) = _splitImages(h[j].text, api);
+            return ChatMessage('bot', clean.isEmpty ? h[j].text : clean,
+                remoteImages: urls);
+          }
+        }
+      } catch (_) {/* keep polling */}
+    }
+    return null;
   }
 
   /// Pin the view to the newest message. A single post-frame scroll lands short
