@@ -102,7 +102,8 @@ class FavoritesNotifier extends StateNotifier<List<String>> {
   }
 
   /// Seeded once on first run so home isn't empty before you pin anything.
-  static const defaults = ['notes', 'ports', 'mac', 'usage', 'sysmon', 'projects'];
+  /// Order matters: the first four become the big cards on home.
+  static const defaults = ['usage', 'notes', 'projects', 'ports', 'sysmon', 'sessions'];
 
   Future<void> _persist(List<String> v) async {
     state = v;

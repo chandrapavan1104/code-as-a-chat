@@ -30,113 +30,166 @@ class DashboardScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final skills = ref.watch(skillsProvider);
+    final pal = context.pal;
     return Scaffold(
       appBar: AppBar(
-        titleSpacing: 16,
+        titleSpacing: 18,
         title: Row(children: [
-          const Text('Gajala', style: TextStyle(fontWeight: FontWeight.w800)),
+          Text('Gajala', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(width: 8),
           const _StatusDot(),
         ]),
         actions: [
-          _ThemeToggle(ref),
+          // Mac lives in the corner as a plain icon, not a tile.
           IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Disconnect',
-            onPressed: () => ref.read(configProvider.notifier).disconnect(),
+            icon: Icon(Icons.desktop_mac_outlined, color: pal.textDim),
+            tooltip: 'Mac',
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const MacScreen())),
           ),
+          // Everything else hides behind the overflow.
+          _OverflowMenu(skills.valueOrNull ?? const []),
+          const SizedBox(width: 4),
         ],
       ),
-      // Samsung-launcher style: scrollable icon grid filling the screen,
-      // with a fixed "Ask Gajala" input bar pinned at the bottom.
-      body: Column(
-        children: [
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: () async {
-                ref.invalidate(systemProvider);
-                ref.invalidate(skillsProvider);
-              },
-              child: ListView(
-                padding: const EdgeInsets.all(14),
-                children: [
-                  const _UpdateBanner(),
-                  const _SystemCard(),
-                  skills.when(
-                    data: (list) => _SkillSections(list),
-                    loading: () => const Padding(
-                        padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())),
-                    error: (e, _) => Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Text('Couldn\'t load skills: $e',
-                            style: const TextStyle(color: GajalaColors.danger))),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          ref.invalidate(systemProvider);
+          ref.invalidate(skillsProvider);
+          ref.invalidate(notesProvider);
+          ref.invalidate(projectsProvider);
+        },
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+          children: [
+            const _UpdateBanner(),
+            const _AskHero(),
+            const SizedBox(height: 18),
+            skills.when(
+              data: (list) => _Features(list),
+              loading: () => const Padding(
+                  padding: EdgeInsets.all(40),
+                  child: Center(child: CircularProgressIndicator())),
+              error: (e, _) => Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text('Couldn\'t load skills: $e',
+                      style: const TextStyle(color: GajalaColors.danger))),
             ),
-          ),
-          const _AskBar(),
-        ],
+            const SizedBox(height: 18),
+            const _SystemStrip(),
+          ],
+        ),
       ),
     );
   }
 }
 
-/// Cycles theme mode: system → light → dark → system.
-class _ThemeToggle extends StatelessWidget {
-  final WidgetRef ref;
-  const _ThemeToggle(this.ref);
+/// The one thing you do most — a full-width, unmistakable entry to the agent.
+class _AskHero extends StatelessWidget {
+  const _AskHero();
   @override
   Widget build(BuildContext context) {
-    final mode = ref.watch(themeModeProvider);
-    final (icon, next) = switch (mode) {
-      ThemeMode.system => (Icons.brightness_auto, ThemeMode.light),
-      ThemeMode.light => (Icons.light_mode, ThemeMode.dark),
-      ThemeMode.dark => (Icons.dark_mode, ThemeMode.system),
-    };
-    return IconButton(
-      icon: Icon(icon),
-      tooltip: 'Theme: ${mode.name}',
-      onPressed: () => ref.read(themeModeProvider.notifier).set(next),
-    );
-  }
-}
-
-/// Fixed bottom bar styled like a chat input — tap to open the Gajala chat.
-class _AskBar extends StatelessWidget {
-  const _AskBar();
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-        child: Material(
-          color: context.pal.surface,
-          borderRadius: BorderRadius.circular(26),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(26),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'))),
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(26),
-                border: Border.all(color: context.pal.border),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-              child: Row(children: [
-                const Icon(Icons.auto_awesome, color: GajalaColors.accent, size: 20),
-                const SizedBox(width: 12),
-                Expanded(child: Text('Ask Gajala…',
-                    style: TextStyle(color: context.pal.textDim, fontSize: 15))),
-                CircleAvatar(radius: 16, backgroundColor: GajalaColors.accent,
-                    child: const Icon(Icons.arrow_upward, color: Colors.white, size: 18)),
-              ]),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () => Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'))),
+        child: Ink(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [GajalaColors.indigo, GajalaColors.violet],
             ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 16, 20),
+            child: Row(children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: const [
+                      Icon(Icons.auto_awesome, color: Colors.white, size: 18),
+                      SizedBox(width: 8),
+                      Text('Ask Gajala',
+                          style: TextStyle(
+                              color: Colors.white, fontSize: 17,
+                              fontWeight: FontWeight.w700, letterSpacing: -0.2)),
+                    ]),
+                    const SizedBox(height: 6),
+                    Text('Anything — code, notes, your Mac',
+                        style: TextStyle(
+                            color: Colors.white.withValues(alpha: .82), fontSize: 13)),
+                  ],
+                ),
+              ),
+              Container(
+                width: 40, height: 40,
+                decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white.withValues(alpha: .22)),
+                child: const Icon(Icons.arrow_forward, color: Colors.white, size: 20),
+              ),
+            ]),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Overflow: the long tail of skills + settings, out of the way.
+class _OverflowMenu extends ConsumerWidget {
+  final List<Skill> skills;
+  const _OverflowMenu(this.skills);
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mode = ref.watch(themeModeProvider);
+    return PopupMenuButton<String>(
+      icon: Icon(Icons.more_vert, color: context.pal.textDim),
+      color: context.pal.surface,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: context.pal.border)),
+      onSelected: (v) {
+        switch (v) {
+          case 'all':
+            showAllSkillsSheet(context, skills);
+            break;
+          case 'theme':
+            final next = switch (mode) {
+              ThemeMode.system => ThemeMode.light,
+              ThemeMode.light => ThemeMode.dark,
+              ThemeMode.dark => ThemeMode.system,
+            };
+            ref.read(themeModeProvider.notifier).set(next);
+            break;
+          case 'logout':
+            ref.read(configProvider.notifier).disconnect();
+            break;
+        }
+      },
+      itemBuilder: (_) => [
+        const PopupMenuItem(
+            value: 'all',
+            child: ListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.apps, size: 20), title: Text('All skills'))),
+        PopupMenuItem(
+            value: 'theme',
+            child: ListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.brightness_6, size: 20),
+                title: Text('Theme: ${mode.name}'))),
+        const PopupMenuItem(
+            value: 'logout',
+            child: ListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.logout, size: 20), title: Text('Disconnect'))),
+      ],
     );
   }
 }
@@ -237,18 +290,25 @@ Widget _screenFor(Skill s) {
 
 String _labelFor(Skill s) => _tileLabels[s.name] ?? s.command;
 
-/// Home = the tiles you pinned; everything else lives behind "All skills".
-/// Long-press any tile to pin/unpin; "Edit" opens a drag-to-reorder sheet.
-class _SkillSections extends ConsumerStatefulWidget {
+const _hints = {
+  'usage': 'tokens & limits', 'notes': 'capture a thought',
+  'projects': 'switch project', 'ports': "what's listening",
+  'mac': 'lock, wake, screenshot', 'sysmon': 'cpu, ram, disk',
+  'reminders': 'nudges', 'diary': 'daily log', 'sessions': 'resume a thread',
+  'filemanager': 'browse files', 'fix': 'self-heal a bug', 'build': 'rebuild app',
+  'errors': 'what broke', 'model': 'engine & model',
+};
+
+/// Home features: your top pins get big colour-coded cards with live context;
+/// the rest ride along as small chips. Order comes from your pins.
+class _Features extends ConsumerStatefulWidget {
   final List<Skill> all;
-  const _SkillSections(this.all);
+  const _Features(this.all);
   @override
-  ConsumerState<_SkillSections> createState() => _SkillSectionsState();
+  ConsumerState<_Features> createState() => _FeaturesState();
 }
 
-class _SkillSectionsState extends ConsumerState<_SkillSections> {
-  bool _showAll = false;
-
+class _FeaturesState extends ConsumerState<_Features> {
   @override
   void initState() {
     super.initState();
@@ -263,210 +323,326 @@ class _SkillSectionsState extends ConsumerState<_SkillSections> {
     final favs = ref.watch(favoritesProvider);
     final byName = {for (final s in widget.all) s.name: s};
     final pinned = [for (final n in favs) if (byName[n] != null) byName[n]!];
-    final rest = widget.all.where((s) => !favs.contains(s.name)).toList();
+    final big = pinned.take(4).toList();
+    final rest = pinned.skip(4).toList();
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _header(context, 'PINNED', action: pinned.isEmpty ? null : 'Edit',
-          onAction: () => _editSheet(context)),
-      if (pinned.isEmpty)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: Text('Long-press any skill below to pin it here.',
-              style: Theme.of(context).textTheme.bodySmall),
-        )
-      else
-        _grid(pinned, favs),
-      _header(context, 'ALL SKILLS',
-          action: _showAll ? 'Hide' : 'Show ${rest.length}',
-          onAction: () => setState(() => _showAll = !_showAll)),
-      if (_showAll) _grid(rest, favs),
+      if (big.isNotEmpty)
+        GridView.count(
+          crossAxisCount: 2, shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 12, crossAxisSpacing: 12, childAspectRatio: 1.42,
+          children: [for (final s in big) _FeatureCard(s, widget.all)],
+        ),
+      if (rest.isNotEmpty) ...[
+        const SizedBox(height: 14),
+        SizedBox(
+          height: 36,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: EdgeInsets.zero,
+            itemCount: rest.length + 1,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (_, i) => i == rest.length
+                ? _MoreChip(widget.all)
+                : _SkillChip(rest[i]),
+          ),
+        ),
+      ] else ...[
+        const SizedBox(height: 14),
+        Align(alignment: Alignment.centerLeft, child: _MoreChip(widget.all)),
+      ],
     ]);
   }
+}
 
-  Widget _header(BuildContext context, String title,
-      {String? action, VoidCallback? onAction}) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(2, 18, 2, 10),
-      child: Row(children: [
-        Text(title, style: Theme.of(context).textTheme.labelSmall),
-        const Spacer(),
-        if (action != null)
-          InkWell(
-            onTap: onAction,
-            borderRadius: BorderRadius.circular(6),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-              child: Text(action,
-                  style: const TextStyle(
-                      fontSize: 12, color: GajalaColors.accent, fontWeight: FontWeight.w600)),
-            ),
+/// Large, tinted, colour-coded — with a line of live context where it's cheap.
+class _FeatureCard extends ConsumerWidget {
+  final Skill skill;
+  final List<Skill> all;
+  const _FeatureCard(this.skill, this.all);
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = GajalaColors.forSkill(skill.name);
+    final pal = context.pal;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => _screenFor(skill))),
+        onLongPress: () => showAllSkillsSheet(context, all),
+        child: Ink(
+          decoration: BoxDecoration(
+            color: c.withValues(alpha: .13),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: c.withValues(alpha: .30)),
           ),
-      ]),
-    );
-  }
-
-  Widget _grid(List<Skill> items, List<String> favs) => GridView.count(
-        crossAxisCount: 4,
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: .88,
-        children: [
-          for (final s in items)
-            _SkillCard(s,
-                pinned: favs.contains(s.name),
-                onLongPress: () async {
-                  final messenger = ScaffoldMessenger.of(context);
-                  final wasPinned = favs.contains(s.name);
-                  await ref.read(favoritesProvider.notifier).toggle(s.name);
-                  messenger.showSnackBar(SnackBar(
-                    duration: const Duration(seconds: 2),
-                    content: Text(wasPinned
-                        ? 'Unpinned ${_labelFor(s)}'
-                        : 'Pinned ${_labelFor(s)}'),
-                  ));
-                }),
-        ],
-      );
-
-  void _editSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: context.pal.surface,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (_) => Consumer(builder: (c, r, _) {
-        final favs = r.watch(favoritesProvider);
-        final byName = {for (final s in widget.all) s.name: s};
-        return SafeArea(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Row(children: [
-                Text('Pinned skills', style: Theme.of(c).textTheme.titleMedium),
-                const Spacer(),
-                Text('drag to reorder', style: Theme.of(c).textTheme.bodySmall),
-              ]),
-              const SizedBox(height: 10),
-              Flexible(
-                child: ReorderableListView(
-                  shrinkWrap: true,
-                  onReorderItem: (a, b) => r.read(favoritesProvider.notifier).reorder(a, b),
-                  children: [
-                    for (final n in favs)
-                      ListTile(
-                        key: ValueKey(n),
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(_icons[n] ?? Icons.bolt,
-                            color: GajalaColors.accent, size: 20),
-                        title: Text(byName[n] == null ? n : _labelFor(byName[n]!)),
-                        trailing: IconButton(
-                          icon: Icon(Icons.remove_circle_outline,
-                              size: 20, color: c.pal.textDim),
-                          onPressed: () =>
-                              r.read(favoritesProvider.notifier).toggle(n),
-                        ),
-                      ),
-                  ],
-                ),
+            padding: const EdgeInsets.all(14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Container(
+                width: 34, height: 34,
+                decoration: BoxDecoration(
+                    color: c.withValues(alpha: .24),
+                    borderRadius: BorderRadius.circular(10)),
+                child: Icon(_icons[skill.name] ?? Icons.bolt, color: c, size: 19),
               ),
+              const Spacer(),
+              Text(_labelFor(skill),
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 14.5, fontWeight: FontWeight.w700, color: pal.text)),
+              const SizedBox(height: 2),
+              _FeatureSubtitle(skill.name),
             ]),
           ),
-        );
-      }),
+        ),
+      ),
     );
   }
 }
 
-class _SkillCard extends StatelessWidget {
+class _FeatureSubtitle extends ConsumerWidget {
+  final String name;
+  const _FeatureSubtitle(this.name);
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final style = TextStyle(fontSize: 11.5, color: context.pal.textDim);
+    String text = _hints[name] ?? '';
+    if (name == 'notes') {
+      final n = ref.watch(notesProvider).valueOrNull?.length;
+      if (n != null) text = '$n open';
+    } else if (name == 'projects') {
+      final p = ref.watch(projectsProvider).valueOrNull?['current_name']?.toString();
+      if (p != null && p.isNotEmpty) text = p;
+    }
+    return Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+  }
+}
+
+/// Secondary pins — small tinted pills, not full tiles.
+class _SkillChip extends StatelessWidget {
   final Skill skill;
-  final bool pinned;
-  final VoidCallback? onLongPress;
-  const _SkillCard(this.skill, {this.pinned = false, this.onLongPress});
+  const _SkillChip(this.skill);
+  @override
+  Widget build(BuildContext context) {
+    final c = GajalaColors.forSkill(skill.name);
+    return Material(
+      color: c.withValues(alpha: .12),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => _screenFor(skill))),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(_icons[skill.name] ?? Icons.bolt, size: 15, color: c),
+            const SizedBox(width: 7),
+            Text(_labelFor(skill),
+                style: TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.w600, color: context.pal.text)),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+class _MoreChip extends StatelessWidget {
+  final List<Skill> all;
+  const _MoreChip(this.all);
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
     return Material(
-      color: pal.surface,
-      borderRadius: BorderRadius.circular(14),
+      color: pal.surfaceAlt,
+      borderRadius: BorderRadius.circular(10),
       child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => _screenFor(skill))),
-        onLongPress: onLongPress,
-        child: Ink(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: pal.border),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(_icons[skill.name] ?? Icons.bolt,
-                    color: GajalaColors.accent, size: 22),
-                const SizedBox(height: 8),
-                Text(_labelFor(skill),
-                    maxLines: 1, overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500)),
-              ],
-            ),
-          ),
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => showAllSkillsSheet(context, all),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.apps, size: 15, color: pal.textDim),
+            const SizedBox(width: 7),
+            Text('All skills',
+                style: TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.w600, color: pal.textDim)),
+          ]),
         ),
       ),
     );
   }
 }
 
-class _SystemCard extends ConsumerWidget {
-  const _SystemCard();
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final sys = ref.watch(systemProvider);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: sys.when(
-          data: (s) => Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
+/// One sheet for the long tail: reorder your pins, pin/unpin anything, or jump
+/// straight into a skill.
+void showAllSkillsSheet(BuildContext context, List<Skill> all) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: context.pal.surface,
+    shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+    builder: (sheetCtx) => Consumer(builder: (c, ref, _) {
+      final favs = ref.watch(favoritesProvider);
+      final byName = {for (final s in all) s.name: s};
+      final pinned = [for (final n in favs) if (byName[n] != null) byName[n]!];
+      final rest = all.where((s) => !favs.contains(s.name)).toList();
+      return SafeArea(
+        child: DraggableScrollableSheet(
+          initialChildSize: .75, minChildSize: .4, maxChildSize: .95,
+          expand: false,
+          builder: (_, scrollCtl) => ListView(
+            controller: scrollCtl,
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
             children: [
-              _Metric('CPU', '${s.cpu.toStringAsFixed(0)}%', s.cpu / 100),
-              _Metric('RAM', '${s.ramPct}%', s.ramPct / 100),
-              _Metric('DISK', '${s.diskPct}%', s.diskPct / 100),
-              if (s.batteryPct != null)
-                _Metric('BATT', '${s.batteryPct}%', s.batteryPct! / 100),
+              Center(
+                child: Container(
+                  width: 36, height: 4,
+                  margin: const EdgeInsets.only(bottom: 14),
+                  decoration: BoxDecoration(
+                      color: c.pal.textDim, borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              Row(children: [
+                Text('Pinned', style: Theme.of(c).textTheme.titleMedium),
+                const Spacer(),
+                Text('drag to reorder · first 4 are cards',
+                    style: Theme.of(c).textTheme.bodySmall),
+              ]),
+              const SizedBox(height: 6),
+              ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                onReorderItem: (a, b) =>
+                    ref.read(favoritesProvider.notifier).reorder(a, b),
+                children: [
+                  for (final s in pinned)
+                    ListTile(
+                      key: ValueKey(s.name),
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(_icons[s.name] ?? Icons.bolt,
+                          color: GajalaColors.forSkill(s.name), size: 20),
+                      title: Text(_labelFor(s)),
+                      trailing: IconButton(
+                        icon: Icon(Icons.push_pin, size: 18, color: GajalaColors.accent),
+                        onPressed: () =>
+                            ref.read(favoritesProvider.notifier).toggle(s.name),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text('Everything else', style: Theme.of(c).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              for (final s in rest)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(_icons[s.name] ?? Icons.bolt,
+                      color: GajalaColors.forSkill(s.name), size: 20),
+                  title: Text(_labelFor(s)),
+                  subtitle: Text(_hints[s.name] ?? s.description,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                  trailing: IconButton(
+                    icon: Icon(Icons.push_pin_outlined, size: 18, color: c.pal.textDim),
+                    onPressed: () =>
+                        ref.read(favoritesProvider.notifier).toggle(s.name),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    Navigator.of(context)
+                        .push(MaterialPageRoute(builder: (_) => _screenFor(s)));
+                  },
+                ),
             ],
           ),
-          loading: () => const SizedBox(height: 56, child: Center(child: CircularProgressIndicator())),
-          error: (e, _) => SizedBox(height: 56, child: Center(
-              child: Text('system offline', style: TextStyle(color: context.pal.textDim)))),
         ),
+      );
+    }),
+  );
+}
+
+/// Ambient system info — a slim strip at the bottom, not a headline card.
+class _SystemStrip extends ConsumerWidget {
+  const _SystemStrip();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pal = context.pal;
+    return ref.watch(systemProvider).when(
+      data: (s) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => Navigator.of(context)
+              .push(MaterialPageRoute(builder: (_) => const SystemScreen())),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+            decoration: BoxDecoration(
+              color: pal.surface,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: pal.border),
+            ),
+            child: Row(children: [
+              _Meter('CPU', s.cpu / 100, '${s.cpu.toStringAsFixed(0)}%',
+                  GajalaColors.teal),
+              _Meter('RAM', s.ramPct / 100, '${s.ramPct}%', GajalaColors.violet),
+              _Meter('DISK', s.diskPct / 100, '${s.diskPct}%', GajalaColors.amber),
+              if (s.batteryPct != null)
+                _Meter('BATT', s.batteryPct! / 100, '${s.batteryPct}%',
+                    GajalaColors.green),
+              Icon(Icons.chevron_right, size: 18, color: pal.textDim),
+            ]),
+          ),
+        ),
+      ),
+      loading: () => const SizedBox(height: 56),
+      error: (e, _) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text('system offline',
+            style: TextStyle(color: pal.textDim, fontSize: 12)),
       ),
     );
   }
 }
 
-class _Metric extends StatelessWidget {
+class _Meter extends StatelessWidget {
   final String label, value;
   final double frac;
-  const _Metric(this.label, this.value, this.frac);
+  final Color color;
+  const _Meter(this.label, this.frac, this.value, this.color);
   @override
   Widget build(BuildContext context) {
-    final color = frac > .85 ? GajalaColors.danger : frac > .6 ? GajalaColors.warn : GajalaColors.ok;
-    return Column(children: [
-      SizedBox(
-        height: 46, width: 46,
-        child: Stack(alignment: Alignment.center, children: [
-          CircularProgressIndicator(
-              value: frac.clamp(0, 1), strokeWidth: 4,
-              backgroundColor: context.pal.surfaceAlt, color: color),
-          Text(value, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+    final hot = frac > .85;
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.only(right: 14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Text(label,
+                style: TextStyle(
+                    fontSize: 10, letterSpacing: .6,
+                    fontWeight: FontWeight.w600, color: context.pal.textDim)),
+            const Spacer(),
+            Text(value,
+                style: TextStyle(
+                    fontSize: 11.5, fontWeight: FontWeight.w700,
+                    color: hot ? GajalaColors.danger : context.pal.text)),
+          ]),
+          const SizedBox(height: 5),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: LinearProgressIndicator(
+              value: frac.clamp(0, 1), minHeight: 4,
+              backgroundColor: context.pal.surfaceAlt,
+              color: hot ? GajalaColors.danger : color,
+            ),
+          ),
         ]),
       ),
-      const SizedBox(height: 6),
-      Text(label, style: TextStyle(color: context.pal.textDim, fontSize: 11)),
-    ]);
+    );
   }
 }
 

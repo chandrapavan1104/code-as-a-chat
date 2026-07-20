@@ -3,12 +3,41 @@ import 'package:google_fonts/google_fonts.dart';
 
 /// Brand + semantic colors — identical in light and dark.
 class GajalaColors {
-  static const accent = Color(0xFF2EA6FF);
-  static const accentDim = Color(0xFF1D6FB8);
-  static const userBubble = Color(0xFF2B5278);
-  static const ok = Color(0xFF4BB34B);
-  static const danger = Color(0xFFE0533D);
-  static const warn = Color(0xFFE3A008);
+  static const accent = Color(0xFF5B8DEF);
+  static const accentDim = Color(0xFF3A6FD8);
+  static const userBubble = Color(0xFF33518A);
+  static const ok = Color(0xFF4CC38A);
+  static const danger = Color(0xFFEF6B6B);
+  static const warn = Color(0xFFF0A741);
+
+  // A real palette, not one accent. Each feature owns a hue so the home screen
+  // reads by colour at a glance instead of being a wall of identical tiles.
+  static const blue = Color(0xFF5B8DEF);
+  static const violet = Color(0xFFA57BF5);
+  static const green = Color(0xFF4CC38A);
+  static const amber = Color(0xFFF0A741);
+  static const teal = Color(0xFF35B8C4);
+  static const pink = Color(0xFFEF7BA8);
+  static const red = Color(0xFFEF6B6B);
+  static const indigo = Color(0xFF7C86F0);
+
+  static const _byName = <String, Color>{
+    'usage': amber, 'notes': green, 'projects': violet, 'ports': teal,
+    'mac': blue, 'sysmon': indigo, 'reminders': pink, 'diary': violet,
+    'claude': blue, 'codex': green, 'antigravity': violet,
+    'sessions': teal, 'filemanager': amber, 'firebase': red,
+    'context': indigo, 'fix': red, 'build': teal, 'errors': red,
+    'model': violet,
+  };
+
+  /// Stable colour for a skill — falls back to a hash so new skills still get
+  /// a distinct hue instead of everything defaulting to blue.
+  static Color forSkill(String name) {
+    final c = _byName[name];
+    if (c != null) return c;
+    const pool = [blue, violet, green, amber, teal, pink, indigo];
+    return pool[name.hashCode.abs() % pool.length];
+  }
 }
 
 /// Adaptive surface/text colors as a ThemeExtension → read via `context.pal`.
@@ -17,16 +46,16 @@ class Pal extends ThemeExtension<Pal> {
   const Pal({required this.bg, required this.surface, required this.surfaceAlt,
     required this.text, required this.textDim, required this.botBubble, required this.border});
 
-  // Refined dark: near-black, slightly cool. Surfaces separate by a HAIRLINE
-  // border rather than shadow, so the UI reads calm and flat (Linear/Notion).
+  // Dark = soft charcoal with a blue cast (not near-black), so colour reads well
+  // on it. Light = warm off-white (not glaring paper white).
   static const dark = Pal(
-    bg: Color(0xFF0C0E12), surface: Color(0xFF14171C), surfaceAlt: Color(0xFF1A1E24),
-    text: Color(0xFFE7EAEE), textDim: Color(0xFF8B949E), botBubble: Color(0xFF15181D),
-    border: Color(0xFF242A32));
+    bg: Color(0xFF15181F), surface: Color(0xFF1D212B), surfaceAlt: Color(0xFF262B37),
+    text: Color(0xFFE8EAF0), textDim: Color(0xFF98A0AE), botBubble: Color(0xFF1F2430),
+    border: Color(0xFF313847));
   static const light = Pal(
-    bg: Color(0xFFFAFBFC), surface: Color(0xFFFFFFFF), surfaceAlt: Color(0xFFF2F4F7),
-    text: Color(0xFF15181D), textDim: Color(0xFF6B7280), botBubble: Color(0xFFFFFFFF),
-    border: Color(0xFFE3E7EC));
+    bg: Color(0xFFF6F5F2), surface: Color(0xFFFFFFFF), surfaceAlt: Color(0xFFECEAE5),
+    text: Color(0xFF1B1D22), textDim: Color(0xFF6B7280), botBubble: Color(0xFFFFFFFF),
+    border: Color(0xFFE0DDD6));
 
   @override
   Pal copyWith({Color? bg, Color? surface, Color? surfaceAlt, Color? text,
