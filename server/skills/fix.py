@@ -256,8 +256,13 @@ class FixSkill(Skill):
             return f"🔧 Merge failed (conflict?):\n{out.strip()[:300]}"
 
         _state_set("pending_fix", None)
+
         if not server_touched:
-            return f"🔧 Merged to {base} ✅ (app-only — already built)."
+            # App-only: no restart, so it's safe to push origin now (best-effort —
+            # a failed push must not fail the ship).
+            push_rc, _ = await _git(repo, "push", "origin", base, timeout=60)
+            pushed = " · pushed" if push_rc == 0 else " · (push failed)"
+            return f"🔧 Merged to {base} ✅ (app-only — already built){pushed}."
 
         # Server change: hand the restart to a DETACHED guard, because the server
         # can't restart itself (it would kill this very request). The guard
@@ -270,9 +275,9 @@ class FixSkill(Skill):
             cwd=repo, start_new_session=True,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        return ("🔧 Merged to {b} — restarting on the new code now. I health-check "
-                "and auto-roll-back if it doesn't come up; you'll get a push either "
-                "way.".format(b=base))
+        return ("🔧 Merged to {b} — restarting on the new code now. I health-check, "
+                "push origin only if it comes up healthy, and auto-roll-back "
+                "otherwise; you'll get a push either way.".format(b=base))
 
 
 register(FixSkill())
