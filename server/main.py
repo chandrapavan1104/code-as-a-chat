@@ -71,6 +71,7 @@ class RunRequest(BaseModel):
 
 # Longest reply preview carried in a completion push (Android collapses more).
 _PUSH_PREVIEW_CHARS = 160
+_STREAM_HEARTBEAT_SECONDS = 15
 
 
 def _preview(text: str, limit: int = _PUSH_PREVIEW_CHARS) -> str:
@@ -192,7 +193,16 @@ async def run_stream(body: RunRequest):
         task = asyncio.create_task(worker())
         try:
             while True:
-                ev = await queue.get()
+                try:
+                    ev = await asyncio.wait_for(
+                        queue.get(), timeout=_STREAM_HEARTBEAT_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    # Long CLI calls may be silent for minutes. Keep bytes moving
+                    # so the HTTPS proxy/client does not drop an otherwise healthy
+                    # chunked response; clients safely ignore this frame type.
+                    yield json.dumps({"type": "heartbeat"}) + "\n"
+                    continue
                 if ev is None:
                     break
                 yield json.dumps(ev) + "\n"

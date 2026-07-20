@@ -65,9 +65,12 @@ engine **+ per-engine model** (claude opus/sonnet/haiku, codex gpt-5.6-sol/…,
 gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
 **Images** send + receive (screenshots to the agent, images back).
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
+**15-second heartbeats on long `/run/stream` turns** so silent CLI work does not
+lose the phone's HTTPS stream through an idle connection;
 **Android home-screen widgets** (Lock / Wake / Ask / Brain-dump + a Codaur usage
 glance). **Codaur usage refreshes every 30 seconds while visible**, bypasses
-caches, and drops expired quota snapshots instead of presenting stale limits.
+caches, drops expired quota snapshots instead of presenting stale limits, and
+avoids overlapping CLI requests when the screen first opens.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -76,6 +79,13 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-07-19 — Added 15-second NDJSON heartbeats to `/run/stream`; long silent
+  coding/repair calls now keep the HTTPS response alive instead of surfacing
+  Dart's `Connection closed while receiving data` error.
+- 2026-07-18 — Fixed an intermittent Codaur 502 on screen open: the provider's
+  initial load and a redundant post-frame refresh were launching overlapping
+  Codaur CLI requests. The normal initial load now runs once; manual, resume,
+  and 30-second refreshes are unchanged.
 - 2026-07-17 — Per-engine BACKUP model: each engine (claude/codex/gemini) can
   have a fallback model; if a coding run fails on the primary, `cli_base` retries
   once on the backup with a fresh session (codex `_failed` also catches a
