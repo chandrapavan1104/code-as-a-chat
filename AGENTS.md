@@ -79,6 +79,12 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-07-19 — In-app updater: the build skill stamps a fresh versionCode via
+  `--build-number=<epoch>` (no pubspec churn) and writes `apk_version.json`;
+  `GET /api/appversion` serves it; the app compares its own buildNumber and shows
+  an "Update available" banner on the dashboard that downloads the APK and
+  launches the system installer (open_filex, REQUEST_INSTALL_PACKAGES). Closes
+  the self-heal loop on the phone — no more copy-paste APK link.
 - 2026-07-19 — Added 15-second NDJSON heartbeats to `/run/stream`; long silent
   coding/repair calls now keep the HTTPS response alive instead of surfacing
   Dart's `Connection closed while receiving data` error.

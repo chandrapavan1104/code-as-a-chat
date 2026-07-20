@@ -161,6 +161,20 @@ class GajalaApi {
   /// Auth headers for loading an /api/file image via Image.network.
   Map<String, String> get authHeaders => {'X-API-Token': token};
 
+  /// Latest built APK's versionCode + download URL (from the build manifest).
+  Future<Map<String, dynamic>> appVersion() async =>
+      Map<String, dynamic>.from((await _dio.get('/api/appversion')).data);
+
+  /// Download an absolute URL (e.g. the APK on :8765) to [savePath], reporting
+  /// 0..1 progress. Uses a fresh client since the URL isn't the API base.
+  Future<void> downloadFile(
+      String url, String savePath, void Function(double) onProgress) async {
+    final d = Dio();
+    await d.download(url, savePath, onReceiveProgress: (recv, total) {
+      if (total > 0) onProgress(recv / total);
+    });
+  }
+
   /// Absolute URL the app uses to fetch a server-side image path.
   String fileUrl(String serverPath) =>
       '${_dio.options.baseUrl}/api/file?path=${Uri.encodeQueryComponent(serverPath)}';

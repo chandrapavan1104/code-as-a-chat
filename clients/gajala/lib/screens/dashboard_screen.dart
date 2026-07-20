@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/models.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import '../core/update.dart';
 import 'chat_screen.dart';
 import 'notes_screen.dart';
 import 'system_screen.dart';
@@ -59,6 +60,7 @@ class DashboardScreen extends ConsumerWidget {
               child: ListView(
                 padding: const EdgeInsets.all(14),
                 children: [
+                  const _UpdateBanner(),
                   const _SystemCard(),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(4, 16, 4, 10),
@@ -142,6 +144,86 @@ class _AskBar extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// "Update available" banner — checks the server for a newer build and installs
+/// it in-app with a tap (download → system installer).
+class _UpdateBanner extends ConsumerStatefulWidget {
+  const _UpdateBanner();
+  @override
+  ConsumerState<_UpdateBanner> createState() => _UpdateBannerState();
+}
+
+class _UpdateBannerState extends ConsumerState<_UpdateBanner> {
+  UpdateInfo? _update;
+  bool _downloading = false;
+  double _progress = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+  }
+
+  Future<void> _check() async {
+    final api = ref.read(apiProvider);
+    if (api == null) return;
+    final u = await UpdateService.check(api);
+    if (mounted) setState(() => _update = u);
+  }
+
+  Future<void> _install() async {
+    final api = ref.read(apiProvider);
+    final u = _update;
+    if (api == null || u == null || _downloading) return;
+    setState(() { _downloading = true; _progress = 0; });
+    final err = await UpdateService.downloadAndInstall(api, u, (p) {
+      if (mounted) setState(() => _progress = p);
+    });
+    if (!mounted) return;
+    setState(() => _downloading = false);
+    if (err != null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Update failed: $err')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final u = _update;
+    if (u == null) return const SizedBox.shrink();
+    final pal = context.pal;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: GajalaColors.accentDim.withValues(alpha: .18),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: GajalaColors.accent.withValues(alpha: .5)),
+      ),
+      child: Row(children: [
+        const Icon(Icons.system_update, color: GajalaColors.accent, size: 22),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Update available',
+                style: TextStyle(fontWeight: FontWeight.w700)),
+            Text(
+                _downloading
+                    ? 'Downloading ${(_progress * 100).toStringAsFixed(0)}%…'
+                    : 'A newer Gajala build is ready',
+                style: TextStyle(fontSize: 12, color: pal.textDim)),
+          ]),
+        ),
+        _downloading
+            ? SizedBox(
+                width: 22, height: 22,
+                child: CircularProgressIndicator(
+                    value: _progress > 0 ? _progress : null, strokeWidth: 2.5))
+            : FilledButton(onPressed: _install, child: const Text('Update')),
+      ]),
     );
   }
 }
