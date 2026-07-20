@@ -320,7 +320,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           ),
         ),
         Container(
-          color: context.pal.surface,
+          decoration: BoxDecoration(
+            color: context.pal.bg,
+            border: Border(top: BorderSide(color: context.pal.border)),
+          ),
           padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (_pending != null)

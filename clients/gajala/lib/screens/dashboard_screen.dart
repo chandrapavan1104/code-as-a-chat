@@ -62,19 +62,8 @@ class DashboardScreen extends ConsumerWidget {
                 children: [
                   const _UpdateBanner(),
                   const _SystemCard(),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(4, 16, 4, 10),
-                    child: Text('SKILLS', style: TextStyle(
-                        color: context.pal.textDim, fontWeight: FontWeight.w700, letterSpacing: 1)),
-                  ),
                   skills.when(
-                    data: (list) => GridView.count(
-                      crossAxisCount: 3,
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: .92,
-                      children: list.map((s) => _SkillCard(s)).toList(),
-                    ),
+                    data: (list) => _SkillSections(list),
                     loading: () => const Padding(
                         padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())),
                     error: (e, _) => Padding(
@@ -124,13 +113,17 @@ class _AskBar extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
         child: Material(
-          color: context.pal.surfaceAlt,
+          color: context.pal.surface,
           borderRadius: BorderRadius.circular(26),
           child: InkWell(
             borderRadius: BorderRadius.circular(26),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
                 builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'))),
-            child: Padding(
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(26),
+                border: Border.all(color: context.pal.border),
+              ),
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               child: Row(children: [
                 const Icon(Icons.auto_awesome, color: GajalaColors.accent, size: 20),
@@ -242,27 +235,183 @@ Widget _screenFor(Skill s) {
   }
 }
 
-class _SkillCard extends StatelessWidget {
-  final Skill skill;
-  const _SkillCard(this.skill);
+String _labelFor(Skill s) => _tileLabels[s.name] ?? s.command;
+
+/// Home = the tiles you pinned; everything else lives behind "All skills".
+/// Long-press any tile to pin/unpin; "Edit" opens a drag-to-reorder sheet.
+class _SkillSections extends ConsumerStatefulWidget {
+  final List<Skill> all;
+  const _SkillSections(this.all);
+  @override
+  ConsumerState<_SkillSections> createState() => _SkillSectionsState();
+}
+
+class _SkillSectionsState extends ConsumerState<_SkillSections> {
+  bool _showAll = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(favoritesProvider.notifier)
+          .seedIfEmpty(widget.all.map((s) => s.name).toList());
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Card(
+    final favs = ref.watch(favoritesProvider);
+    final byName = {for (final s in widget.all) s.name: s};
+    final pinned = [for (final n in favs) if (byName[n] != null) byName[n]!];
+    final rest = widget.all.where((s) => !favs.contains(s.name)).toList();
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _header(context, 'PINNED', action: pinned.isEmpty ? null : 'Edit',
+          onAction: () => _editSheet(context)),
+      if (pinned.isEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Text('Long-press any skill below to pin it here.',
+              style: Theme.of(context).textTheme.bodySmall),
+        )
+      else
+        _grid(pinned, favs),
+      _header(context, 'ALL SKILLS',
+          action: _showAll ? 'Hide' : 'Show ${rest.length}',
+          onAction: () => setState(() => _showAll = !_showAll)),
+      if (_showAll) _grid(rest, favs),
+    ]);
+  }
+
+  Widget _header(BuildContext context, String title,
+      {String? action, VoidCallback? onAction}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 18, 2, 10),
+      child: Row(children: [
+        Text(title, style: Theme.of(context).textTheme.labelSmall),
+        const Spacer(),
+        if (action != null)
+          InkWell(
+            onTap: onAction,
+            borderRadius: BorderRadius.circular(6),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              child: Text(action,
+                  style: const TextStyle(
+                      fontSize: 12, color: GajalaColors.accent, fontWeight: FontWeight.w600)),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  Widget _grid(List<Skill> items, List<String> favs) => GridView.count(
+        crossAxisCount: 4,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: .88,
+        children: [
+          for (final s in items)
+            _SkillCard(s,
+                pinned: favs.contains(s.name),
+                onLongPress: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  final wasPinned = favs.contains(s.name);
+                  await ref.read(favoritesProvider.notifier).toggle(s.name);
+                  messenger.showSnackBar(SnackBar(
+                    duration: const Duration(seconds: 2),
+                    content: Text(wasPinned
+                        ? 'Unpinned ${_labelFor(s)}'
+                        : 'Pinned ${_labelFor(s)}'),
+                  ));
+                }),
+        ],
+      );
+
+  void _editSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: context.pal.surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Consumer(builder: (c, r, _) {
+        final favs = r.watch(favoritesProvider);
+        final byName = {for (final s in widget.all) s.name: s};
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                Text('Pinned skills', style: Theme.of(c).textTheme.titleMedium),
+                const Spacer(),
+                Text('drag to reorder', style: Theme.of(c).textTheme.bodySmall),
+              ]),
+              const SizedBox(height: 10),
+              Flexible(
+                child: ReorderableListView(
+                  shrinkWrap: true,
+                  onReorderItem: (a, b) => r.read(favoritesProvider.notifier).reorder(a, b),
+                  children: [
+                    for (final n in favs)
+                      ListTile(
+                        key: ValueKey(n),
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(_icons[n] ?? Icons.bolt,
+                            color: GajalaColors.accent, size: 20),
+                        title: Text(byName[n] == null ? n : _labelFor(byName[n]!)),
+                        trailing: IconButton(
+                          icon: Icon(Icons.remove_circle_outline,
+                              size: 20, color: c.pal.textDim),
+                          onPressed: () =>
+                              r.read(favoritesProvider.notifier).toggle(n),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ]),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _SkillCard extends StatelessWidget {
+  final Skill skill;
+  final bool pinned;
+  final VoidCallback? onLongPress;
+  const _SkillCard(this.skill, {this.pinned = false, this.onLongPress});
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    return Material(
+      color: pal.surface,
+      borderRadius: BorderRadius.circular(14),
       child: InkWell(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(14),
         onTap: () => Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => _screenFor(skill))),
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(_icons[skill.name] ?? Icons.bolt, color: GajalaColors.accent, size: 28),
-              const SizedBox(height: 8),
-              Text(_tileLabels[skill.name] ?? skill.command,
-                  maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
-            ],
+        onLongPress: onLongPress,
+        child: Ink(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: pal.border),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(_icons[skill.name] ?? Icons.bolt,
+                    color: GajalaColors.accent, size: 22),
+                const SizedBox(height: 8),
+                Text(_labelFor(skill),
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500)),
+              ],
+            ),
           ),
         ),
       ),
