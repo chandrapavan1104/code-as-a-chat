@@ -41,6 +41,9 @@ dependencies:
   flutter_local_notifications: ^18.0.1  # show foreground pushes as system notifications
   image_picker: ^1.1.2               # attach screenshots/photos to a chat message
   home_widget: ^0.9.3
+  package_info_plus: ^9.0.1
+  open_filex: ^4.7.0
+  path_provider: ^2.1.6
 
 dev_dependencies:
   flutter_test:

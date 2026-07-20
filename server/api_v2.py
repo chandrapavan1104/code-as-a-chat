@@ -333,6 +333,21 @@ def list_errors(limit: int = 30, source: str | None = None):
     return {"errors": errors_store.recent(limit, source)}
 
 
+# ── app self-update ───────────────────────────────────────────────────────────
+
+@router.get("/appversion")
+def app_version():
+    """Latest built APK's versionCode + download URL, from the manifest the build
+    skill writes. The app compares its own buildNumber to offer an in-app update."""
+    meta_path = Path(cfg.APK_DEST).with_name("apk_version.json")
+    try:
+        meta = _json.loads(meta_path.read_text())
+    except Exception:
+        meta = {"build_number": 0, "version_name": "", "url": cfg.APK_URL}
+    meta.setdefault("url", cfg.APK_URL)
+    return meta
+
+
 # ── usage (LLM provider quota/activity via codaur) ────────────────────────────
 
 def _limit_is_current(limit: dict) -> bool:
