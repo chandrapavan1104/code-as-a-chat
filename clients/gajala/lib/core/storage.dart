@@ -12,6 +12,18 @@ class Storage {
   static const _kToken = 'api_token';
   static const _kSession = 'session_id';
   static const _kTheme = 'theme_mode';
+  static const _kFavs = 'fav_skills';
+
+  /// Skill tiles pinned to the home screen, in display order.
+  /// Empty list = never set, so the dashboard seeds a sensible default.
+  static Future<List<String>> favorites() async {
+    final raw = await _s.read(key: _kFavs);
+    if (raw == null || raw.isEmpty) return const [];
+    return raw.split(',').where((s) => s.isNotEmpty).toList();
+  }
+
+  static Future<void> setFavorites(List<String> names) async =>
+      _s.write(key: _kFavs, value: names.join(','));
 
   static Future<String> themeMode() async =>
       await _s.read(key: _kTheme) ?? 'system';
