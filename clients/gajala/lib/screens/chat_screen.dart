@@ -4,33 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import '../core/api.dart';
+import '../core/chat_controller.dart';
 import '../core/models.dart';
 import '../core/push.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
-
-/// Pulls "[image: /path]" markers out of an agent reply, returning the cleaned
-/// text plus the full /api/file URLs to render.
-final _imgMarker = RegExp(r'\[image:\s*([^\]]+?)\s*\]');
-(String, List<String>) _splitImages(String raw, GajalaApi api) {
-  final urls = <String>[];
-  final clean = raw.replaceAllMapped(_imgMarker, (m) {
-    urls.add(api.fileUrl(m.group(1)!.trim()));
-    return '';
-  }).trim();
-  return (clean, urls);
-}
-
-/// Pulls a "[[move:dir]]" confirm-to-move marker out of a reply → (clean, dir).
-final _moveMarker = RegExp(r'\[\[move:\s*([a-z0-9\-]+)\s*\]\]', caseSensitive: false);
-(String, String?) _splitMove(String raw) {
-  String? target;
-  final clean = raw.replaceAllMapped(_moveMarker, (m) {
-    target = m.group(1);
-    return '';
-  }).trim();
-  return (clean, target);
-}
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String command;   // 'shell' = Gajala agent; else a specific skill
@@ -44,14 +22,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     with WidgetsBindingObserver {
   final _input = TextEditingController();
   final _scroll = ScrollController();
-  final List<ChatMessage> _msgs = [];
-  bool _sending = false;
   String? _installId;         // stable per-install id
   String? _sid;               // per-directory conversation id (installId::dir)
   XFile? _pending;   // image picked but not yet sent
   String? _dir;               // active project name (for the header)
   String _model = 'auto';     // pinned coding engine
   String? _lastUserText;      // last thing the user typed (to resend on "move")
+  int _lastMsgCount = 0;      // to auto-scroll only when something new lands
+
+  /// The conversation this screen is showing. State lives in the controller so
+  /// it survives navigating away (a running turn keeps running and stays visible).
+  ChatKey? get _key => _sid == null ? null : ChatKey(widget.command, _sid!);
+  ChatController? get _chat =>
+      _key == null ? null : ref.read(chatControllerProvider(_key!).notifier);
+
+  String get _welcome => widget.command == 'shell'
+      ? 'Em sangathi mava! Gajala ikkada 🔥\nCheppu — em kavali?'
+      : 'Send a /${widget.command} request, or just type.';
 
   @override
   void initState() {
@@ -66,9 +53,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _bootstrap() async {
     _installId = await ref.read(sessionIdProvider.future);
     if (widget.command != 'shell') {
-      _sid = _sidFor(null);                    // per-engine thread (persisted)
+      setState(() => _sid = _sidFor(null));    // per-engine thread (persisted)
       Push.activeSession = _sid;
-      await _loadHistoryFor(_sid!);
+      await _chat?.ensureLoaded(welcome: _welcome);
+      _restoreDraft();
       return;
     }
     final api = ref.read(apiProvider);
@@ -88,7 +76,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _sid = _sidFor(dir);
     });
     Push.activeSession = _sid;
-    await _loadHistoryFor(_sid!);
+    await _chat?.ensureLoaded(welcome: _welcome);
+    _restoreDraft();
+  }
+
+  /// Put back the half-typed message you left in this conversation.
+  void _restoreDraft() {
+    if (_key == null || !mounted) return;
+    final d = ref.read(chatControllerProvider(_key!)).draft;
+    if (d.isNotEmpty && _input.text.isEmpty) _input.text = d;
   }
 
   /// Conversation id. The Gajala (shell) chat is per-directory — that dir IS the
@@ -111,23 +107,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (widget.command != 'shell' || name == null || name.isEmpty) return;
     if (name == _dir) return;
     final sid = _sidFor(name);
-    if (reload) {
-      setState(() {
-        _dir = name;
-        _sid = sid;
-        _msgs.clear();
-      });
-      Push.activeSession = sid;
-      await _loadHistoryFor(sid);
-    } else {
-      setState(() {
-        _dir = name;
-        _sid = sid;
-        _msgs.add(ChatMessage('system', 'Switched to $name'));
-      });
-      Push.activeSession = sid;
-      _scrollEnd();
-    }
+    setState(() {
+      _dir = name;
+      _sid = sid;
+    });
+    Push.activeSession = sid;
+    await _chat?.ensureLoaded(welcome: _welcome);
+    if (!reload) _chat?.addSystemNote('Switched to $name');
   }
 
   /// Re-check the server's active project (shell chat only). Called on resume so
@@ -149,16 +135,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     setState(() {
       _dir = dir;
       _sid = sid;
-      _msgs.clear();
     });
     Push.activeSession = sid;
-    await _loadHistoryFor(sid);
+    await _chat?.ensureLoaded(welcome: _welcome);
   }
 
   /// Confirm-to-move: switch to [dir] (server workspace + thread), then re-ask
   /// the question there. Wired to the "Ask in {dir} chat" action on a move reply.
   Future<void> _moveAndAsk(String dir) async {
-    if (_sending) return;
     final prompt = _lastUserText;
     final api = ref.read(apiProvider);
     if (api != null) {
@@ -193,37 +177,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   /// Load a specific conversation's history (per-directory), rebuilding any
   /// images, and show a welcome line if the thread is empty.
-  Future<void> _loadHistoryFor(String sid) async {
-    final api = ref.read(apiProvider);
-    List<ChatMessage> loaded = const [];
-    if (api != null) {
-      try {
-        final history = await api.chatHistory(sid);
-        loaded = history.map((m) {
-          if (m.role != 'bot') return m;
-          final (clean, urls) = _splitImages(m.text, api);
-          if (urls.isEmpty) return m;
-          return ChatMessage('bot', clean, remoteImages: urls);
-        }).toList();
-      } catch (_) {/* fall through to welcome */}
-    }
-    if (!mounted) return;
-    setState(() {
-      _msgs.clear();
-      if (loaded.isNotEmpty) {
-        _msgs.addAll(loaded);
-      } else {
-        _msgs.add(ChatMessage('bot',
-            widget.command == 'shell'
-                ? 'Em sangathi mava! Gajala ikkada 🔥\nCheppu — em kavali?'
-                : 'Send a /${widget.command} request, or just type.'));
-      }
-    });
-    _scrollEnd(animate: false);
-  }
-
   Future<void> _pickImage() async {
-    if (_sending) return;
     try {
       final x = await ImagePicker().pickImage(
           source: ImageSource.gallery, maxWidth: 2000, imageQuality: 85);
@@ -236,139 +190,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
+  /// Send whatever is typed. The controller owns the turn, so it keeps running
+  /// (and stays visible) if you navigate away — and if a turn is already in
+  /// flight this message is queued instead of dropped.
   Future<void> _send() async {
     final text = _input.text.trim();
     final attach = _pending;
-    if ((text.isEmpty && attach == null) || _sending) return;
-    final api = ref.read(apiProvider);
-    if (api == null) return;
-    final sid = _sid;
-    if (sid == null) return;
+    if (text.isEmpty && attach == null) return;
+    final chat = _chat;
+    if (chat == null) return;
     _lastUserText = text;
-
-    // Explicit /command overrides the screen's command.
-    var command = widget.command;
-    var prompt = text;
-    if (text.startsWith('/')) {
-      final sp = text.indexOf(' ');
-      command = (sp == -1 ? text.substring(1) : text.substring(1, sp)).toLowerCase();
-      prompt = sp == -1 ? '' : text.substring(sp + 1);
-    }
-
-    // Live 'status' bubble that accumulates progress steps, replaced by the
-    // final reply when it lands.
-    final live = ChatMessage('status', 'Gajala typing…');
-    setState(() {
-      _msgs.add(ChatMessage('user', text.isEmpty ? '📷 Photo' : text,
-          localImage: attach?.path));
-      _msgs.add(live);
-      _sending = true;
-      _pending = null;
-      _input.clear();
-    });
-    _scrollEnd();
-
-    final steps = <String>[];
-    var replaced = false;
-    String? newWorkspace;   // project the server reports after the turn
-    void finish(ChatMessage msg) {
-      setState(() {
-        final i = _msgs.indexOf(live);
-        if (i >= 0) {
-          _msgs[i] = msg;
-        } else {
-          _msgs.add(msg);
-        }
-      });
-      replaced = true;
-    }
-
-    try {
-      // Upload the attachment first, then prepend a marker the agent understands
-      // (its claude tool reads the image from that path).
-      if (attach != null) {
-        setState(() => live.text = 'Uploading image…');
-        final bytes = await File(attach.path).readAsBytes();
-        final serverPath = await api.uploadImage(bytes, attach.name);
-        final marker = '[User sent an image, saved at: $serverPath]';
-        prompt = prompt.isEmpty ? marker : '$marker\n$prompt';
-      }
-
-      // notify:true → server also pushes a "reply ready" ping on completion as a
-      // safety net if the stream drops (app backgrounded/killed). It's suppressed
-      // while we're still foregrounded on this chat.
-      await for (final ev in api.runStream(command, prompt, sid, notify: true)) {
-        switch (ev['type']) {
-          case 'step':
-            final label = ev['label']?.toString() ?? '';
-            if (label.isNotEmpty) steps.add(label);
-            setState(() => live.text = steps.join('\n'));
-            _scrollEnd();
-            break;
-          case 'final':
-            newWorkspace = ev['workspace']?.toString();
-            final (imgClean, urls) = _splitImages(ev['result']?.toString() ?? '', api);
-            final (clean, moveTo) = _splitMove(imgClean);
-            finish(ChatMessage(
-                'bot',
-                clean.isEmpty && urls.isNotEmpty ? '' : (clean.isEmpty ? '(no result)' : clean),
-                remoteImages: urls,
-                moveTo: moveTo));
-            break;
-          case 'error':
-            finish(ChatMessage('error', ev['message']?.toString() ?? 'Server error'));
-            break;
-        }
-      }
-      // Stream ended without a terminal frame — the mobile/Tailscale link
-      // dropped before 'final'. The server persists the reply and keeps working
-      // after a disconnect, so recover it from history instead of hanging.
-      if (!replaced) {
-        setState(() => live.text = 'Reconnecting…');
-        final recovered = await _recoverReply(sid, text);
-        finish(recovered ?? ChatMessage('system',
-            'Connection dropped mid-reply — it\'s still being written on the Mac. '
-            'Reopen this chat in a moment to see it.'));
-      }
-    } catch (e) {
-      // A stream error can also mean a dropped connection while the server
-      // finishes the turn — try to recover the persisted reply before erroring.
-      if (!replaced) {
-        setState(() => live.text = 'Reconnecting…');
-        final recovered = await _recoverReply(sid, text);
-        finish(recovered ?? ChatMessage('error', friendlyError(e)));
-      }
-    } finally {
-      setState(() => _sending = false);
-      _scrollEnd();
-      // Follow a project switch the agent made during this turn (header + thread).
-      if (newWorkspace != null) _syncWorkspace(newWorkspace);
-    }
-  }
-
-  /// The live stream dropped before the final frame. The server still finishes
-  /// the turn and persists the reply, so poll history until the answer to
-  /// [userText] lands and return it. Null if it doesn't arrive in time.
-  Future<ChatMessage?> _recoverReply(String sid, String userText) async {
-    final api = ref.read(apiProvider);
-    final want = userText.trim();
-    if (api == null || want.isEmpty) return null;   // can't match image-only sends
-    for (var i = 0; i < 30 && mounted && _sid == sid; i++) {
-      await Future.delayed(const Duration(seconds: 4));
-      try {
-        final h = await api.chatHistory(sid);
-        for (var j = h.length - 1; j >= 1; j--) {
-          if (h[j].role == 'bot' &&
-              h[j - 1].role == 'user' &&
-              h[j - 1].text.trim() == want) {
-            final (clean, urls) = _splitImages(h[j].text, api);
-            return ChatMessage('bot', clean.isEmpty ? h[j].text : clean,
-                remoteImages: urls);
-          }
-        }
-      } catch (_) {/* keep polling */}
-    }
-    return null;
+    setState(() => _pending = null);
+    _input.clear();
+    chat.setDraft('');
+    await chat.send(text, imagePath: attach?.path);
   }
 
   /// Pin the view to the newest message. A single post-frame scroll lands short
@@ -442,8 +277,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             _switchConversation(dir);
           } else if (model != null) {
             // Same thread, just a different engine — note it inline.
-            setState(() => _msgs.add(
-                ChatMessage('system', 'Model → ${_modelLabel(_model)}')));
+            _chat?.addSystemNote('Model → ${_modelLabel(_model)}');
             _scrollEnd();
           }
         },
@@ -454,6 +288,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   Widget build(BuildContext context) {
     final imgHeaders = ref.read(apiProvider)?.authHeaders;
+    // Conversation state lives in the controller, so a turn started here keeps
+    // running (and stays on screen) even if you leave and come back.
+    final chat = _key == null
+        ? const ChatState()
+        : ref.watch(chatControllerProvider(_key!));
+    final msgs = chat.messages;
+    final sending = chat.sending;
+
+    // Auto-scroll only when something new arrives (not on every rebuild).
+    if (msgs.length != _lastMsgCount) {
+      _lastMsgCount = msgs.length;
+      _scrollEnd();
+    }
+    // Follow a project switch the agent made during a turn.
+    if (chat.workspace != null && chat.workspace != _dir) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _syncWorkspace(chat.workspace));
+    }
+
     return Scaffold(
       appBar: AppBar(title: _buildTitle(context)),
       body: Column(children: [
@@ -461,9 +314,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           child: ListView.builder(
             controller: _scroll,
             padding: const EdgeInsets.all(12),
-            itemCount: _msgs.length,
-            itemBuilder: (_, i) => _Bubble(_msgs[i], imgHeaders,
-                onMove: _sending ? null : _moveAndAsk),
+            itemCount: msgs.length,
+            itemBuilder: (_, i) => _Bubble(msgs[i], imgHeaders,
+                onMove: sending ? null : _moveAndAsk),
           ),
         ),
         Container(
@@ -494,27 +347,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   ]),
                 ),
               ),
-            Row(children: [
+            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
               IconButton(
                 icon: Icon(Icons.add_photo_alternate_outlined, color: context.pal.textDim),
-                onPressed: _sending ? null : _pickImage,
+                onPressed: sending ? null : _pickImage,
                 tooltip: 'Attach image',
               ),
               Expanded(
                 child: TextField(
                   controller: _input,
-                  minLines: 1, maxLines: 5,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _send(),
-                  decoration: const InputDecoration(hintText: 'Message or /command…'),
+                  minLines: 1, maxLines: 6,
+                  // Enter inserts a newline; the button sends (mobile standard).
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  onChanged: (v) => _chat?.setDraft(v),
+                  decoration: InputDecoration(
+                    hintText: sending
+                        ? 'Send again to queue…'
+                        : 'Message or /command…',
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
+              // Stays enabled while a turn runs — a second message queues.
               CircleAvatar(
                 backgroundColor: GajalaColors.accent,
                 child: IconButton(
-                  icon: const Icon(Icons.send, color: Colors.white, size: 20),
-                  onPressed: _sending ? null : _send,
+                  icon: Icon(sending ? Icons.playlist_add : Icons.send,
+                      color: Colors.white, size: 20),
+                  onPressed: _send,
+                  tooltip: sending ? 'Queue message' : 'Send',
                 ),
               ),
             ]),
@@ -533,6 +395,32 @@ class _Bubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (m.role == 'status') return _StatusBubble(m.text);
+    // Typed while a turn was running — waiting its turn, sent automatically.
+    if (m.role == 'queued') {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          constraints: const BoxConstraints(maxWidth: 300),
+          decoration: BoxDecoration(
+            color: GajalaColors.userBubble.withValues(alpha: .35),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: context.pal.textDim.withValues(alpha: .4)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(m.text, style: TextStyle(color: context.pal.text.withValues(alpha: .75))),
+            const SizedBox(height: 3),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.schedule, size: 11, color: context.pal.textDim),
+              const SizedBox(width: 4),
+              Text('queued',
+                  style: TextStyle(fontSize: 10.5, color: context.pal.textDim)),
+            ]),
+          ]),
+        ),
+      );
+    }
     if (m.role == 'system') {
       return Center(
         child: Padding(
