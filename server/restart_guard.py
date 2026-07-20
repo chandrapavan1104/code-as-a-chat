@@ -54,6 +54,9 @@ def main() -> None:
     repo, good = sys.argv[1], sys.argv[2]
     _restart()
     if _healthy():
+        # Healthy on the new code — now it's safe to sync origin (best-effort).
+        subprocess.run(["git", "-C", repo, "push", "origin", "HEAD"],
+                       capture_output=True)
         _push("Fix shipped ✅", "Server is healthy on the new code.")
         return
     # New code didn't boot — revert and bring the last-good version back up.
