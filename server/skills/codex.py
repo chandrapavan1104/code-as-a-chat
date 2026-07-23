@@ -11,6 +11,7 @@ class CodexSkill(CLISubprocessSkill):
                  'user explicitly says "codex" or "openai".')
     cli_name = "codex"
     install_hint = "Install: npm install -g @openai/codex"
+    timeout = 600
     # Reuse one Codex thread per project ("codex exec resume <id>"); the CLI
     # mints the id and reports it in a `thread.started` event.
     supports_sessions = True

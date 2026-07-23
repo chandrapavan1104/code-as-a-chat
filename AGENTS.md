@@ -67,6 +67,8 @@ gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 **15-second heartbeats on long `/run/stream` turns** so silent CLI work does not
 lose the phone's HTTPS stream through an idle connection;
+**10-minute Codex turns** so active site build/deploy work is not killed by the
+generic 5-minute CLI timeout;
 **Android home-screen widgets** (Lock / Wake / Ask / Brain-dump + a Codaur usage
 glance). **Codaur usage refreshes every 30 seconds while visible**, bypasses
 caches, drops expired quota snapshots instead of presenting stale limits, and
@@ -79,6 +81,9 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-07-22 — Raised Codex's subprocess allowance from the generic 5 minutes
+  to 10 minutes after a healthy portfolio logo build/deploy was killed while
+  Sites was still publishing. Other CLI skill timeouts remain unchanged.
 - 2026-07-19 — Fixed "Gajala typing…" stuck forever on long turns: the reply was
   completing + persisting server-side, but a dropped mobile/Tailscale stream left
   the app hanging (and the FCM ping is suppressed while foregrounded). The app now
