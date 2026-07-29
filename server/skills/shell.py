@@ -498,6 +498,9 @@ class ShellSkill(Skill):
                 return final
 
             action = decision.get("action")
+            if action in self.DELEGATE_SKILLS:
+                decision["tool"] = action
+                action = "call"
 
             if action == "done":
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
