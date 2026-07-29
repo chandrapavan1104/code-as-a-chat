@@ -1,6 +1,8 @@
 """Smoke tests — cheap sanity checks that the server wiring imports and holds
 together, with no external CLIs or network. Keeps CI meaningful and green."""
 
+import asyncio
+
 
 def test_config_imports_and_has_token():
     from server import config
@@ -25,6 +27,30 @@ def test_skills_register():
     from server.skills import discover, registry
     discover()  # import every skill module so each self-registers
     assert {"shell", "mac", "notes", "reminders"} <= set(registry)
+
+
+def test_shell_accepts_tool_name_as_action(monkeypatch):
+    from server.skills import registry
+    from server.skills.base import Skill
+    from server.skills import shell
+
+    class ProbeSkill(Skill):
+        name = "probe"
+        description = "test probe"
+        final_output = True
+
+        async def run(self, prompt="", **kwargs):
+            return f"probe ran: {prompt}"
+
+    async def fake_haiku(*args, **kwargs):
+        return '{"action":"probe","args":"status","final":true}'
+
+    monkeypatch.setitem(registry, "probe", ProbeSkill())
+    monkeypatch.setattr(shell, "_haiku", fake_haiku)
+
+    result = asyncio.run(shell.ShellSkill().run("check status"))
+
+    assert result == "probe ran: status"
 
 
 def test_usage_ignores_expired_rate_limits(monkeypatch):
