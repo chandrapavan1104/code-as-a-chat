@@ -22,6 +22,7 @@ const _icons = {
   'projects': Icons.work, 'ports': Icons.lan, 'firebase': Icons.local_fire_department,
   'usage': Icons.bar_chart, 'notes': Icons.sticky_note_2, 'context': Icons.description,
   'reminders': Icons.alarm, 'mac': Icons.desktop_mac, 'diary': Icons.menu_book,
+  'qwen': Icons.hub, 'auth': Icons.lock_outline,
 };
 
 class DashboardScreen extends ConsumerWidget {

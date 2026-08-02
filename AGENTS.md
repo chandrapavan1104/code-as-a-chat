@@ -83,6 +83,15 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-08-02 — Local **`qwen`** chat skill: talk directly to a local Qwen2.5-7B
+  via Ollama (localhost:11434) — no quota, fully offline. Conversational (replays
+  session history into Ollama's chat API so it follows context). Also a **`auth`**
+  skill: check each coding CLI's login and re-authenticate **Codex from the phone**
+  via its device-code flow (surfaces the one-time code; the user approves in their
+  own browser — passwords never touch the server). Shell agent now stops
+  **parroting stale errors** (a past "OAuth expired" in history is not the current
+  state — it re-calls the tool and, on any auth/401 failure, routes to `auth`).
+  Dashboard gains icons/colours for both.
 - 2026-07-29 — Fixed shell errors such as `unknown agent action: 'filemanager'`
   when the routing model emitted a registered tool name directly as its action;
   the shell now normalizes that valid shorthand into a normal tool call.
