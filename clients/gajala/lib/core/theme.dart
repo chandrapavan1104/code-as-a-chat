@@ -27,7 +27,7 @@ class GajalaColors {
     'claude': blue, 'codex': green, 'antigravity': violet,
     'sessions': teal, 'filemanager': amber, 'firebase': red,
     'context': indigo, 'fix': red, 'build': teal, 'errors': red,
-    'model': violet,
+    'model': violet, 'qwen': pink, 'auth': red,
   };
 
   /// Stable colour for a skill — falls back to a hash so new skills still get
