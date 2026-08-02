@@ -246,27 +246,88 @@ def get_agent_system() -> str:
 
 # ── Haiku subprocess helper ───────────────────────────────────────────────────
 
-async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIMEOUT,
-                 model: str | None = None) -> str:
-    """One-shot LLM call for the shell brain (and notes/diary/reminders).
+def _provider_chain(task: str) -> list[str]:
+    """Ordered LLM providers to try for a given task. Tasks in QWEN_TASKS run on
+    the local Qwen model first (free/offline) with Claude+OpenAI behind them;
+    every other task keeps Qwen as the FINAL fallback so nothing dies when both
+    Claude and OpenAI are exhausted. A global SHELL_LLM_PROVIDER (claude|openai|
+    qwen) forces that provider to the front."""
+    qwen_tasks = {t.strip() for t in getattr(config, "QWEN_TASKS", "").split(",") if t.strip()}
+    chain = ["qwen", "claude", "openai"] if task in qwen_tasks else ["claude", "openai", "qwen"]
 
-    Claude Haiku is the default. When Claude usage runs out — or any Claude call
-    fails — this transparently falls back to the OpenAI API so the assistant
-    keeps working, controlled by SHELL_LLM_PROVIDER (auto | claude | openai)."""
-    provider = getattr(config, "SHELL_LLM_PROVIDER", "auto").lower()
+    forced = getattr(config, "SHELL_LLM_PROVIDER", "auto").lower()
+    if forced in ("claude", "openai", "qwen"):
+        chain = [forced] + [p for p in chain if p != forced]
 
-    # Proactively skip Claude to conserve usage.
+    if not config.OPENAI_API_KEY:
+        chain = [p for p in chain if p != "openai"]
+    return chain
+
+
+async def _call_llm(provider: str, system_prompt: str, user_message: str,
+                    timeout: int, model: str | None) -> str:
+    # `model` is a Claude-specific alias (e.g. a caller's premium diary model);
+    # Qwen and OpenAI use their own configured models, so don't forward it.
+    if provider == "qwen":
+        return await _qwen_chat(system_prompt, user_message, timeout)
     if provider == "openai":
         return await _openai_chat(system_prompt, user_message, timeout)
+    return await _claude_cli(system_prompt, user_message, timeout, model)
 
-    try:
-        return await _claude_cli(system_prompt, user_message, timeout, model)
-    except Exception as exc:
-        # 'claude' = no fallback (original behavior). 'auto' = try OpenAI next.
-        if provider != "claude" and config.OPENAI_API_KEY:
-            _log.warning("Claude shell call failed (%s) — falling back to OpenAI", exc)
-            return await _openai_chat(system_prompt, user_message, timeout)
-        raise
+
+async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIMEOUT,
+                 model: str | None = None, task: str = "shell",
+                 validate=None) -> str:
+    """One-shot LLM call for the shell brain (and notes/diary/reminders).
+
+    Routes through _provider_chain(task): local Qwen for QWEN_TASKS (default), with
+    Claude + OpenAI as fallback; other tasks fall back TO Qwen last. `validate` (if
+    given) is called on each provider's output — a provider whose output fails it
+    (e.g. Qwen returned unparseable JSON) is skipped and the next provider tried,
+    so bad local JSON transparently escalates to Claude. If every provider fails
+    validation, the last successful output is still returned so the caller's own
+    salvage logic can have a go rather than erroring."""
+    chain = _provider_chain(task)
+    last_exc: Exception | None = None
+    last_out: str | None = None
+    for provider in chain:
+        try:
+            out = await _call_llm(provider, system_prompt, user_message, timeout, model)
+        except Exception as exc:
+            last_exc = exc
+            _log.warning("shell LLM provider %r failed for task %r (%s)", provider, task, exc)
+            continue
+        if validate is not None and not validate(out):
+            last_out = out
+            _log.warning("provider %r output failed validation for task %r — trying next",
+                         provider, task)
+            continue
+        return out
+    if last_out is not None:
+        return last_out
+    raise last_exc or RuntimeError("no LLM provider available")
+
+
+async def _qwen_chat(system_prompt: str, user_message: str,
+                     timeout: int = HAIKU_TIMEOUT, model: str | None = None) -> str:
+    """Local brain: a one-shot Ollama chat completion (Qwen). Same text-in/text-out
+    contract as the Claude/OpenAI paths. Raises on connection/HTTP error so the
+    provider chain falls through to a cloud model."""
+    url = config.OLLAMA_URL.rstrip("/") + "/api/chat"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(url, json={
+            "model": model or config.QWEN_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "stream": False,
+            "options": {"temperature": 0},
+        })
+    if r.status_code != 200:
+        raise RuntimeError(f"qwen (ollama) failed: {r.status_code} {r.text[:200]}")
+    data = r.json()
+    return ((data.get("message") or {}).get("content") or "").strip()
 
 
 async def _openai_chat(system_prompt: str, user_message: str,
@@ -482,7 +543,14 @@ class ShellSkill(Skill):
             last_exc: Exception | None = None
             for attempt in range(2):   # one retry — the claude CLI occasionally hiccups
                 try:
-                    raw = await _haiku(get_agent_system(), agent_input, timeout=HAIKU_TIMEOUT)
+                    # task="shell" → local Qwen first (default), with a validator
+                    # that escalates to Claude/OpenAI if the output isn't a usable
+                    # decision (so weak local JSON never breaks routing).
+                    raw = await _haiku(
+                        get_agent_system(), agent_input, timeout=HAIKU_TIMEOUT,
+                        task="shell",
+                        validate=lambda o: _parse_json_decision(o) is not None
+                        or _salvage_reply(o) is not None)
                     break
                 except Exception as exc:
                     last_exc = exc
@@ -638,6 +706,13 @@ class ShellSkill(Skill):
             return ""
         if engine == "auto":
             return ""
+        if engine == "qwen":
+            # Qwen is a local chat/reasoning model with NO file/system access.
+            return ("PINNED ENGINE: the user selected 'qwen' — a local model that "
+                    "handles chat, questions and reasoning. Use the 'qwen' tool for "
+                    "general / conversational asks. It CANNOT touch files, repos or "
+                    "run commands — for coding / file / repo / system work use "
+                    "'claude' or 'codex' instead.")
         tool = prefs.ENGINE_TOOL.get(engine, engine)
         return (f"PINNED CODING ENGINE: the user has selected '{engine}'. For any "
                 f"coding / file / repo work, use the '{tool}' tool — NOT another "

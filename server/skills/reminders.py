@@ -96,7 +96,8 @@ async def _create(text: str, session_id: str | None) -> str:
               .replace("{now}", now)
               .replace("{projects}", _projects_for_prompt()))
     try:
-        raw = await _haiku(system, f"User said: {text}", timeout=30)
+        raw = await _haiku(system, f"User said: {text}", timeout=30, task="reminders",
+                           validate=lambda o: _parse_json_decision(o) is not None)
     except Exception as exc:
         return f"[remind] couldn't parse time: {exc}"
 

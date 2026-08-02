@@ -102,6 +102,17 @@ OPENAI_SHELL_MODEL: str = os.getenv("OPENAI_SHELL_MODEL", "gpt-4o-mini")
 # Model the codex skill passes to `codex exec --model`.
 CODEX_MODEL: str = os.getenv("CODEX_MODEL", "gpt-5")
 
+# ── local Qwen (Ollama) ───────────────────────────────────────────────────────
+# A local model the shell brain (and notes/diary/reminders) can run on — free,
+# offline, and the default for Gajala so it stops spending Claude on routine
+# routing/formatting. Needs Ollama running with the model pulled.
+OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
+QWEN_MODEL: str = os.getenv("QWEN_MODEL", "qwen2.5:7b")
+# Tasks that run on Qwen as PRIMARY (local first, Claude/OpenAI as fallback).
+# Every other task uses Qwen only as the LAST fallback. Comma list of:
+# shell, notes, diary, reminders. Default keeps reminders on Claude (time math).
+QWEN_TASKS: str = os.getenv("QWEN_TASKS", "shell,notes,diary")
+
 # ── self-healing / fix agent ──────────────────────────────────────────────────
 # This repo (the app the fix agent edits). Derived from this file's location so
 # it works wherever the project lives; override with REPO_DIR if needed.

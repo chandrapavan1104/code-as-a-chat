@@ -14,20 +14,35 @@ from pathlib import Path
 STATE_FILE = Path.home() / ".codeasachat" / "state.json"
 
 # User-facing engine names. "auto" = let the agent choose (today's behavior).
-CODING_ENGINES = ("auto", "claude", "codex", "gemini")
+# "qwen" = the local Ollama model (chat/reasoning brain, no file access).
+CODING_ENGINES = ("auto", "claude", "codex", "gemini", "qwen")
 
 # Engine name → the shell tool that runs it. Gemini's skill is registered under
 # "antigravity" for historical reasons, so map it here.
-ENGINE_TOOL = {"claude": "claude", "codex": "codex", "gemini": "antigravity"}
+ENGINE_TOOL = {"claude": "claude", "codex": "codex", "gemini": "antigravity",
+               "qwen": "qwen"}
 
 # Engines that carry a selectable model (everything except "auto").
-MODEL_ENGINES = ("claude", "codex", "gemini")
+MODEL_ENGINES = ("claude", "codex", "gemini", "qwen")
 
 # Static model presets. Claude uses stable aliases; Gemini a small set. Codex is
 # read live from its own model cache (see model_presets) so the list is current.
 CLAUDE_MODELS = ("opus", "sonnet", "haiku")
 GEMINI_MODELS = ("gemini-2.5-pro", "gemini-2.5-flash")
 _CODEX_FALLBACK = ("gpt-5.6-sol", "gpt-5.5", "gpt-5.4-mini")
+_QWEN_FALLBACK = ("qwen2.5:7b",)
+
+
+def _qwen_models() -> list[str]:
+    """Locally-pulled Ollama models, so the picker matches what's installed."""
+    try:
+        import httpx
+        from server import config
+        r = httpx.get(config.OLLAMA_URL.rstrip("/") + "/api/tags", timeout=3)
+        names = [m["name"] for m in r.json().get("models", []) if m.get("name")]
+        return names or list(_QWEN_FALLBACK)
+    except Exception:
+        return list(_QWEN_FALLBACK)
 
 
 def _codex_models() -> list[str]:
@@ -48,6 +63,7 @@ def model_presets() -> dict:
         "claude": list(CLAUDE_MODELS),
         "codex": _codex_models(),
         "gemini": list(GEMINI_MODELS),
+        "qwen": _qwen_models(),
     }
 
 

@@ -11,13 +11,11 @@ under the tab's session, and this skill replays them into the model.
 """
 
 import httpx
-from server import config
+from server import config, prefs
 from server.db import store as memory
 from server.skills.base import Skill
 from server.skills import register
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "qwen2.5:7b"
 _SYSTEM = ("You are Qwen2.5, a helpful local assistant running on the user's own "
            "Mac. Be concise and conversational — replies are read on a phone.")
 
@@ -47,11 +45,13 @@ class QwenSkill(Skill):
                 messages.append({"role": role, "content": turn["content"]})
         messages.append({"role": "user", "content": prompt})
 
+        model = prefs.get_coding_model("qwen") or config.QWEN_MODEL
+        url = config.OLLAMA_URL.rstrip("/") + "/api/chat"
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 r = await client.post(
-                    OLLAMA_URL,
-                    json={"model": MODEL, "messages": messages, "stream": False},
+                    url,
+                    json={"model": model, "messages": messages, "stream": False},
                 )
                 r.raise_for_status()
                 data = r.json()

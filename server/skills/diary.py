@@ -106,7 +106,7 @@ async def _converse(text: str, instruction: str | None = None) -> str:
 
     try:
         raw = await _haiku(ANNA_SYSTEM, user_block, timeout=90,
-                           model=config.DIARY_MODEL)
+                           model=config.DIARY_MODEL, task="diary")
     except Exception as exc:
         # Never lose a diary entry to an LLM failure
         store.add("user", "general", text)
