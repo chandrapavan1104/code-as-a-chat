@@ -24,7 +24,10 @@ jobs:
 
       - name: Lint with ruff
         run: |
-          pip install ruff
+          # Pinned: an unpinned ruff auto-updates and its default rule set drifts
+          # (0.16 began flagging I001/S110/BLE001 the project never opted into),
+          # breaking CI for unrelated changes. Bump deliberately.
+          pip install ruff==0.15.20
           ruff check server/ clients/ --ignore E501
 
       - name: Type check with mypy
