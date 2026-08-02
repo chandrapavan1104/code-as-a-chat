@@ -83,6 +83,16 @@ app-side fixes (`build` skill → APK link) and gates server changes for your OK
 so a bad server change can't lock you out.
 
 ## Changelog (most recent first)
+- 2026-08-02 — **Qwen as a first-class model + the default Gajala brain.** `_haiku`
+  now routes through a per-task provider chain (`QWEN_TASKS`, default
+  `shell,notes,diary`): those run on local Qwen first with Claude+OpenAI as
+  fallback; other tasks (reminders) keep Qwen as the LAST fallback so nothing dies
+  when Claude+OpenAI are exhausted. A `validate` callback escalates unparseable
+  Qwen JSON to Claude automatically (graceful). Qwen is a switchable engine like
+  claude/codex/gemini (`prefs` + `/api/model` + the `model` skill + the app's
+  engine chips, now rendered from the API's options); its `_engine_hint` is honest
+  (local chat/reasoning, no file access — use claude/codex for file work). Config:
+  `OLLAMA_URL`, `QWEN_MODEL`, `QWEN_TASKS`.
 - 2026-08-02 — Local **`qwen`** chat skill: talk directly to a local Qwen2.5-7B
   via Ollama (localhost:11434) — no quota, fully offline. Conversational (replays
   session history into Ollama's chat API so it follows context). Also a **`auth`**

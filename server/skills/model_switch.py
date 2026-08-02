@@ -55,7 +55,7 @@ def _resolve(text: str) -> tuple[str | None, str | None, str | None]:
     parts = text.split()
 
     # Explicit "<engine> [model]".
-    if parts[0] in ("claude", "codex", "gemini", "auto"):
+    if parts[0] in ("claude", "codex", "gemini", "qwen", "auto"):
         engine = parts[0]
         model = " ".join(parts[1:]).strip() or None
         if engine == "codex" and model:
@@ -66,6 +66,9 @@ def _resolve(text: str) -> tuple[str | None, str | None, str | None]:
 
     if text in _CLAUDE_ALIASES:
         return "claude", text, None
+
+    if "qwen" in text or "ollama" in text or "local" in text:
+        return "qwen", None, None
 
     cm = _match_codex(text)
     if cm:

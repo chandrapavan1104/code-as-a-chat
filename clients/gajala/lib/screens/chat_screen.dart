@@ -593,6 +593,7 @@ class _ContextSheetState extends State<_ContextSheet> {
   Map<String, String> _engineModels = {};   // engine → pinned model ('' = default)
   Map<String, String> _engineBackups = {};   // engine → backup model ('' = none)
   Map<String, List<String>> _presets = {};   // engine → selectable models
+  List<String> _engines = const ['auto', 'claude', 'codex', 'gemini', 'qwen'];
   bool _busy = false;
 
   @override
@@ -619,6 +620,8 @@ class _ContextSheetState extends State<_ContextSheet> {
         _engineBackups = (mdl['backup_models'] as Map?)
                 ?.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())) ??
             {};
+        _engines = (mdl['options'] as List?)?.map((e) => e.toString()).toList() ??
+            _engines;
         _presets = (mdl['presets'] as Map?)?.map((k, v) =>
                 MapEntry(k.toString(), List<String>.from(v ?? const []))) ??
             {};
@@ -711,7 +714,7 @@ class _ContextSheetState extends State<_ContextSheet> {
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8, runSpacing: 8,
-                children: ['auto', 'claude', 'codex', 'gemini'].map((e) {
+                children: _engines.map((e) {
                   final on = e == _model;
                   return ChoiceChip(
                     label: Text(_ChatScreenState._modelLabel(e)),

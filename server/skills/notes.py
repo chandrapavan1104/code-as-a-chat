@@ -25,7 +25,7 @@ import json
 import time
 from server.skills.base import Skill
 from server.skills import register
-from server.skills.shell import _haiku                       # reuse haiku subprocess helper
+from server.skills.shell import _haiku                        # reuse haiku helper
 from server.skills.projects import _candidates as _project_candidates
 from server.db import notes_store as store
 
@@ -228,7 +228,8 @@ async def _capture(text: str, session_id: str | None) -> str:
 
     extracted = None
     try:
-        raw = await _haiku(system, user_msg, timeout=45)
+        raw = await _haiku(system, user_msg, timeout=45, task="notes",
+                           validate=lambda o: _parse_json_decision(o) is not None)
         extracted = _parse_json_decision(raw)
     except Exception:
         pass
