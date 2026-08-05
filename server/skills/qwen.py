@@ -51,7 +51,8 @@ class QwenSkill(Skill):
             async with httpx.AsyncClient(timeout=120) as client:
                 r = await client.post(
                     url,
-                    json={"model": model, "messages": messages, "stream": False},
+                    json={"model": model, "messages": messages, "stream": False,
+                          "keep_alive": getattr(config, "QWEN_KEEP_ALIVE", "30m")},
                 )
                 r.raise_for_status()
                 data = r.json()
