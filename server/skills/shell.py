@@ -323,6 +323,8 @@ async def _qwen_chat(system_prompt: str, user_message: str,
             ],
             "stream": False,
             "options": {"temperature": 0},
+            # Keep the model resident so back-to-back turns don't pay a reload.
+            "keep_alive": getattr(config, "QWEN_KEEP_ALIVE", "30m"),
         })
     if r.status_code != 200:
         raise RuntimeError(f"qwen (ollama) failed: {r.status_code} {r.text[:200]}")

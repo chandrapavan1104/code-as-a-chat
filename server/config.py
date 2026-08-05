@@ -107,7 +107,11 @@ CODEX_MODEL: str = os.getenv("CODEX_MODEL", "gpt-5")
 # offline, and the default for Gajala so it stops spending Claude on routine
 # routing/formatting. Needs Ollama running with the model pulled.
 OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
-QWEN_MODEL: str = os.getenv("QWEN_MODEL", "qwen2.5:7b")
+# 3B (~1.9GB) is the brain default: routing/notes/formatting don't need 7B, and
+# the smaller footprint keeps this 16GB host off swap. 7B stays available as the
+# `qwen` chat engine. keep_alive pins it in memory so there's no reload churn.
+QWEN_MODEL: str = os.getenv("QWEN_MODEL", "qwen2.5:3b")
+QWEN_KEEP_ALIVE: str = os.getenv("QWEN_KEEP_ALIVE", "30m")
 # Tasks that run on Qwen as PRIMARY (local first, Claude/OpenAI as fallback).
 # Every other task uses Qwen only as the LAST fallback. Comma list of:
 # shell, notes, diary, reminders. Default keeps reminders on Claude (time math).
