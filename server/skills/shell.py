@@ -128,6 +128,14 @@ DECISION RULES:
     iter 1 → {"action":"call","tool":"notes","args":"wipe all"}
     iter 2 → {"action":"call","tool":"notes","args":"capture <user's project breakdown>"}
     iter 3 → {"action":"done","reply":"Wiped N notes. Captured M new ones for A, B, C."}
+- PROJECT HANDOFFS: the current project keeps its durable idea/state in
+  AGENTS.md / CLAUDE.md / GEMINI.md. If the user asks whether an idea was passed
+  to this project, call "context" with args "show" — NEVER search notes and
+  claim it is missing. If they say "build it", "implement the project", or
+  "continue the build" while a current directory is supplied, call the pinned
+  coding tool for THAT current project. Do not ask which project they mean.
+  Preserve the user's scope verbatim in tool args; never add a different project
+  name, feature, or speculative alternative.
 - BE ACTION-BIASED. The user prefers things getting done over being walked through manual steps.
 - After tool results come in, do NOT just paste them verbatim into "reply". Summarize.
 - NEVER PARROT A PAST ERROR. An error in <recent_conversation> (e.g. "OAuth
@@ -265,11 +273,13 @@ def _provider_chain(task: str) -> list[str]:
 
 
 async def _call_llm(provider: str, system_prompt: str, user_message: str,
-                    timeout: int, model: str | None) -> str:
+                    timeout: int, model: str | None,
+                    json_mode: bool = False) -> str:
     # `model` is a Claude-specific alias (e.g. a caller's premium diary model);
     # Qwen and OpenAI use their own configured models, so don't forward it.
     if provider == "qwen":
-        return await _qwen_chat(system_prompt, user_message, timeout)
+        return await _qwen_chat(system_prompt, user_message, timeout,
+                                json_mode=json_mode)
     if provider == "openai":
         return await _openai_chat(system_prompt, user_message, timeout)
     return await _claude_cli(system_prompt, user_message, timeout, model)
@@ -292,7 +302,8 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
     last_out: str | None = None
     for provider in chain:
         try:
-            out = await _call_llm(provider, system_prompt, user_message, timeout, model)
+            out = await _call_llm(provider, system_prompt, user_message, timeout,
+                                  model, json_mode=validate is not None)
         except Exception as exc:
             last_exc = exc
             _log.warning("shell LLM provider %r failed for task %r (%s)", provider, task, exc)
@@ -309,26 +320,38 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
 
 
 async def _qwen_chat(system_prompt: str, user_message: str,
-                     timeout: int = HAIKU_TIMEOUT, model: str | None = None) -> str:
+                     timeout: int = HAIKU_TIMEOUT, model: str | None = None,
+                     json_mode: bool = False) -> str:
     """Local brain: a one-shot Ollama chat completion (Qwen). Same text-in/text-out
     contract as the Claude/OpenAI paths. Raises on connection/HTTP error so the
     provider chain falls through to a cloud model."""
     url = config.OLLAMA_URL.rstrip("/") + "/api/chat"
+    payload = {
+        "model": model or config.QWEN_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "stream": False,
+        "options": {"temperature": 0},
+        # Keep the model resident so back-to-back turns don't pay a reload.
+        "keep_alive": getattr(config, "QWEN_KEEP_ALIVE", "30m"),
+    }
+    if json_mode:
+        payload["format"] = "json"
     async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(url, json={
-            "model": model or config.QWEN_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            "stream": False,
-            "options": {"temperature": 0},
-            # Keep the model resident so back-to-back turns don't pay a reload.
-            "keep_alive": getattr(config, "QWEN_KEEP_ALIVE", "30m"),
-        })
+        r = await client.post(url, json=payload)
     if r.status_code != 200:
         raise RuntimeError(f"qwen (ollama) failed: {r.status_code} {r.text[:200]}")
     data = r.json()
+    try:
+        from server.db import local_llm_usage_store
+        local_llm_usage_store.record(
+            response=data, model=payload["model"], cwd=str(config.WORKSPACE_DIR),
+            source="shell",
+        )
+    except Exception:
+        pass
     return ((data.get("message") or {}).get("content") or "").strip()
 
 
@@ -531,6 +554,10 @@ class ShellSkill(Skill):
                     "/firebase /usage /ports /memory /forget /status /files")
 
         recent = memory.get_recent(session_id, n=config.MEMORY_TURNS) if session_id else []
+        repeated = self._repeat_last_reply(prompt, recent)
+        if repeated is not None:
+            self._remember(session_id, prompt, repeated)
+            return repeated
         context_block = self._format_context(recent)
         # Combined per-turn hints: pinned engine + the narrow wrong-directory check.
         hints = "\n\n".join(h for h in (self._engine_hint(), self._directory_hint()) if h)
@@ -578,6 +605,10 @@ class ShellSkill(Skill):
                 self._remember(session_id, prompt, final)
                 return final
 
+            forced = self._project_intent_action(prompt, scratchpad)
+            if forced is not None:
+                decision = forced
+
             action = decision.get("action")
             if action in self.DELEGATE_SKILLS:
                 decision["tool"] = action
@@ -592,6 +623,21 @@ class ShellSkill(Skill):
             if action == "call":
                 tool_name = (decision.get("tool") or "").strip()
                 tool_args = (decision.get("args") or "").strip()
+
+                # A small router may react to a timeout by launching the exact
+                # same expensive call again. That never adds information and can
+                # silently burn another 10 minutes, so stop mechanically.
+                for previous in reversed(scratchpad):
+                    if (previous["tool"] == tool_name
+                            and previous["args"] == tool_args
+                            and re.search(r"\bTimed out after \d+s\b",
+                                          previous["result"], re.IGNORECASE)):
+                        final = (previous["result"]
+                                 + "\n\nThe identical request was not retried "
+                                   "automatically. Narrow the task or ask me to "
+                                   "retry it explicitly.")
+                        self._remember(session_id, prompt, final)
+                        return final
 
                 if tool_name not in self.DELEGATE_SKILLS:
                     available = ", ".join(sorted(self.DELEGATE_SKILLS))
@@ -664,6 +710,62 @@ class ShellSkill(Skill):
                      "Try a more specific request.")
         self._remember(session_id, prompt, final)
         return final
+
+    @staticmethod
+    def _project_intent_action(prompt: str, scratchpad: list[dict]) -> dict | None:
+        """Deterministic rail for the two short project handoffs small routers
+        repeatedly got wrong: inspect passed context, then run the pinned coding
+        agent. Narrow matching avoids hijacking normal planning questions."""
+        text = " ".join(prompt.lower().strip(" .!?").split())
+        build_commands = {
+            "build it", "build the project", "implement it",
+            "implement the project", "continue the build",
+            "continue building", "continue building the project",
+            "finish the build", "finish the project",
+        }
+        handoff = ("idea" in text and ("passed" in text or "context" in text)
+                   and ("build it" in text or "implement it" in text))
+        if text not in build_commands and not handoff:
+            return None
+
+        if handoff and not any(s["tool"] == "context" for s in scratchpad):
+            return {"action": "call", "tool": "context", "args": "show"}
+
+        coding_tools = {"claude", "codex", "antigravity"}
+        if any(s["tool"] in coding_tools for s in scratchpad):
+            return None
+        try:
+            from server import prefs
+            engine = prefs.get_coding_engine()
+            tool = prefs.ENGINE_TOOL.get(engine, engine)
+        except Exception:
+            tool = "claude"
+        if tool not in coding_tools:
+            tool = "claude"
+        args = prompt
+        if handoff:
+            args += ("\nUse the current project's AGENTS.md context as the "
+                     "authoritative idea and implement it.")
+        return {"action": "call", "tool": tool, "args": args}
+
+    @staticmethod
+    def _repeat_last_reply(prompt: str, recent: list[dict]) -> str | None:
+        """Repeat means repeat: don't let a model regenerate and drift away
+        from the immediately preceding update. Deliberately excludes "try/run
+        again", which requests a new action rather than the same text."""
+        text = " ".join(prompt.lower().split())
+        patterns = (
+            r"^(?:please )?(?:give|send|show|tell)(?: me)? (?:the )?"
+            r"(?:same )?(?:update|answer|reply|message) again[.!?]*$",
+            r"^(?:please )?repeat (?:that|it|your (?:last )?"
+            r"(?:update|answer|reply|message))[.!?]*$",
+        )
+        if not any(re.fullmatch(pattern, text) for pattern in patterns):
+            return None
+        for turn in reversed(recent):
+            if turn.get("role") == "assistant" and turn.get("content"):
+                return str(turn["content"])
+        return None
 
     @staticmethod
     def _attach_images(reply: str, images: list[str]) -> str:

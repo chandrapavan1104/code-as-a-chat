@@ -66,3 +66,407 @@ def test_usage_ignores_expired_rate_limits(monkeypatch):
     assert api_v2._limits(report) == [
         {"label": "weekly", "pct": 25.0, "detail": None},
     ]
+
+
+def test_all_coding_agents_allow_ten_minute_turns():
+    from server.skills.claude_code import ClaudeCodeSkill
+    from server.skills.antigravity import AntigravitySkill
+    from server.skills.codex import CodexSkill
+
+    assert ClaudeCodeSkill.timeout == 600
+    assert AntigravitySkill.timeout == 600
+    assert CodexSkill.timeout == 600
+
+
+def test_filemanager_resolves_relative_to_active_workspace(tmp_path, monkeypatch):
+    from server import config
+    from server.skills.filemanager import FileManagerSkill
+
+    workspace = tmp_path / "active-project"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("active readme")
+    monkeypatch.setattr(config, "WORKSPACE_DIR", workspace)
+
+    result = asyncio.run(FileManagerSkill().run("read README.md"))
+
+    assert "active readme" in result
+    assert str(workspace / "README.md") in result
+
+
+def test_filemanager_recovers_bare_known_project(tmp_path, monkeypatch):
+    from server import config
+    from server.skills.filemanager import FileManagerSkill
+
+    current = tmp_path / "current"
+    sibling = tmp_path / "Sibling-Project"
+    current.mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(config, "WORKSPACE_DIR", current)
+    monkeypatch.setenv("PROJECTS_PARENT_DIR", str(tmp_path))
+
+    result = asyncio.run(FileManagerSkill().run("list Sibling-Project"))
+
+    assert result.startswith(f"{sibling}/")
+
+
+def test_shell_repeats_last_update_without_regeneration():
+    from server.skills.shell import ShellSkill
+
+    recent = [
+        {"role": "user", "content": "start the build"},
+        {"role": "assistant", "content": "Build is 60% complete."},
+    ]
+
+    assert (ShellSkill._repeat_last_reply("Give me the update again", recent)
+            == "Build is 60% complete.")
+    assert ShellSkill._repeat_last_reply("try the build again", recent) is None
+
+
+def test_shell_project_handoff_reads_context_then_uses_pinned_agent(monkeypatch):
+    from server import prefs
+    from server.skills.shell import ShellSkill
+
+    prompt = "Do you have the project idea passed to you? if yes, build it"
+    monkeypatch.setattr(prefs, "get_coding_engine", lambda: "claude")
+
+    first = ShellSkill._project_intent_action(prompt, [])
+    second = ShellSkill._project_intent_action(prompt, [
+        {"tool": "context", "args": "show", "result": "project context"},
+    ])
+
+    assert first == {"action": "call", "tool": "context", "args": "show"}
+    assert second["tool"] == "claude"
+    assert "AGENTS.md" in second["args"]
+
+
+def test_shell_short_build_command_uses_pinned_agent(monkeypatch):
+    from server import prefs
+    from server.skills.shell import ShellSkill
+
+    monkeypatch.setattr(prefs, "get_coding_engine", lambda: "codex")
+
+    action = ShellSkill._project_intent_action("implement the project", [])
+
+    assert action == {
+        "action": "call", "tool": "codex", "args": "implement the project",
+    }
+
+
+def test_shell_does_not_repeat_identical_timed_out_call(monkeypatch):
+    from server.skills import registry
+    from server.skills.base import Skill
+    from server.skills import shell
+
+    calls = 0
+    decisions = iter([
+        '{"action":"call","tool":"slow_probe","args":"build everything"}',
+        '{"action":"call","tool":"slow_probe","args":"build everything"}',
+    ])
+
+    class SlowProbe(Skill):
+        name = "slow_probe"
+        description = "test timeout"
+
+        async def run(self, prompt="", **kwargs):
+            nonlocal calls
+            calls += 1
+            return "[slow_probe] Timed out after 600s"
+
+    async def fake_haiku(*args, **kwargs):
+        return next(decisions)
+
+    monkeypatch.setitem(registry, "slow_probe", SlowProbe())
+    monkeypatch.setattr(shell, "_haiku", fake_haiku)
+
+    result = asyncio.run(shell.ShellSkill().run("run the slow probe"))
+
+    assert calls == 1
+    assert "not retried automatically" in result
+
+
+def test_coding_engine_is_pinned_per_project(tmp_path, monkeypatch):
+    from server import prefs
+
+    monkeypatch.setattr(prefs, "STATE_FILE", tmp_path / "state.json")
+    one, two = tmp_path / "one", tmp_path / "two"
+    prefs.set_coding_engine("claude", one)
+    prefs.set_coding_engine("codex", two)
+
+    assert prefs.get_coding_engine(one) == "claude"
+    assert prefs.get_coding_engine(two) == "codex"
+
+
+def test_legacy_global_engine_is_frozen_when_project_is_first_seen(tmp_path, monkeypatch):
+    import json
+    from server import prefs
+
+    state_file = tmp_path / "state.json"
+    state_file.write_text('{"coding_engine":"claude"}')
+    monkeypatch.setattr(prefs, "STATE_FILE", state_file)
+    project = tmp_path / "project"
+
+    assert prefs.get_coding_engine(project) == "claude"
+    prefs.set_coding_engine("codex", tmp_path / "other")
+    assert prefs.get_coding_engine(project) == "claude"
+    assert json.loads(state_file.read_text())["coding_engines"][str(project)] == "claude"
+
+
+def test_backup_model_keeps_the_same_cli_session(tmp_path, monkeypatch):
+    from server import config, prefs
+    from server.db import cli_runs_store, cli_sessions_store
+    from server.skills.claude_code import ClaudeCodeSkill
+
+    calls = []
+    replies = iter([
+        (1, "", "primary failed"),
+        (0, '{"session_id":"same-session","result":"ok"}', ""),
+    ])
+
+    async def fake_spawn(_self, cmd, cwd):
+        calls.append(cmd)
+        return next(replies)
+
+    monkeypatch.setattr(config, "WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "get_coding_model", lambda _engine: "opus")
+    monkeypatch.setattr(prefs, "get_backup_model", lambda _engine: "sonnet")
+    monkeypatch.setattr(ClaudeCodeSkill, "_resume_id", lambda _self, _cwd: "same-session")
+    monkeypatch.setattr(ClaudeCodeSkill, "_spawn", fake_spawn)
+    monkeypatch.setattr(cli_runs_store, "add", lambda **_kwargs: None)
+    monkeypatch.setattr(cli_sessions_store, "set", lambda *_args: None)
+    monkeypatch.setattr("server.skills.cli_base.shutil.which", lambda _name: "/bin/cli")
+
+    result = asyncio.run(ClaudeCodeSkill().run("build", session_id="app:test"))
+
+    assert len(calls) == 2
+    assert all(cmd[cmd.index("--resume") + 1] == "same-session" for cmd in calls)
+    assert "retried on backup sonnet" in result
+
+
+def test_cli_usage_parsers():
+    from server.skills.antigravity import AntigravitySkill
+    from server.skills.claude_code import ClaudeCodeSkill
+    from server.skills.codex import CodexSkill
+
+    claude = '{"usage":{"input_tokens":10,"output_tokens":4,' \
+             '"cache_creation_input_tokens":3,"cache_read_input_tokens":20}}'
+    codex = '{"type":"turn.completed","usage":{"total_tokens":40,' \
+            '"cached_input_tokens":25}}'
+    gemini = '{"stats":{"models":{"m":{"tokens":{"input":8,' \
+             '"candidates":2,"cached":30,"thoughts":5}}}}}'
+
+    assert ClaudeCodeSkill().extract_usage(claude) == (37, 17)
+    assert CodexSkill().extract_usage(codex) == (40, 15)
+    assert AntigravitySkill().extract_usage(gemini) == (45, 15)
+
+
+def test_local_qwen_usage_log_stores_metrics_not_content(tmp_path, monkeypatch):
+    import json
+    from server.db import local_llm_usage_store
+
+    log = tmp_path / "qwen_usage.jsonl"
+    monkeypatch.setattr(local_llm_usage_store, "DB_PATH", log)
+    response = {
+        "message": {"content": "private answer"},
+        "prompt_eval_count": 12,
+        "eval_count": 8,
+        "total_duration": 900,
+    }
+    local_llm_usage_store.record(
+        response=response, model="qwen2.5:3b", cwd="/Projects/demo",
+        source="gajala", session_id="app:test",
+    )
+
+    row = json.loads(log.read_text())
+    assert row["inputTokens"] == 12
+    assert row["outputTokens"] == 8
+    assert row["totalTokens"] == 20
+    assert row["sessionId"] == "app:test"
+    assert "private answer" not in log.read_text()
+
+
+def test_night_queue_store_roundtrip_and_atomic_claim(tmp_path, monkeypatch):
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+
+    jid = q.add(project="/tmp/proj", task="add CSV export", tag="auto", engine="codex")
+    held = q.add(project="/tmp/proj", task="redesign nav", tag="mine")
+
+    # A held (mine) job is never queued/claimable.
+    assert q.get(held)["status"] == "held"
+    # An engine-pinned job is only claimed by its engine.
+    assert q.claim_next("claude") is None
+    claimed = q.claim_next("codex")
+    assert claimed["id"] == jid and claimed["status"] == "running"
+    # It's gone from the runnable set now (no double-claim).
+    assert q.claim_next("codex") is None
+    assert q.claim_next("gemini") is None
+
+    q.update(jid, status="staged", files_changed=["server/x.py"], tokens_total=1234)
+    row = q.get(jid)
+    assert row["status"] == "staged"
+    assert row["files_changed"] == ["server/x.py"]
+    assert [j["id"] for j in q.list_jobs(status="staged")] == [jid]
+
+
+def test_night_shift_window_wraps_past_midnight(monkeypatch):
+    import datetime as dt
+    from server import config, night_shift
+
+    monkeypatch.setattr(config, "NIGHT_START", "23:00")
+    monkeypatch.setattr(config, "NIGHT_END", "07:00")
+
+    def at(h, m):
+        return dt.datetime(2026, 8, 7, h, m)
+
+    assert night_shift._in_window(at(2, 0)) is True
+    assert night_shift._in_window(at(23, 30)) is True
+    assert night_shift._in_window(at(12, 0)) is False
+
+
+def test_night_shift_benches_engine_over_quota(monkeypatch):
+    from server import config, night_shift
+
+    monkeypatch.setattr(config, "NIGHT_ENGINES", "claude,codex,gemini")
+    monkeypatch.setattr(config, "NIGHT_QUOTA_STOP_PCT", 85)
+    night_shift._workers.clear()
+
+    avail = night_shift._available_engines({"codex": 95.0, "claude": 10.0, "gemini": 50.0})
+    assert "codex" not in avail
+    assert set(avail) == {"claude", "gemini"}
+
+
+def test_queue_add_parses_tag_engine_and_project(monkeypatch):
+    from server import config
+    from server.skills import queue
+
+    monkeypatch.setattr(config, "WORKSPACE_DIR", __import__("pathlib").Path("/tmp/active"))
+    monkeypatch.setattr(queue, "_resolve_project", lambda name: f"/Projects/{name}")
+
+    project, task, tag, engine = queue._parse_add("mine codex demo: add a CSV export")
+    assert (tag, engine, project) == ("mine", "codex", "/Projects/demo")
+    assert task == "add a CSV export"
+
+    # Bare task → defaults (auto/auto) in the active workspace.
+    project, task, tag, engine = queue._parse_add("just do the thing")
+    assert (tag, engine, task) == ("auto", "auto", "just do the thing")
+    assert project == "/tmp/active"
+
+
+def test_notifications_store_roundtrip(tmp_path, monkeypatch):
+    from server.db import notifications_store as n
+
+    monkeypatch.setattr(n, "DB_PATH", tmp_path / "notifications.db")
+
+    nid = n.add(type="queue_input", title="Job #3 needs input",
+                body="which db?", needs_response=True, ref_kind="queue_job", ref_id=3)
+    assert n.unread_count() == 1
+    assert n.get(nid)["data"] == {}          # empty data decodes to {}
+
+    n.mark_read(nid)
+    assert n.unread_count() == 0
+
+    n.set_response(nid, "sqlite")
+    row = n.get(nid)
+    assert row["status"] == "answered" and row["response"] == "sqlite"
+
+    assert n.dismiss(nid) is True
+    assert n.get(nid)["status"] == "dismissed"
+
+
+def test_respond_to_job_appends_answer_and_requeues(tmp_path, monkeypatch):
+    from server import night_shift
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    jid = q.add(project="/tmp/p", task="add export", tag="auto", engine="codex")
+    q.update(jid, status="awaiting_input")
+
+    job = night_shift.respond_to_job(jid, "use SQLite")
+    assert job["status"] == "queued"
+    assert "Owner's answer to your question: use SQLite" in job["task"]
+    # An unknown job is a clean None, not a crash.
+    assert night_shift.respond_to_job(9999, "x") is None
+
+
+def test_stop_job_is_safe_when_not_running(tmp_path, monkeypatch):
+    from server import night_shift
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    assert night_shift.stop_job(123) is False          # unknown job
+    jid = q.add(project="/tmp/p", task="t", tag="auto")
+    assert night_shift.stop_job(jid) is True           # queued → parked stopped
+    assert q.get(jid)["status"] == "stopped"
+
+
+def test_night_settings_overlay_precedence(tmp_path, monkeypatch):
+    from server import config, prefs
+
+    monkeypatch.setattr(prefs, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(config, "NIGHT_SHIFT_ENABLED", False)
+    monkeypatch.setattr(config, "NIGHT_MAX_JOBS", 12)
+
+    # Defaults come from config until overridden.
+    assert prefs.night_settings()["enabled"] is False
+    assert prefs.night_settings()["max_jobs"] == 12
+
+    prefs.set_night_settings(enabled=True, max_jobs=3)
+    assert prefs.night_settings()["enabled"] is True
+    assert prefs.night_settings()["max_jobs"] == 3
+    # Unset keys still fall through to config.
+    assert prefs.night_settings()["start"] == config.NIGHT_START
+
+
+def test_android_widget_layouts_only_use_remoteviews_safe_elements():
+    """Launchers reject an entire widget when any layout tag is unsupported."""
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+
+    safe = {"LinearLayout", "TextView", "ImageView", "ProgressBar", "include"}
+    layouts = (Path(__file__).parents[2] / "clients/gajala/android/app/src/main/res/layout")
+
+    for layout in layouts.glob("widget*.xml"):
+        tags = {element.tag.rsplit("}", 1)[-1] for element in ET.parse(layout).iter()}
+        assert tags <= safe, f"{layout.name} has unsafe RemoteViews tags: {tags - safe}"
+
+
+def test_codaur_usage_refresh_is_coalesced(monkeypatch):
+    from types import SimpleNamespace
+    from server import api_v2
+
+    calls = 0
+
+    def fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(returncode=0, stdout='{"reports":[]}', stderr="")
+
+    monkeypatch.setattr(api_v2, "_CODAUR_CACHE", None)
+    monkeypatch.setattr(api_v2.subprocess, "run", fake_run)
+
+    assert api_v2._codaur_report() == {"reports": []}
+    assert api_v2._codaur_report() == {"reports": []}
+    assert calls == 1
+
+
+def test_run_stream_sends_a_frame_immediately(monkeypatch):
+    import json
+    from fastapi.testclient import TestClient
+    from server import config, main
+
+    async def fake_route(*_args, **_kwargs):
+        await asyncio.sleep(0.01)
+        return "finished"
+
+    monkeypatch.setattr(main.orchestrator, "route", fake_route)
+    client = TestClient(main.app)
+    response = client.post(
+        "/run/stream",
+        headers={"X-API-Token": config.API_TOKEN},
+        json={"command": "shell", "prompt": "hello", "session_id": "test"},
+    )
+    frames = [json.loads(line) for line in response.text.splitlines()]
+
+    assert frames[0] == {"type": "step", "label": "Thinking…"}
+    assert frames[-1]["type"] == "final"

@@ -1,138 +1,86 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Gajala quick-actions widget: Lock (network) · Ask · Dump (deep-links). -->
+<!-- Two-row remote-control widget with launcher-adaptive surfaces. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="@drawable/widget_card_bg"
-    android:padding="12dp">
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Gajala"
-        android:textColor="#2EA6FF"
-        android:textSize="12sp"
-        android:textStyle="bold"
-        android:paddingBottom="8dp"
-        android:letterSpacing="0.02" />
+    android:padding="14dp">
 
     <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal">
-
-        <!-- Lock -->
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical"
+        android:paddingBottom="10dp">
+        <ImageView
+            android:id="@+id/mac_status_dot" android:layout_width="8dp" android:layout_height="8dp"
+            android:src="@drawable/widget_dot_ok" android:contentDescription="Mac status" />
         <LinearLayout
-            android:id="@+id/tile_lock"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginEnd="6dp"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:background="@drawable/widget_tile_bg"
-            android:padding="6dp">
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:src="@drawable/ic_widget_lock"
-                android:contentDescription="Lock Mac" />
+            android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+            android:layout_marginStart="8dp" android:orientation="vertical">
             <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Lock"
-                android:textColor="#E9EDF0"
-                android:textSize="11sp"
-                android:paddingTop="4dp" />
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="Gajala Remote" android:textColor="@color/widget_text"
+                android:textSize="15sp" android:fontFamily="sans-serif-medium" />
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="MAC MINI CONTROL" android:textColor="@color/widget_accent"
+                android:textSize="9sp" android:letterSpacing="0.08"
+                android:fontFamily="sans-serif-medium" />
         </LinearLayout>
+        <TextView
+            android:id="@+id/mac_status" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="Ready" android:textColor="@color/widget_text_dim" android:textSize="10sp"
+            android:maxLines="1" android:ellipsize="end" />
+    </LinearLayout>
 
-        <!-- Wake / Unlock -->
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:orientation="horizontal" android:paddingBottom="6dp">
         <LinearLayout
-            android:id="@+id/tile_wake"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginEnd="6dp"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:background="@drawable/widget_tile_bg"
-            android:padding="6dp">
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:src="@drawable/ic_widget_unlock"
-                android:contentDescription="Wake / unlock Mac" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Wake"
-                android:textColor="#E9EDF0"
-                android:textSize="11sp"
-                android:paddingTop="4dp" />
+            android:id="@+id/tile_lock" android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_weight="1" android:layout_marginEnd="6dp" android:orientation="horizontal"
+            android:gravity="center" android:background="@drawable/widget_tile_bg" android:padding="8dp">
+            <ImageView android:layout_width="22dp" android:layout_height="22dp"
+                android:src="@drawable/ic_widget_lock" android:contentDescription="Lock Mac" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="8dp" android:text="Lock Mac" android:textColor="@color/widget_text"
+                android:textSize="12sp" android:fontFamily="sans-serif-medium" />
         </LinearLayout>
-
-        <!-- Ask -->
         <LinearLayout
-            android:id="@+id/tile_ask"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginEnd="6dp"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:background="@drawable/widget_tile_bg"
-            android:padding="6dp">
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:src="@drawable/ic_widget_chat"
-                android:contentDescription="Ask Gajala" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Ask"
-                android:textColor="#E9EDF0"
-                android:textSize="11sp"
-                android:paddingTop="4dp" />
-        </LinearLayout>
-
-        <!-- Brain dump -->
-        <LinearLayout
-            android:id="@+id/tile_dump"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:background="@drawable/widget_tile_bg"
-            android:padding="6dp">
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:src="@drawable/ic_widget_brain"
-                android:contentDescription="Brain dump" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Dump"
-                android:textColor="#E9EDF0"
-                android:textSize="11sp"
-                android:paddingTop="4dp" />
+            android:id="@+id/tile_wake" android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_weight="1" android:orientation="horizontal" android:gravity="center"
+            android:background="@drawable/widget_tile_bg" android:padding="8dp">
+            <ImageView android:layout_width="22dp" android:layout_height="22dp"
+                android:src="@drawable/ic_widget_unlock" android:contentDescription="Wake Mac" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="8dp" android:text="Wake Mac" android:textColor="@color/widget_text"
+                android:textSize="12sp" android:fontFamily="sans-serif-medium" />
         </LinearLayout>
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/mac_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Lock or wake the Mac"
-        android:textColor="#8A99A8"
-        android:textSize="10sp"
-        android:paddingTop="8dp"
-        android:gravity="center"
-        android:maxLines="1"
-        android:ellipsize="end" />
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:orientation="horizontal">
+        <LinearLayout
+            android:id="@+id/tile_ask" android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_weight="1" android:layout_marginEnd="6dp" android:orientation="horizontal"
+            android:gravity="center" android:background="@drawable/widget_tile_bg" android:padding="8dp">
+            <ImageView android:layout_width="22dp" android:layout_height="22dp"
+                android:src="@drawable/ic_widget_chat" android:contentDescription="Ask Gajala" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="8dp" android:text="Ask Gajala" android:textColor="@color/widget_text"
+                android:textSize="12sp" android:fontFamily="sans-serif-medium" />
+        </LinearLayout>
+        <LinearLayout
+            android:id="@+id/tile_dump" android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_weight="1" android:orientation="horizontal" android:gravity="center"
+            android:background="@drawable/widget_tile_bg" android:padding="8dp">
+            <ImageView android:layout_width="22dp" android:layout_height="22dp"
+                android:src="@drawable/ic_widget_brain" android:contentDescription="Brain dump" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="8dp" android:text="Brain dump" android:textColor="@color/widget_text"
+                android:textSize="12sp" android:fontFamily="sans-serif-medium" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>

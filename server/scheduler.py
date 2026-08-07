@@ -24,13 +24,19 @@ _last_battery_alert: float = 0.0
 
 
 async def _check_reminders() -> None:
+    from server.notifier import notify_app
     for r in reminders_store.due_now():
         text = f"⏰ REMINDER\n\n{r['text']}"
         if r.get("project"):
             text += f"\n\n(project: {r['project']})"
         ok = await notify.push_text(text, chat_id=r.get("chat_id"))
-        # Also push to the Gajala app (no-op if FCM isn't configured).
-        await fcm.push_all("⏰ Reminder", r["text"], data={"type": "reminder", "id": r["id"]})
+        # Log to the Gajala inbox + push (no-op if FCM isn't configured), so a
+        # fired reminder lives in the Alerts tab alongside everything else.
+        try:
+            await notify_app("reminder", title="⏰ Reminder", body=r["text"],
+                             ref_kind="reminder", ref_id=r["id"])
+        except Exception:
+            pass
         if ok:
             reminders_store.mark_fired(r["id"])
             log.info("Fired reminder #%s", r["id"])

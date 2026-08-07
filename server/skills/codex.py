@@ -61,6 +61,22 @@ class CodexSkill(CLISubprocessSkill):
                 return event["thread_id"]
         return None
 
+    def extract_usage(self, stdout: str) -> tuple[int, int]:
+        usage = None
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "turn.completed":
+                usage = event.get("usage") or {}
+        if not usage:
+            return 0, 0
+        total = usage.get("total_tokens")
+        if total is None:
+            total = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+        return total, max(0, total - (usage.get("cached_input_tokens") or 0))
+
     def parse_output(self, stdout: str, stderr: str) -> str:
         # Codex emits JSONL: one JSON event per line.
         # Final answer is the last `item.completed` event with type=agent_message.

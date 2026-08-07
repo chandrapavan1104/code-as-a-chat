@@ -1,8 +1,9 @@
 import asyncio
 import shutil
+import time
 from server.skills.base import Skill
 from server import config
-from server.db import cli_sessions_store
+from server.db import cli_runs_store, cli_sessions_store, native_sessions
 
 
 class CLISubprocessSkill(Skill):
@@ -10,7 +11,7 @@ class CLISubprocessSkill(Skill):
 
     cli_name: str         # binary to look up on PATH (e.g. "claude")
     install_hint: str     # message shown if the CLI is missing
-    timeout: int = 300    # seconds before we kill the subprocess
+    timeout: int = 600    # heavy coding/build turns need the same 10 min as Codex
 
     # Session reuse: when True, run() reuses one CLI session per (workspace,
     # engine) so turns build on each other and the thread is resumable on the
@@ -59,6 +60,20 @@ class CLISubprocessSkill(Skill):
         still exits 0."""
         return rc not in (0, None)
 
+    @staticmethod
+    def _resume_rejected(stdout: str, stderr: str) -> bool:
+        """True only when the CLI says the session id itself is unusable.
+
+        A generic model/auth/quota failure must not be mistaken for a stale
+        thread: doing so silently forks the project's conversation.
+        """
+        text = f"{stdout}\n{stderr}".lower()
+        return any(marker in text for marker in (
+            "session not found", "session does not exist", "invalid session",
+            "unknown session", "conversation not found", "no conversation found",
+            "could not find session", "failed to resume",
+        ))
+
     def parse_output(self, stdout: str, stderr: str) -> str:
         """Convert raw stdout/stderr into the user-facing string. Default: stdout."""
         return stdout.strip()
@@ -67,6 +82,34 @@ class CLISubprocessSkill(Skill):
         """Pull the CLI-assigned session id out of the output so we can resume it
         next time. Client-assigned engines return None (we already know the id)."""
         return None
+
+    def extract_usage(self, stdout: str) -> tuple[int, int]:
+        """Return (all tokens, billable tokens) for one CLI attempt."""
+        return 0, 0
+
+    @staticmethod
+    def _source(session_id: str | None) -> str:
+        if session_id and session_id.startswith("app:"):
+            return "gajala"
+        if session_id and session_id.startswith("tg:"):
+            return "telegram"
+        return "server"
+
+    def _record_attempt(self, cwd: str, source: str, started_at: float,
+                        rc: int | None, stdout: str,
+                        session_id: str | None) -> None:
+        try:
+            total, billable = self.extract_usage(stdout)
+            status = ("timeout" if rc is None
+                      else ("error" if self._failed(rc, stdout) else "success"))
+            cli_runs_store.add(
+                workspace=cwd, engine=self.session_engine,
+                cli_session_id=session_id or self.extract_session_id(stdout),
+                source=source, started_at=started_at, status=status,
+                total_tokens=total, billable_tokens=billable,
+            )
+        except Exception:
+            pass
 
     def _sync_context(self) -> None:
         """Converge AGENTS.md ↔ CLAUDE.md ↔ GEMINI.md so whichever engine runs
@@ -104,11 +147,38 @@ class CLISubprocessSkill(Skill):
                 stdout_b.decode(errors="replace"),
                 stderr_b.decode(errors="replace"))
 
-    async def _attempt(self, prompt: str, cwd: str, model: str):
+    def _resume_id(self, cwd: str) -> str | None:
+        """Which session should this project+engine continue?
+
+        The rule is "the folder's most recent thread, whoever opened it". Our own
+        pointer only sees turns that came through the server — a session you open
+        by running the CLI yourself on the Mac never touches it, so trusting the
+        pointer alone forks the thread. Asking the CLI's own store instead makes
+        both sides resolve to the same session, which is the whole guarantee.
+
+        The pointer stays as the fallback for when native discovery finds nothing
+        (unreadable store, or an engine whose layout we don't parse).
+        """
+        stored = cli_sessions_store.get(cwd, self.session_engine)
+        if not getattr(config, "SESSION_FOLLOW_NATIVE", True):
+            return stored
+
+        native = native_sessions.latest(cwd, self.session_engine)
+        if native is None:
+            return stored
+        native_id = native[0]
+        if native_id != stored:
+            # The Mac (or another caller) moved on — follow it, don't fork.
+            cli_sessions_store.set(cwd, self.session_engine, native_id)
+        return native_id
+
+    async def _attempt(self, prompt: str, cwd: str, model: str,
+                       source: str = "server"):
         """One model's run: resume the stored session if any, and if that resume
-        fails, retry once fresh. Returns (rc, stdout, stderr, new_id, resume_id)."""
-        resume_id = (cli_sessions_store.get(cwd, self.session_engine)
-                     if self.supports_sessions else None)
+        fails, retry once fresh. Returns (rc, stdout, stderr, new_id, resume_id).
+        A backup model resumes the same thread: models are replaceable workers,
+        while the project+engine thread is the durable conversation."""
+        resume_id = self._resume_id(cwd) if self.supports_sessions else None
 
         def _fresh():
             nid = self.new_session_id() if self.supports_sessions else None
@@ -118,16 +188,21 @@ class CLISubprocessSkill(Skill):
             cmd, new_id = self.build_command(prompt, resume_id=resume_id, model=model), None
         else:
             cmd, new_id = _fresh()
+        started_at = time.time()
         rc, stdout, stderr = await self._spawn(cmd, cwd)
+        self._record_attempt(cwd, source, started_at, rc, stdout,
+                             resume_id or new_id)
 
         # A stored session can go stale (deleted, or the CLI rejects the id). If a
         # resume attempt failed, forget it and retry once with a fresh session so
         # the user never gets stuck behind a dead id.
-        if rc not in (0, None) and resume_id:
+        if rc not in (0, None) and resume_id and self._resume_rejected(stdout, stderr):
             cli_sessions_store.clear(cwd, self.session_engine)
             resume_id = None
             cmd, new_id = _fresh()
+            started_at = time.time()
             rc, stdout, stderr = await self._spawn(cmd, cwd)
+            self._record_attempt(cwd, source, started_at, rc, stdout, new_id)
         return rc, stdout, stderr, new_id, resume_id
 
     async def run(self, prompt: str = "", **kwargs) -> str:
@@ -147,16 +222,18 @@ class CLISubprocessSkill(Skill):
 
         primary = self._primary_model()
         backup = self._backup_model()
+        source = self._source(kwargs.get("session_id"))
 
-        rc, stdout, stderr, new_id, resume_id = await self._attempt(prompt, cwd, primary)
+        rc, stdout, stderr, new_id, resume_id = await self._attempt(
+            prompt, cwd, primary, source=source)
 
         # If the primary model failed and a distinct backup is set, retry once on
-        # it with a fresh session (a different model shouldn't resume the old one).
+        # it in the same session. The model may change, but the project's thread
+        # must not fork merely because a fallback was needed.
         fell_back = False
         if self._failed(rc, stdout) and backup and backup != primary:
-            if self.supports_sessions:
-                cli_sessions_store.clear(cwd, self.session_engine)
-            rc, stdout, stderr, new_id, resume_id = await self._attempt(prompt, cwd, backup)
+            rc, stdout, stderr, new_id, resume_id = await self._attempt(
+                prompt, cwd, backup, source=source)
             fell_back = True
 
         if rc is None:

@@ -215,7 +215,7 @@ class ChatController extends StateNotifier<ChatState> {
         }
       }
       if (!replaced) {
-        setLive('Reconnecting…');
+        setLive('Connection interrupted · still working…');
         finish(await _recoverReply(text) ??
             ChatMessage('system',
                 'Connection dropped mid-reply — it\'s still being written on the '
@@ -223,7 +223,7 @@ class ChatController extends StateNotifier<ChatState> {
       }
     } catch (e) {
       if (!replaced) {
-        setLive('Reconnecting…');
+        setLive('Connection interrupted · still working…');
         finish(await _recoverReply(text) ?? ChatMessage('error', friendlyError(e)));
       }
     } finally {
@@ -238,7 +238,6 @@ class ChatController extends StateNotifier<ChatState> {
     final want = userText.trim();
     if (api == null || want.isEmpty) return null;
     for (var i = 0; i < 30 && mounted; i++) {
-      await Future.delayed(const Duration(seconds: 4));
       try {
         final h = await api.chatHistory(key.sid);
         for (var j = h.length - 1; j >= 1; j--) {
@@ -251,6 +250,7 @@ class ChatController extends StateNotifier<ChatState> {
           }
         }
       } catch (_) {/* keep polling */}
+      await Future.delayed(const Duration(seconds: 4));
     }
     return null;
   }

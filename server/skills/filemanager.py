@@ -24,7 +24,7 @@ class FileManagerSkill(Skill):
         if not raw:
             raw = str(config.WORKSPACE_DIR)
 
-        path = Path(raw).expanduser().resolve()
+        path = self._resolve_path(raw)
 
         if not path.exists():
             return f"Path not found: {path}"
@@ -34,6 +34,29 @@ class FileManagerSkill(Skill):
         return self._read(path)
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_path(raw: str) -> Path:
+        """Resolve relative paths inside the active workspace, not the server
+        repo. A bare known project name resolves to that project as a fallback,
+        which keeps a just-created project usable during a workspace handoff."""
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return path.resolve()
+
+        in_workspace = (config.WORKSPACE_DIR / path).resolve()
+        if in_workspace.exists():
+            return in_workspace
+
+        if len(path.parts) == 1:
+            try:
+                from server.skills.projects import _resolve as resolve_project
+                project = resolve_project(raw)
+                if project is not None:
+                    return project.resolve()
+            except Exception:
+                pass
+        return in_workspace
 
     def _list(self, path: Path) -> str:
         if not path.is_dir():

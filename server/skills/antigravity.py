@@ -63,5 +63,24 @@ class AntigravitySkill(CLISubprocessSkill):
             response += f"\n\n— tokens in={total_in} out={total_out}"
         return response
 
+    def extract_usage(self, stdout: str) -> tuple[int, int]:
+        brace = stdout.find("{")
+        if brace == -1:
+            return 0, 0
+        try:
+            models = (json.loads(stdout[brace:]).get("stats") or {}).get("models") or {}
+        except (json.JSONDecodeError, AttributeError):
+            return 0, 0
+        total = billable = 0
+        for stats in models.values():
+            tokens = stats.get("tokens") or {}
+            inp = tokens.get("input") or 0
+            out = tokens.get("candidates") or 0
+            cached = tokens.get("cached") or 0
+            thoughts = tokens.get("thoughts") or 0
+            total += inp + out + cached + thoughts
+            billable += inp + out + thoughts
+        return total, billable
+
 
 register(AntigravitySkill())

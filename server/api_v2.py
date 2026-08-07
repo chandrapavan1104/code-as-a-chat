@@ -12,6 +12,7 @@ import time
 import json as _json
 import shutil
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 import psutil
@@ -33,6 +34,13 @@ router = APIRouter(prefix="/api", tags=["app"])
 # generous headroom without inviting abuse.
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".bmp"}
+
+# The screen, dashboard, and Android widget can refresh Codaur on the same tick.
+# Coalesce those expensive CLI calls instead of racing provider session files.
+_CODAUR_LOCK = threading.Lock()
+_CODAUR_CACHE: tuple[float, dict] | None = None
+_CODAUR_CACHE_SECONDS = 5
+_CODAUR_STALE_FALLBACK_SECONDS = 120
 
 
 # ── chat history (so the app's chat persists, synced with Gajala's memory) ─────
@@ -256,10 +264,18 @@ def active_cli_sessions():
     """The persistent CLI sessions for the active project — one per engine that
     supports reuse — plus a ready-to-paste 'continue on the Mac' command. Lets
     the app show which thread it's continuing and hand it off to the terminal."""
-    from server.db import cli_sessions_store
+    from server.db import cli_sessions_store, native_sessions
     ws = str(cfg.WORKSPACE_DIR)
+    sessions = cli_sessions_store.all_for(ws)
+    # Reconcile before displaying: a terminal-started native thread should be
+    # visible immediately, not only after Gajala has completed another turn.
+    for engine in _RESUME_CMD:
+        native = native_sessions.latest(ws, engine)
+        if native:
+            sessions[engine] = native[0]
+            cli_sessions_store.set(ws, engine, native[0])
     out = []
-    for engine, sid in cli_sessions_store.all_for(ws).items():
+    for engine, sid in sorted(sessions.items()):
         tmpl = _RESUME_CMD.get(engine)
         out.append({"engine": engine, "session_id": sid,
                     "resume_cmd": tmpl.format(sid=sid) if tmpl else None})
@@ -441,6 +457,56 @@ def _codaur_plans() -> dict:
         return {}
 
 
+def _codaur_report() -> dict:
+    """Return one coalesced Codaur report, with a bounded last-good fallback."""
+    global _CODAUR_CACHE
+    now = time.monotonic()
+    cached = _CODAUR_CACHE
+    if cached and now - cached[0] <= _CODAUR_CACHE_SECONDS:
+        return cached[1]
+
+    # A concurrent caller should reuse recent data immediately. Only the first
+    # ever request waits, because there is no useful report to serve yet.
+    acquired = _CODAUR_LOCK.acquire(blocking=False)
+    if not acquired:
+        if cached and now - cached[0] <= _CODAUR_STALE_FALLBACK_SECONDS:
+            return cached[1]
+        with _CODAUR_LOCK:
+            cached = _CODAUR_CACHE
+            if cached:
+                return cached[1]
+            raise RuntimeError("initial usage refresh did not produce a report")
+
+    try:
+        # Double-check after acquiring: a previous owner may just have finished.
+        cached = _CODAUR_CACHE
+        now = time.monotonic()
+        if cached and now - cached[0] <= _CODAUR_CACHE_SECONDS:
+            return cached[1]
+        try:
+            result = subprocess.run(
+                ["codaur", "--provider", "all", "--json"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "unknown error").strip()
+                raise RuntimeError(detail[:500])
+            brace = result.stdout.find("{")
+            if brace < 0:
+                raise RuntimeError("codaur returned no JSON")
+            data = _json.loads(result.stdout[brace:])
+            _CODAUR_CACHE = (time.monotonic(), data)
+            return data
+        except Exception:
+            cached = _CODAUR_CACHE
+            if (cached and time.monotonic() - cached[0]
+                    <= _CODAUR_STALE_FALLBACK_SECONDS):
+                return cached[1]
+            raise
+    finally:
+        _CODAUR_LOCK.release()
+
+
 @router.get("/usage")
 def usage(response: Response):
     # Usage is inherently live data. Do not let a client or reverse proxy serve
@@ -449,20 +515,9 @@ def usage(response: Response):
     if shutil.which("codaur") is None:
         raise HTTPException(503, "codaur not installed")
     try:
-        result = subprocess.run(["codaur", "--provider", "all", "--json"],
-                                capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "unknown error").strip()
-            raise HTTPException(502, f"codaur failed: {detail[:500]}")
-        out = result.stdout
-        brace = out.find("{")
-        if brace < 0:
-            raise HTTPException(502, "codaur returned no JSON")
-        data = _json.loads(out[brace:])
-    except HTTPException:
-        raise
+        data = _codaur_report()
     except Exception as e:
-        raise HTTPException(500, f"codaur failed: {e}")
+        raise HTTPException(502, f"codaur failed: {e}") from e
 
     # Antigravity exposes no local token/limit data (protobuf blobs) — skip it.
     _EXCLUDE = {"antigravity"}
@@ -479,7 +534,8 @@ def usage(response: Response):
         providers.append({
             "provider": provider,
             # Native plan (codex) if present, else the codaur-configured plan.
-            "plan": _plan_label(snap.get("planType") or configured_plans.get(provider)),
+            "plan": ("Local" if provider == "qwen" else
+                     _plan_label(snap.get("planType") or configured_plans.get(provider))),
             "primary_pct": primary_pct,
             "secondary_pct": secondary_pct,
             "today_tokens": totals.get("todayTokens"),
@@ -500,3 +556,192 @@ def usage(response: Response):
 
     active = [p for p in providers if _has_signal(p)]
     return {"providers": active or providers}
+
+
+# ── Night Shift queue (Tasks tab) ─────────────────────────────────────────────
+
+def _job_view(j: dict) -> dict:
+    """Trim a night_queue_store row to what the app renders."""
+    from pathlib import Path as _P
+    return {
+        "id": j["id"],
+        "project": j["project"],
+        "project_name": _P(j["project"]).name,
+        "task": j["task"],
+        "tag": j["tag"],
+        "engine": j.get("engine_used") or j["engine"],
+        "status": j["status"],
+        "branch": j.get("branch"),
+        "summary": j.get("summary"),
+        "files_changed": j.get("files_changed") or [],
+        "tokens_total": j.get("tokens_total") or 0,
+        "created_at": j.get("created_at"),
+        "ended_at": j.get("ended_at"),
+    }
+
+
+class QueueJobIn(BaseModel):
+    task: str
+    project: str | None = None          # name or path; defaults to active workspace
+    tag: str = "auto"                   # auto | mine
+    engine: str = "auto"                # auto | claude | codex | gemini
+    priority: int = 0
+
+
+class QueueTag(BaseModel):
+    tag: str
+
+
+class QueueSettingsIn(BaseModel):
+    enabled: bool | None = None
+    start: str | None = None
+    end: str | None = None
+    engines: str | None = None
+    quota_stop_pct: int | None = None
+    max_jobs: int | None = None
+    token_budget: int | None = None
+
+
+@router.get("/queue")
+def queue_list(status: str | None = None):
+    from server import prefs
+    from server.db import night_queue_store
+    jobs = night_queue_store.list_jobs(status=status, limit=200)
+    return {"jobs": [_job_view(j) for j in jobs], "settings": prefs.night_settings()}
+
+
+@router.post("/queue", status_code=201)
+def queue_add(body: QueueJobIn):
+    from server.db import night_queue_store
+    project = _resolve_project_path(body.project)
+    jid = night_queue_store.add(
+        project=project, task=body.task, tag=body.tag, engine=body.engine,
+        priority=body.priority)
+    return _job_view(night_queue_store.get(jid))
+
+
+@router.post("/queue/{job_id}/run")
+async def queue_run(job_id: int):
+    from server import night_shift
+    job = await night_shift.run_now(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return _job_view(job)
+
+
+@router.post("/queue/{job_id}/stop")
+def queue_stop(job_id: int):
+    from server import night_shift
+    from server.db import night_queue_store
+    if not night_shift.stop_job(job_id):
+        raise HTTPException(409, "job is not running or already finished")
+    return _job_view(night_queue_store.get(job_id))
+
+
+@router.post("/queue/{job_id}/ship")
+def queue_ship(job_id: int):
+    from server.skills.queue import _ship
+    return {"result": _ship(job_id)}
+
+
+@router.post("/queue/{job_id}/tag")
+def queue_tag(job_id: int, body: QueueTag):
+    from server.db import night_queue_store
+    if body.tag not in ("auto", "mine"):
+        raise HTTPException(400, "tag must be auto or mine")
+    j = night_queue_store.get(job_id)
+    if not j:
+        raise HTTPException(404, "no such job")
+    fields = {"tag": body.tag}
+    if j["status"] in ("queued", "held"):
+        fields["status"] = "held" if body.tag == "mine" else "queued"
+    night_queue_store.update(job_id, **fields)
+    return _job_view(night_queue_store.get(job_id))
+
+
+@router.delete("/queue/{job_id}", status_code=204)
+def queue_drop(job_id: int):
+    from server.db import night_queue_store
+    night_queue_store.drop(job_id)
+
+
+@router.get("/queue/settings")
+def queue_settings():
+    from server import prefs
+    return prefs.night_settings()
+
+
+@router.post("/queue/settings")
+def queue_settings_set(body: QueueSettingsIn):
+    from server import prefs
+    return prefs.set_night_settings(**body.model_dump(exclude_none=True))
+
+
+def _resolve_project_path(name: str | None) -> str:
+    """A project name/substring or path → absolute path (default: active workspace)."""
+    if not name or not name.strip():
+        return str(cfg.WORKSPACE_DIR)
+    from server.skills.projects import _resolve
+    p = _resolve(name)
+    return str(p) if p else str(cfg.WORKSPACE_DIR)
+
+
+# ── Notifications inbox (Alerts tab) ──────────────────────────────────────────
+
+def _notif_view(n: dict) -> dict:
+    return {
+        "id": n["id"], "type": n["type"], "title": n["title"], "body": n["body"],
+        "status": n["status"], "needs_response": bool(n["needs_response"]),
+        "response": n.get("response"), "ref_kind": n.get("ref_kind"),
+        "ref_id": n.get("ref_id"), "created_at": n.get("created_at"),
+    }
+
+
+class NotifResponse(BaseModel):
+    response: str
+
+
+@router.get("/notifications")
+def notifications_list(status: str | None = None, limit: int = 60):
+    from server.db import notifications_store
+    items = notifications_store.list(status=status, limit=limit)
+    return {"items": [_notif_view(n) for n in items],
+            "unread": notifications_store.unread_count()}
+
+
+@router.post("/notifications/{notif_id}/read")
+def notifications_read(notif_id: int):
+    from server.db import notifications_store
+    notifications_store.mark_read(notif_id)
+    return {"unread": notifications_store.unread_count()}
+
+
+@router.post("/notifications/read_all")
+def notifications_read_all():
+    from server.db import notifications_store
+    notifications_store.mark_all_read()
+    return {"unread": 0}
+
+
+@router.post("/notifications/{notif_id}/respond")
+async def notifications_respond(notif_id: int, body: NotifResponse):
+    from server import night_shift
+    from server.db import notifications_store
+    n = notifications_store.get(notif_id)
+    if not n:
+        raise HTTPException(404, "no such notification")
+    notifications_store.set_response(notif_id, body.response)
+    result: dict = {"ok": True}
+    # A queue_input question → feed the answer to the job and re-run it now.
+    if n.get("type") == "queue_input" and n.get("ref_id"):
+        job = night_shift.respond_to_job(int(n["ref_id"]), body.response)
+        if job is not None:
+            await night_shift.run_now(int(n["ref_id"]))
+            result["job"] = _job_view(job)
+    return result
+
+
+@router.delete("/notifications/{notif_id}", status_code=204)
+def notifications_dismiss(notif_id: int):
+    from server.db import notifications_store
+    notifications_store.dismiss(notif_id)

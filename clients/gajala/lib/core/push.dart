@@ -45,6 +45,14 @@ class Push {
   /// main.dart wires this to push the chat screen for [sessionId].
   static void Function(String sessionId)? onOpenChat;
 
+  /// main.dart wires these to select the Tasks / Alerts tab on a push tap.
+  static void Function()? onOpenTasks;
+  static void Function()? onOpenNotifications;
+
+  /// main.dart wires this to refresh queue/notification providers when any push
+  /// arrives while the app is foregrounded (keeps the badge + lists live).
+  static void Function()? onPush;
+
   /// Initialise Firebase + local notifications. Safe to call more than once.
   static Future<void> init() async {
     if (_inited) return;
@@ -60,8 +68,12 @@ class Push {
       await _localNotifications
           .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
           ?.createNotificationChannel(_channel);
-      // Show foreground pushes as a real system notification.
-      FirebaseMessaging.onMessage.listen(_showLocal);
+      // Show foreground pushes as a real system notification + let the app
+      // refresh the badge/lists.
+      FirebaseMessaging.onMessage.listen((m) {
+        _showLocal(m);
+        onPush?.call();
+      });
       // Tap on a system-tray push while the app is backgrounded → open the chat.
       FirebaseMessaging.onMessageOpenedApp.listen(_onOpened);
       _inited = true;
@@ -109,11 +121,22 @@ class Push {
     if (sid != null && sid.isNotEmpty) onOpenChat?.call(sid);
   }
 
-  /// Tap on a system-tray push (app was backgrounded / killed).
+  /// Tap on a system-tray push (app was backgrounded / killed). Routes by type:
+  /// a chat reply opens the chat; a queue question / job status / night report /
+  /// update / reminder opens the Alerts inbox (Tasks/answer are one tap away).
   static void _onOpened(RemoteMessage m) {
+    final type = m.data['type'];
     final sid = m.data['session_id'];
-    if (m.data['type'] == 'chat_reply' && sid is String && sid.isNotEmpty) {
+    if (type == 'chat_reply' && sid is String && sid.isNotEmpty) {
       onOpenChat?.call(sid);
+      return;
+    }
+    if (type == 'queue_status' || type == 'night_report') {
+      onOpenTasks?.call();
+      return;
+    }
+    if (type == 'queue_input' || type == 'gajala_update' || type == 'reminder') {
+      onOpenNotifications?.call();
     }
   }
 
