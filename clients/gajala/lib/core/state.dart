@@ -94,6 +94,32 @@ final usageProvider = FutureProvider.autoDispose<List<Map<String, dynamic>>>((re
 
 final sessionIdProvider = FutureProvider<String>((ref) => Storage.sessionId());
 
+/// Night Shift queue (Tasks tab) — jobs + current settings.
+final queueProvider = FutureProvider.autoDispose<
+    ({List<QueueJob> jobs, Map<String, dynamic> settings})>((ref) async {
+  final api = ref.watch(apiProvider);
+  if (api == null) return (jobs: <QueueJob>[], settings: <String, dynamic>{});
+  return api.queue();
+});
+
+/// Notification inbox (Alerts tab) — items + unread count.
+final notificationsProvider = FutureProvider.autoDispose<
+    ({List<AppNotification> items, int unread})>((ref) async {
+  final api = ref.watch(apiProvider);
+  if (api == null) return (items: <AppNotification>[], unread: 0);
+  return api.notifications();
+});
+
+/// Live unread badge for the Alerts tab. Kept alive (not autoDispose) so the
+/// bottom-nav badge stays populated while you're on other tabs; a push or a tab
+/// visit invalidates it.
+final unreadCountProvider = FutureProvider<int>((ref) async {
+  final api = ref.watch(apiProvider);
+  if (api == null) return 0;
+  final r = await api.notifications();
+  return r.unread;
+});
+
 /// Skill tiles pinned to the home screen, in display order. Persisted, so the
 /// home screen shows what you actually use instead of every skill that exists.
 class FavoritesNotifier extends StateNotifier<List<String>> {

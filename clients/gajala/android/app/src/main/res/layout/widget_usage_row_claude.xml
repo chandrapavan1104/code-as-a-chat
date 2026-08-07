@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="31dp"
+    android:layout_marginBottom="3dp" android:paddingHorizontal="8dp"
+    android:background="@drawable/widget_provider_row_bg"
+    android:orientation="horizontal" android:gravity="center_vertical">
+    <ImageView
+        android:layout_width="6dp"
+        android:layout_height="6dp"
+        android:contentDescription="@null"
+        android:src="@drawable/widget_dot_claude" />
+    <TextView android:id="@+id/codaur_name2" android:layout_width="56dp" android:layout_height="wrap_content"
+        android:layout_marginStart="7dp" android:text="CLAUDE" android:textColor="@color/widget_text"
+        android:textSize="11sp" android:fontFamily="monospace" android:textStyle="bold" />
+    <TextView android:id="@+id/codaur_tokens2" android:layout_width="0dp" android:layout_height="wrap_content"
+        android:layout_weight="1" android:text="—" android:textColor="@color/widget_text_dim" android:textSize="10sp" />
+    <ProgressBar android:id="@+id/codaur_progress2" style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="50dp" android:layout_height="4dp" android:max="100" android:progress="0"
+        android:progressTint="@color/widget_claude" android:progressBackgroundTint="@color/widget_surface_alt" />
+    <TextView android:id="@+id/codaur_limit2" android:layout_width="38dp" android:layout_height="wrap_content"
+        android:gravity="end" android:text="—" android:textColor="@color/widget_claude" android:textSize="10sp"
+        android:fontFamily="monospace" android:textStyle="bold" />
+</LinearLayout>

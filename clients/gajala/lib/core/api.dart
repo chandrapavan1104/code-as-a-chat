@@ -232,4 +232,55 @@ class GajalaApi {
         queryParameters: {'_': DateTime.now().millisecondsSinceEpoch});
     return List<Map<String, dynamic>>.from(r.data['providers']);
   }
+
+  // ── Night Shift queue (Tasks tab) ───────────────────────────────────────────
+  /// Jobs + the current Night Shift settings, in one call.
+  Future<({List<QueueJob> jobs, Map<String, dynamic> settings})> queue() async {
+    final r = await _dio.get('/api/queue');
+    final jobs = (r.data['jobs'] as List).map((e) => QueueJob.fromJson(e)).toList();
+    return (jobs: jobs, settings: Map<String, dynamic>.from(r.data['settings'] ?? {}));
+  }
+
+  Future<QueueJob> addJob(String task,
+      {String? project, String tag = 'auto', String engine = 'auto'}) async {
+    final r = await _dio.post('/api/queue', data: {
+      'task': task, 'project': project, 'tag': tag, 'engine': engine,
+    });
+    return QueueJob.fromJson(r.data);
+  }
+
+  Future<void> runJob(int id) async => _dio.post('/api/queue/$id/run');
+  Future<void> stopJob(int id) async => _dio.post('/api/queue/$id/stop');
+  Future<void> tagJob(int id, String tag) async =>
+      _dio.post('/api/queue/$id/tag', data: {'tag': tag});
+  Future<void> dropJob(int id) async => _dio.delete('/api/queue/$id');
+
+  Future<String> shipJob(int id) async {
+    final r = await _dio.post('/api/queue/$id/ship');
+    return r.data['result']?.toString() ?? 'shipped';
+  }
+
+  Future<Map<String, dynamic>> setQueueSettings(Map<String, dynamic> patch) async {
+    final r = await _dio.post('/api/queue/settings', data: patch);
+    return Map<String, dynamic>.from(r.data);
+  }
+
+  // ── Notifications inbox (Alerts tab) ────────────────────────────────────────
+  Future<({List<AppNotification> items, int unread})> notifications() async {
+    final r = await _dio.get('/api/notifications');
+    final items = (r.data['items'] as List)
+        .map((e) => AppNotification.fromJson(e))
+        .toList();
+    return (items: items, unread: (r.data['unread'] ?? 0) as int);
+  }
+
+  Future<void> markRead(int id) async => _dio.post('/api/notifications/$id/read');
+  Future<void> markAllRead() async => _dio.post('/api/notifications/read_all');
+  Future<void> dismissNotification(int id) async =>
+      _dio.delete('/api/notifications/$id');
+
+  /// Answer a "needs your input" notification; the server re-runs the job with
+  /// the answer appended.
+  Future<void> respondNotification(int id, String response) async =>
+      _dio.post('/api/notifications/$id/respond', data: {'response': response});
 }

@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:home_widget/home_widget.dart';
 import '../screens/chat_screen.dart';
 import '../screens/notes_screen.dart';
+import '../screens/usage_screen.dart';
 import 'push.dart';
 import 'storage.dart';
 
@@ -44,7 +45,9 @@ Future<void> initHomeWidgets() async {
   try {
     await HomeWidget.registerInteractivityCallback(widgetCallback);
     unawaited(refreshCodaurWidget());
-  } catch (_) {/* not Android / no widgets — ignore */}
+  } catch (_) {
+    /* not Android / no widgets — ignore */
+  }
 }
 
 /// Route a widget launch tile (Ask / Dump) once the navigator is ready. Handles
@@ -59,12 +62,21 @@ void _route(Uri? uri) {
   if (uri == null || nav == null) return;
   switch (uri.host) {
     case 'ask':
-      nav.push(MaterialPageRoute(
-          builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala')));
+      nav.push(
+        MaterialPageRoute(
+          builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'),
+        ),
+      );
       break;
     case 'dump':
-      nav.push(MaterialPageRoute(
-          builder: (_) => const NotesScreen(openComposer: true)));
+      nav.push(
+        MaterialPageRoute(
+          builder: (_) => const NotesScreen(openComposer: true),
+        ),
+      );
+      break;
+    case 'usage':
+      nav.push(MaterialPageRoute(builder: (_) => const UsageScreen()));
       break;
   }
 }
@@ -74,23 +86,31 @@ void _route(Uri? uri) {
 Future<Dio?> _client() async {
   final cfg = await Storage.loadConfig();
   if (cfg == null) return null;
-  return Dio(BaseOptions(
-    baseUrl: cfg.url,
-    headers: {'X-API-Token': cfg.token},
-    connectTimeout: const Duration(seconds: 8),
-    receiveTimeout: const Duration(seconds: 45),
-  ));
+  return Dio(
+    BaseOptions(
+      baseUrl: cfg.url,
+      headers: {'X-API-Token': cfg.token},
+      connectTimeout: const Duration(seconds: 8),
+      receiveTimeout: const Duration(seconds: 45),
+    ),
+  );
 }
 
 Future<void> _setMacStatus(String s) async {
   await HomeWidget.saveWidgetData<String>('mac_status', s);
-  await HomeWidget.updateWidget(name: _actionsWidget, androidName: _actionsWidget);
+  await HomeWidget.updateWidget(
+    name: _actionsWidget,
+    androidName: _actionsWidget,
+  );
 }
 
 /// Fire a mac quick action (lock / wake) in the background and reflect the
 /// outcome on the widget's status line.
-Future<void> _macAction(String action,
-    {required String busy, required String ok}) async {
+Future<void> _macAction(
+  String action, {
+  required String busy,
+  required String ok,
+}) async {
   await _setMacStatus(busy);
   try {
     final dio = await _client();
@@ -106,40 +126,83 @@ Future<void> _macAction(String action,
   }
 }
 
-/// Fetch /api/usage and push a compact per-provider glance into the widget.
+/// Fetch /api/usage and push structured provider data into the native widget.
 Future<void> refreshCodaurWidget() async {
   try {
     final dio = await _client();
     if (dio == null) return;
-    final r = await dio.get('/api/usage',
-        options: Options(headers: {'Cache-Control': 'no-cache'}),
-        queryParameters: {'_': DateTime.now().millisecondsSinceEpoch});
-    final providers = List<Map<String, dynamic>>.from(r.data['providers'] ?? const []);
-    final lines = providers.take(3).map(_codaurLine).toList();
-    for (var i = 0; i < 3; i++) {
+    final r = await dio.get(
+      '/api/usage',
+      options: Options(headers: {'Cache-Control': 'no-cache'}),
+      queryParameters: {'_': DateTime.now().millisecondsSinceEpoch},
+    );
+    final providers = List<Map<String, dynamic>>.from(
+      r.data['providers'] ?? const [],
+    );
+    const order = ['codex', 'claude', 'gemini', 'qwen'];
+    providers.sort(
+      (a, b) => order
+          .indexOf((a['provider'] ?? '').toString())
+          .compareTo(order.indexOf((b['provider'] ?? '').toString())),
+    );
+    final visible = providers
+        .where((p) => order.contains(p['provider']))
+        .take(4)
+        .toList();
+    var todayTotal = 0.0;
+    for (var i = 0; i < 4; i++) {
+      final p = i < visible.length ? visible[i] : <String, dynamic>{};
+      final today = p['today_tokens'];
+      if (today is num) todayTotal += today.toDouble();
+      final limits = p['limits'] as List?;
+      final pct =
+          p['primary_pct'] ??
+          (limits != null && limits.isNotEmpty ? limits.first['pct'] : null);
+      final provider = (p['provider'] ?? '').toString();
       await HomeWidget.saveWidgetData<String>(
-          'codaur_line${i + 1}', i < lines.length ? lines[i] : '');
+        'codaur_name${i + 1}',
+        provider.isEmpty ? '—' : _providerLabel(provider),
+      );
+      await HomeWidget.saveWidgetData<String>(
+        'codaur_tokens${i + 1}',
+        today is num ? '${_humanTokens(today)} today' : '— today',
+      );
+      await HomeWidget.saveWidgetData<String>(
+        'codaur_limit${i + 1}',
+        pct is num
+            ? '${pct.toStringAsFixed(0)}%'
+            : provider == 'qwen'
+            ? 'LOCAL'
+            : '—',
+      );
+      await HomeWidget.saveWidgetData<int>(
+        'codaur_progress${i + 1}',
+        pct is num ? pct.clamp(0, 100).round() : 0,
+      );
+      await HomeWidget.saveWidgetData<bool>(
+        'codaur_has_limit${i + 1}',
+        pct is num,
+      );
     }
-    await HomeWidget.saveWidgetData<String>('codaur_updated', 'updated ${_clock()}');
-    await HomeWidget.updateWidget(name: _codaurWidget, androidName: _codaurWidget);
-  } catch (_) {/* leave the last glance in place */}
+    await HomeWidget.saveWidgetData<String>(
+      'codaur_summary',
+      '${visible.length} MODELS  ·  ${_humanTokens(todayTotal)} TOKENS TODAY',
+    );
+    await HomeWidget.saveWidgetData<String>(
+      'codaur_updated',
+      'SYNC ${_clock()}',
+    );
+    await HomeWidget.updateWidget(
+      name: _codaurWidget,
+      androidName: _codaurWidget,
+    );
+  } catch (_) {
+    /* leave the last glance in place */
+  }
 }
 
-String _codaurLine(Map<String, dynamic> p) {
-  final name = (p['provider'] ?? '?').toString();
-  final today = p['today_tokens'];
-  final limits = p['limits'] as List?;
-  final pct = p['primary_pct'] ??
-      (limits != null && limits.isNotEmpty ? limits.first['pct'] : null);
-  final parts = <String>[name.padRight(7)];
-  if (today != null) {
-    parts.add(_humanTokens(today));
-  } else if (p['events'] != null) {
-    parts.add('${p['events']} steps');
-  }
-  if (pct != null) parts.add('· ${(pct as num).toStringAsFixed(0)}%');
-  return parts.join(' ');
-}
+String _providerLabel(String name) =>
+    name.isEmpty ? name : '${name[0].toUpperCase()}${name.substring(1)}';
 
 String _humanTokens(dynamic n) {
   final v = (n as num).toDouble();

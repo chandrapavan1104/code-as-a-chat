@@ -6,9 +6,8 @@ instead of spawning a fresh one-shot every time — real continuity, and far les
 clutter in ~/.claude / ~/.codex. The stored id is also what you'd hand to
 `claude --resume <id>` on the Mac to pick the thread up there.
 
-Granularity is (workspace, engine): one active session per project per model,
-which is the design we landed on (the folder is the reliable anchor, not a
-fragile "which thread?" guess). Stored at ~/.codeasachat/cli_sessions.db
+Granularity is (workspace, engine): the project pins one engine, and that engine
+has one active thread. Stored at ~/.codeasachat/cli_sessions.db.
 """
 
 import sqlite3

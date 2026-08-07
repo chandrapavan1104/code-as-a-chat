@@ -28,6 +28,12 @@ class GajalaActionsWidget : HomeWidgetProvider() {
         appWidgetIds.forEach { id ->
             val views = RemoteViews(context.packageName, R.layout.widget_gajala_actions).apply {
                 setOnClickPendingIntent(
+                    R.id.widget_root,
+                    HomeWidgetLaunchIntent.getActivity(
+                        context, MainActivity::class.java, Uri.parse("gajala://ask"),
+                    ),
+                )
+                setOnClickPendingIntent(
                     R.id.tile_lock,
                     HomeWidgetBackgroundIntent.getBroadcast(context, Uri.parse("gajala://lock")),
                 )
@@ -47,9 +53,18 @@ class GajalaActionsWidget : HomeWidgetProvider() {
                         context, MainActivity::class.java, Uri.parse("gajala://dump"),
                     ),
                 )
+                val status =
+                    widgetData.getString("mac_status", null) ?: "Ready"
                 setTextViewText(
                     R.id.mac_status,
-                    widgetData.getString("mac_status", null) ?: "Lock or wake the Mac",
+                    status,
+                )
+                val unhealthy = status.lowercase().contains("fail") ||
+                    status.lowercase().contains("not connected")
+                val busy = status.contains('…')
+                setImageViewResource(
+                    R.id.mac_status_dot,
+                    if (unhealthy || busy) R.drawable.widget_dot_warn else R.drawable.widget_dot_ok,
                 )
             }
             appWidgetManager.updateAppWidget(id, views)

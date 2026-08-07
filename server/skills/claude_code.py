@@ -37,6 +37,17 @@ class ClaudeCodeSkill(CLISubprocessSkill):
         except (json.JSONDecodeError, AttributeError):
             return None
 
+    def extract_usage(self, stdout: str) -> tuple[int, int]:
+        try:
+            usage = json.loads(stdout).get("usage") or {}
+        except (json.JSONDecodeError, AttributeError):
+            return 0, 0
+        inp = usage.get("input_tokens") or 0
+        out = usage.get("output_tokens") or 0
+        created = usage.get("cache_creation_input_tokens") or 0
+        read = usage.get("cache_read_input_tokens") or 0
+        return inp + out + created + read, inp + out + created
+
     def parse_output(self, stdout: str, stderr: str) -> str:
         try:
             data = json.loads(stdout)

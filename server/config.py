@@ -102,6 +102,12 @@ OPENAI_SHELL_MODEL: str = os.getenv("OPENAI_SHELL_MODEL", "gpt-4o-mini")
 # Model the codex skill passes to `codex exec --model`.
 CODEX_MODEL: str = os.getenv("CODEX_MODEL", "gpt-5")
 
+# Before resuming, reconcile our stored session id with the CLI's own newest
+# session for that folder (see server/db/native_sessions.py). Keeps ONE session
+# per (project, engine) even when you use the CLI directly on the Mac. Set to 0
+# to trust only the server's pointer (old behaviour).
+SESSION_FOLLOW_NATIVE: bool = os.getenv("SESSION_FOLLOW_NATIVE", "1") not in ("0", "false", "False")
+
 # ── local Qwen (Ollama) ───────────────────────────────────────────────────────
 # A local model the shell brain (and notes/diary/reminders) can run on — free,
 # offline, and the default for Gajala so it stops spending Claude on routine
@@ -175,6 +181,23 @@ SCHEDULER_INTERVAL: int = int(os.getenv("SCHEDULER_INTERVAL", "60"))   # seconds
 BATTERY_ALERTS: bool = os.getenv("BATTERY_ALERTS", "true").lower() in ("1", "true", "yes")
 BATTERY_THRESHOLD: int = int(os.getenv("BATTERY_THRESHOLD", "20"))     # percent
 BATTERY_ALERT_COOLDOWN: int = int(os.getenv("BATTERY_ALERT_COOLDOWN", "1800"))  # seconds
+
+# ── Night Shift (overnight autonomous build queue) ────────────────────────────
+# Opt-in: while enabled and inside the night window, the runner keeps up to one
+# job per engine in flight so all three coding subscriptions build in parallel on
+# isolated `night/*` branches. Nothing merges to a base branch unattended.
+NIGHT_SHIFT_ENABLED: bool = os.getenv("NIGHT_SHIFT_ENABLED", "false").lower() in ("1", "true", "yes")
+NIGHT_START: str = os.getenv("NIGHT_START", "23:00")   # HH:MM local
+NIGHT_END: str = os.getenv("NIGHT_END", "07:00")       # HH:MM local (may wrap midnight)
+NIGHT_ENGINES: str = os.getenv("NIGHT_ENGINES", "claude,codex,gemini")
+# Bench an engine for this cycle once it's at/over this % of its rate-limit
+# window (Codex 5h/weekly %, Claude/Gemini computed vs their daily budget). It
+# re-enters automatically as the window resets — that's the "keep filling" logic.
+NIGHT_QUOTA_STOP_PCT: int = int(os.getenv("NIGHT_QUOTA_STOP_PCT", "85"))
+NIGHT_JOB_TIMEOUT: int = int(os.getenv("NIGHT_JOB_TIMEOUT", "1800"))  # 30 min/job
+NIGHT_MAX_JOBS: int = int(os.getenv("NIGHT_MAX_JOBS", "12"))          # per-night ceiling
+NIGHT_TOKEN_BUDGET: int = int(os.getenv("NIGHT_TOKEN_BUDGET", "0"))   # 0 = unlimited
+NIGHT_TICK: int = int(os.getenv("NIGHT_TICK", "120"))                 # dispatch cadence (s)
 
 # ── FCM push (Gajala Android app) ─────────────────────────────────────────────
 # Service-account key downloaded from Firebase console; lets the server send

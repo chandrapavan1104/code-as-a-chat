@@ -8,7 +8,7 @@ import 'core/theme.dart';
 import 'core/widget_bridge.dart';
 import 'screens/chat_screen.dart';
 import 'screens/connect_screen.dart';
-import 'screens/dashboard_screen.dart';
+import 'screens/home_shell.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,6 +41,12 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
         builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'),
       ));
     };
+    // A foreground push refreshes the Tasks list + Alerts badge live.
+    Push.onPush = () {
+      ref.invalidate(notificationsProvider);
+      ref.invalidate(unreadCountProvider);
+      ref.invalidate(queueProvider);
+    };
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Push.handleLaunchMessage();
       handleWidgetLaunch();   // route Ask / Dump widget deep-links
@@ -64,7 +70,7 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
       themeMode: mode,
-      home: config == null ? const ConnectScreen() : const DashboardScreen(),
+      home: config == null ? const ConnectScreen() : const HomeShell(),
     );
   }
 }

@@ -57,8 +57,12 @@ sessions browser, filemanager, sysmon, usage, Mac control incl. Bluetooth +
 wake/unlock). Shell agent with one-retry resilience + partial-result fallback,
 plus an **OpenAI backup brain** (`SHELL_LLM_PROVIDER` auto|claude|openai) so it
 keeps working when Claude usage runs out. Live-progress streaming over
-`/run/stream`. **Session reuse** per (workspace, engine) for claude/codex/gemini
-with cross-model `.md` sync; `general` home base is the default workspace;
+`/run/stream`. **One pinned coding agent + one active native thread per project**
+for claude/codex/gemini, with cross-model `.md` sync. Agent choice is stored per
+workspace; Gajala resolves the newest thread from each CLI's own session store,
+fallback models stay in that thread, and `scripts/project-agent` opens the same
+agent/session interactively on the Mac (`SESSION_FOLLOW_NATIVE`); `general` home
+base is the default workspace;
 **per-directory app conversations** whose thread follows the active project
 everywhere (incl. agent-driven switches) with confirm-to-move; pinned coding
 engine **+ per-engine model** (claude opus/sonnet/haiku, codex gpt-5.6-sol/…,
@@ -69,10 +73,14 @@ Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 lose the phone's HTTPS stream through an idle connection;
 **shell tool-action compatibility** so model replies that put a registered tool
 name directly in `action` execute it instead of surfacing an unknown-action error;
-**10-minute Codex turns** so active site build/deploy work is not killed by the
-generic 5-minute CLI timeout;
-**Android home-screen widgets** (Lock / Wake / Ask / Brain-dump + a Codaur usage
-glance). **Codaur usage refreshes every 30 seconds while visible**, bypasses
+**10-minute coding turns** for Claude/Codex/Gemini so active build/deploy work
+is not killed by the former generic 5-minute CLI timeout;
+**polished, adaptive Android home-screen widgets** using launcher-safe
+`RemoteViews` elements: a two-row Mac Mini remote
+(Lock / Wake / Ask / Brain-dump) and a full Codaur widget with four provider
+rows, quota meters, dedicated refresh, and local Qwen tokens. Ollama's exact
+prompt/generated counts are persisted without prompt/reply content and exposed
+through Codaur. **Codaur usage refreshes every 30 seconds while visible**, bypasses
 caches, drops expired quota snapshots instead of presenting stale limits, and
 avoids overlapping CLI requests when the screen first opens.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
@@ -81,8 +89,104 @@ bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-buil
 app-side fixes (`build` skill → APK link) and gates server changes for your OK;
 `/fix ship` merges, and a detached `restart_guard` health-checks + auto-rolls-back
 so a bad server change can't lock you out.
+**Night Shift** (overnight autonomous build queue, opt-in via `NIGHT_SHIFT_ENABLED`):
+queue coding tasks from the phone (`/queue add [auto|mine] [engine] <project>: <task>`);
+while inside the night window the runner keeps one job per engine in flight so all
+three subscriptions build in parallel on isolated `night/*` branches, quota-gated
+by the live codaur read (an engine at/over `NIGHT_QUOTA_STOP_PCT` sits out until its
+window resets). App-only changes auto-build+deploy the APK; server/other-project
+changes stage for `/queue ship`; decision-heavy tasks self-flag `needs_you`;
+`mine`-tagged jobs are left for you. A morning FCM/Telegram report summarizes what
+was built, what needs shipping, and tokens spent per engine. Four brakes: the
+window, `NIGHT_MAX_JOBS`, an optional `NIGHT_TOKEN_BUDGET`, and the per-job timeout;
+a per-repo lock keeps parallel same-repo jobs from colliding.
+Gajala drives it from a **bottom-nav shell (Home / Tasks / Alerts)**: the **Tasks**
+tab lists every job with a live status chip and per-job run-now / stop / ship /
+drop / retag, plus an in-app Night Shift toggle + window/max-jobs. When a job needs
+a decision it pushes a **question** to the phone (status `awaiting_input`); you
+answer inline in the **Alerts** inbox and the job re-runs with your answer appended.
+Every inbox-worthy event (needs-input, job deployed/failed, night report, "new
+build ready", fired reminders) is logged **and** pushed through one helper
+(`server/notifier.py` + `notifications_store`) so the Alerts tab (with an unread
+badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
 
 ## Changelog (most recent first)
+- 2026-08-07 — **Gajala cockpit for Night Shift + a notifications inbox.** New
+  `notifications_store` + `server/notifier.py` (one call logs an inbox row AND
+  pushes, so the app's Alerts tab and FCM never drift); reminders + night events
+  route through it. Human-in-the-loop: a night job that hits a decision now goes
+  `awaiting_input` and pushes a `queue_input` question — answering (`/api/
+  notifications/{id}/respond`) appends your answer to the task and re-runs it.
+  `night_shift` gains `run_now` (dispatch any time, even outside the window),
+  `stop_job` (kill the build, park `stopped`), and runtime settings via
+  `prefs.night_settings()` (in-app toggle/window/max-jobs, no .env edit). New
+  `/api/queue*` + `/api/notifications*` endpoints. App: a bottom-nav shell
+  (Home/Tasks/Alerts), `tasks_screen.dart`, `notifications_screen.dart`, models +
+  providers + FCM routing for the new push types.
+- 2026-08-07 — Fixed the post-Qwen Gajala `HttpException`/permanent
+  “Reconnecting…” regression. `/run/stream` now emits an immediate body frame,
+  beating the phone/proxy's 15-second connection race while local inference is
+  silent; recovery polls immediately and describes a real interruption instead
+  of claiming it is reconnecting. Concurrent screen/dashboard/widget Codaur
+  refreshes are coalesced with a bounded last-good fallback, eliminating the
+  intermittent `/api/usage` 502s recorded by the app.
+- 2026-08-07 — **Night Shift: overnight autonomous build queue (#52).** New
+  `server/night_shift.py` runner (its own lifespan task) claims queued jobs and
+  builds them overnight across claude/codex/gemini in parallel, one per engine,
+  quota-gated via the codaur usage read. `server/db/night_queue_store.py` is the
+  durable job list with an atomic `claim_next` (BEGIN IMMEDIATE) so parallel
+  workers never double-claim; `server/night_exec.py` runs each job isolated (no
+  session pointer, no resume → never forks your phone threads) reusing each CLI's
+  own token parser. The `queue` skill drives it from chat/app (add/list/review/
+  ship/drop/tag/backlog/status). Every job runs on a throwaway `night/*` branch;
+  app-only changes to this repo auto-deploy the APK, server/other changes stage
+  for `/queue ship` (server ships still go through `restart_guard`). Queue-empty +
+  quota-left pulls from per-project `~/.codeasachat/backlogs/<name>.md`. Off by
+  default; config `NIGHT_*` in `.env.example`.
+- 2026-08-07 — Reworked Codaur into a dense midnight telemetry panel after
+  launcher testing showed too much empty space. Removed weighted row stretching,
+  introduced compact fixed-height provider strips, higher-contrast token/quota
+  hierarchy, neon provider accents, and explicit live-sync labeling.
+- 2026-08-07 — Fixed Codaur's launcher-level “Could not load widget” failure.
+  The redesigned provider dots used plain Android `View` elements, which are
+  rejected inside `RemoteViews`; they now use supported `ImageView` elements.
+  Added a smoke test that rejects unsupported tags in every widget layout.
+- 2026-08-06 — Added exact local Qwen/Ollama usage end to end. Every Qwen
+  response records only its metrics envelope (input/generated tokens, model,
+  project, source, duration) in `qwen_usage.jsonl`; prompts and replies are not
+  stored. Codaur 0.2.0 consumes it as a first-class no-quota provider. Rebuilt
+  both Android widgets as launcher-adaptive application widgets: Codaur now has
+  four structured provider rows, quota meters, timestamp and separate open/
+  refresh actions; Gajala Remote now has a clear status header and roomy 2×2
+  Mac/Ask/Brain-dump controls.
+- 2026-08-06 — Completed the one-project/one-agent/session contract. Coding-agent
+  choice is now per workspace instead of one global toggle; fallback models
+  resume the existing thread and only create a replacement when the CLI
+  explicitly says the saved session is invalid; the active-sessions API
+  reconciles native stores immediately; and `scripts/project-agent [path]`
+  resumes the pinned project thread from a Mac terminal. Coding CLI attempts now
+  write source + token counts to `~/.codeasachat/cli_runs.db`, enabling exact
+  Gajala-origin monitoring for new turns.
+- 2026-08-06 — Hardened recent Gajala project workflows: all three coding CLIs
+  now get 10-minute turns; `/files` resolves relative paths against the active
+  workspace and recognizes bare sibling-project names; new-project "idea passed
+  / build it" handoffs deterministically read project context then use the
+  pinned coding agent; short repeat-update requests return the actual last reply;
+  identical timed-out tool calls are not launched twice; and Qwen uses Ollama
+  JSON mode for structured shell/notes/reminder decisions.
+- 2026-08-06 — **One session per (project, engine), shared with the Mac.** Session
+  reuse previously trusted only `cli_sessions.db`, a server-side pointer that
+  only server-driven turns ever wrote — so running `claude`/`codex`/`gemini`
+  yourself in a project opened a session Gajala never saw, and the next app turn
+  resumed the older id and forked the thread. New `server/db/native_sessions.py`
+  reads each CLI's own store (claude `~/.claude/projects/*/<id>.jsonl` matched on
+  the in-file `cwd`, since the dir encoding is version-unstable; codex
+  `session_meta.payload`; gemini `projectHash` = sha256 of the path) and returns
+  the newest session for a folder. `cli_base._resume_id()` now resumes that,
+  falling back to the stored pointer only when discovery finds nothing. Backup-
+  model retries now remain on that same thread; a fresh thread is created only
+  when the CLI explicitly rejects the stored session. Costs 4–13 ms per run.
+  Escape hatch: `SESSION_FOLLOW_NATIVE=0`.
 - 2026-08-02 — **Qwen as a first-class model + the default Gajala brain.** `_haiku`
   now routes through a per-task provider chain (`QWEN_TASKS`, default
   `shell,notes,diary`): those run on local Qwen first with Claude+OpenAI as
@@ -183,6 +287,10 @@ so a bad server change can't lock you out.
 - 2026-06-08 01:42 — context initialized
 
 ## TODO / Next Steps
+- Night Shift follow-ups (#52 core landed): schedule heavy jobs right after a
+  Codex 5h reset, per-job retry/backoff, a test-gate before app auto-deploy, job
+  dependency chaining, and a Gajala "Night Shift" screen over a `/api/queue`
+  endpoint (today it's driven through the `queue` skill / chat).
 - Push from more places (note/diary nudges).
 - CI for the Flutter app; publish app as needed.
 - Rotate any credentials shared during setup.

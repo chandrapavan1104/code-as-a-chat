@@ -7,22 +7,31 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from server import config, fcm, orchestrator
 from server.db import store as memory
-from server.db import errors_store
+from server.db import cli_runs_store, errors_store, night_queue_store, notifications_store
 from server.scheduler import scheduler_loop
+from server.night_shift import night_shift_loop
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    cli_runs_store.init()
+    night_queue_store.init()
+    notifications_store.init()
     orchestrator.init()
-    task = asyncio.create_task(scheduler_loop())
+    tasks = [
+        asyncio.create_task(scheduler_loop()),
+        asyncio.create_task(night_shift_loop()),
+    ]
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="Code-as-a-Chat Orchestrator", version="0.2.0", lifespan=lifespan)
@@ -197,6 +206,11 @@ async def run_stream(body: RunRequest):
         _stream_workers.add(task)
         task.add_done_callback(_stream_workers.discard)
         try:
+            # Send body bytes immediately. Qwen's first local inference can be
+            # silent for longer than the phone/proxy's 15s connection window;
+            # waiting for the first heartbeat made a healthy stream lose that
+            # race and surface as HttpException/Reconnecting in Gajala.
+            yield json.dumps({"type": "step", "label": "Thinking…"}) + "\n"
             while True:
                 try:
                     ev = await asyncio.wait_for(
