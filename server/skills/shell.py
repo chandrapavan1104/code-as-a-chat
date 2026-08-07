@@ -502,6 +502,34 @@ def _parse_json_decision(raw: str) -> dict | None:
     return _repair_json(candidate)
 
 
+def _is_usable_decision(raw: str) -> bool:
+    """Did the model return a decision we can actually act on? Parseable JSON is
+    not enough: a small model (Qwen) may emit a valid but off-schema blob (e.g.
+    {"project_name":…,"description":…}). Such output must FAIL validation so the
+    provider chain escalates it to Claude instead of it reaching the user as raw
+    JSON. Usable = a done/call action, a bare tool to call, a reply/final to
+    return, or any non-empty string action (a bare tool name the loop normalizes)."""
+    d = _parse_json_decision(raw)
+    if not d:
+        return False
+    action = d.get("action")
+    if isinstance(action, str) and action.strip():
+        return True
+    if (d.get("tool") or "").strip():
+        return True
+    return d.get("reply") is not None or bool(d.get("final"))
+
+
+def _human_text(decision: dict) -> str:
+    """Pull a chat-reply-like field from an off-schema decision (never structured
+    keys like project_name/description, which aren't a reply to the user)."""
+    for k in ("reply", "message", "text", "answer", "content", "response"):
+        v = decision.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
 def _salvage_reply(raw: str) -> str | None:
     """Last resort: model meant to reply but the JSON is unfixable. Pull the
     reply text out by pattern so the user never sees a parse error."""
@@ -578,8 +606,7 @@ class ShellSkill(Skill):
                     raw = await _haiku(
                         get_agent_system(), agent_input, timeout=HAIKU_TIMEOUT,
                         task="shell",
-                        validate=lambda o: _parse_json_decision(o) is not None
-                        or _salvage_reply(o) is not None)
+                        validate=_is_usable_decision)
                     break
                 except Exception as exc:
                     last_exc = exc
@@ -705,12 +732,13 @@ class ShellSkill(Skill):
                 })
                 continue
 
-            # No recognizable action and nothing to infer — don't dead-end with a
-            # cryptic error; salvage whatever the model actually said.
+            # No recognizable action and nothing to infer. Return a readable reply
+            # if the model buried one under an odd key — but never dump a raw JSON
+            # object at the user (the whole point of escalating off-schema output).
             final = ((decision.get("reply") or "").strip()
-                     or _salvage_reply(raw)
-                     or raw.strip()
-                     or "[shell] I couldn't parse a reply — try rephrasing.")
+                     or _human_text(decision)
+                     or "I didn't quite catch that. Try rephrasing, or tell me which "
+                        "tool to use — e.g. \"use codex to save this text to a file\".")
             final = self._attach_images(final, images)
             self._remember(session_id, prompt, final)
             return final

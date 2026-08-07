@@ -389,6 +389,22 @@ def test_shell_infers_call_when_action_missing(monkeypatch):
     assert result == "ran:go"
 
 
+def test_shell_offschema_json_fails_validation_to_escalate():
+    # Qwen sometimes emits valid-but-off-schema JSON (a project blob). That must
+    # FAIL validation so the provider chain escalates to Claude instead of the
+    # blob reaching the user. Proper decisions must pass.
+    from server.skills.shell import _is_usable_decision
+
+    project_blob = ('{"project_name":"x","description":"y",'
+                    '"steps_to_handle_first":["a","b"]}')
+    assert _is_usable_decision(project_blob) is False
+    assert _is_usable_decision('{}') is False
+    assert _is_usable_decision('not json') is False
+    assert _is_usable_decision('{"action":"done","reply":"hi"}') is True
+    assert _is_usable_decision('{"tool":"codex","args":"save it"}') is True
+    assert _is_usable_decision('{"reply":"hi"}') is True
+
+
 def test_shell_salvages_reply_on_unrecognized_decision(monkeypatch):
     # No action, no tool, no reply key — salvage text instead of a cryptic error.
     from server.skills import shell
