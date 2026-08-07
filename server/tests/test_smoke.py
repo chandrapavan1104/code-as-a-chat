@@ -353,6 +353,54 @@ def test_queue_add_parses_tag_engine_and_project(monkeypatch):
     assert project == "/tmp/active"
 
 
+def test_shell_infers_reply_when_action_missing(monkeypatch):
+    # A router (esp. local Qwen) that returns {"reply": …} with no "action" must
+    # answer, not dead-end with "unknown agent action: None".
+    from server.skills import shell
+
+    async def fake_haiku(*args, **kwargs):
+        return '{"reply":"here is your answer"}'
+
+    monkeypatch.setattr(shell, "_haiku", fake_haiku)
+    result = asyncio.run(shell.ShellSkill().run("something"))
+    assert result == "here is your answer"
+    assert "unknown agent action" not in result
+
+
+def test_shell_infers_call_when_action_missing(monkeypatch):
+    # A bare {"tool": …} with no "action" should route as a call.
+    from server.skills import registry, shell
+    from server.skills.base import Skill
+
+    class Probe2(Skill):
+        name = "probe2"
+        description = "p"
+        final_output = True
+
+        async def run(self, prompt="", **kwargs):
+            return f"ran:{prompt}"
+
+    async def fake_haiku(*args, **kwargs):
+        return '{"tool":"probe2","args":"go","final":true}'
+
+    monkeypatch.setitem(registry, "probe2", Probe2())
+    monkeypatch.setattr(shell, "_haiku", fake_haiku)
+    result = asyncio.run(shell.ShellSkill().run("do it"))
+    assert result == "ran:go"
+
+
+def test_shell_salvages_reply_on_unrecognized_decision(monkeypatch):
+    # No action, no tool, no reply key — salvage text instead of a cryptic error.
+    from server.skills import shell
+
+    async def fake_haiku(*args, **kwargs):
+        return '{"thoughts":"just chatting","message":"hi"}'
+
+    monkeypatch.setattr(shell, "_haiku", fake_haiku)
+    result = asyncio.run(shell.ShellSkill().run("hey"))
+    assert "unknown agent action" not in result
+
+
 def test_notifications_store_roundtrip(tmp_path, monkeypatch):
     from server.db import notifications_store as n
 

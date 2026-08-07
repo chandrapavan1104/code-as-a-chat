@@ -610,6 +610,14 @@ class ShellSkill(Skill):
                 decision = forced
 
             action = decision.get("action")
+            # Small routers (esp. local Qwen) sometimes omit/null "action" while
+            # still carrying intent: a bare {"tool": …} means call it; a bare
+            # {"reply": …}/{"final": true} means answer. Infer rather than dead-end.
+            if not action:
+                if (decision.get("tool") or "").strip():
+                    action = "call"
+                elif decision.get("reply") is not None or decision.get("final"):
+                    action = "done"
             if action in self.DELEGATE_SKILLS:
                 decision["tool"] = action
                 action = "call"
@@ -697,7 +705,13 @@ class ShellSkill(Skill):
                 })
                 continue
 
-            final = f"[shell] unknown agent action: {action!r}"
+            # No recognizable action and nothing to infer — don't dead-end with a
+            # cryptic error; salvage whatever the model actually said.
+            final = ((decision.get("reply") or "").strip()
+                     or _salvage_reply(raw)
+                     or raw.strip()
+                     or "[shell] I couldn't parse a reply — try rephrasing.")
+            final = self._attach_images(final, images)
             self._remember(session_id, prompt, final)
             return final
 
