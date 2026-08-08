@@ -53,6 +53,33 @@ def test_shell_accepts_tool_name_as_action(monkeypatch):
     assert result == "probe ran: status"
 
 
+def test_shell_coerces_structured_tool_args(monkeypatch):
+    from server.skills import registry
+    from server.skills.base import Skill
+    from server.skills import shell
+
+    class ProbeSkill(Skill):
+        name = "probe"
+        description = "test probe"
+        final_output = True
+
+        async def run(self, prompt="", **kwargs):
+            return f"probe ran: {prompt}"
+
+    async def fake_haiku(*args, **kwargs):
+        return (
+            '{"action":"call","tool":"probe",'
+            '"args":{"path":"notes.md","mode":"read"},"final":true}'
+        )
+
+    monkeypatch.setitem(registry, "probe", ProbeSkill())
+    monkeypatch.setattr(shell, "_haiku", fake_haiku)
+
+    result = asyncio.run(shell.ShellSkill().run("check status"))
+
+    assert result == 'probe ran: {"path":"notes.md","mode":"read"}'
+
+
 def test_usage_ignores_expired_rate_limits(monkeypatch):
     from server import api_v2
 

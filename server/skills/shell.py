@@ -530,6 +530,22 @@ def _human_text(decision: dict) -> str:
     return ""
 
 
+def _decision_text(value) -> str:
+    """Normalize decision fields into router-safe text.
+
+    The model is supposed to emit strings for tool args, but some responses
+    arrive as structured JSON objects. Coerce those into prompt text instead of
+    letting the router crash on string-only methods like .strip().
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value).strip()
+
+
 def _salvage_reply(raw: str) -> str | None:
     """Last resort: model meant to reply but the JSON is unfixable. Pull the
     reply text out by pattern so the user never sees a parse error."""
@@ -656,8 +672,8 @@ class ShellSkill(Skill):
                 return final
 
             if action == "call":
-                tool_name = (decision.get("tool") or "").strip()
-                tool_args = (decision.get("args") or "").strip()
+                tool_name = _decision_text(decision.get("tool"))
+                tool_args = _decision_text(decision.get("args"))
 
                 # A small router may react to a timeout by launching the exact
                 # same expensive call again. That never adds information and can

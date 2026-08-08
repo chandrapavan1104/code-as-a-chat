@@ -67,6 +67,9 @@ base is the default workspace;
 everywhere (incl. agent-driven switches) with confirm-to-move; pinned coding
 engine **+ per-engine model** (claude opus/sonnet/haiku, codex gpt-5.6-sol/…,
 gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
+The shell router now coerces structured tool `args` into prompt text before
+dispatch, so a model decision that returns `{"args": {...}}` no longer crashes
+the turn on `.strip()`.
 **Images** send + receive (screenshots to the agent, images back).
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 **15-second heartbeats on long `/run/stream` turns** so silent CLI work does not
@@ -111,6 +114,11 @@ build ready", fired reminders) is logged **and** pushed through one helper
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
 
 ## Changelog (most recent first)
+- 2026-08-08 — Fixed the shell router crash behind the chat `'dict' object has
+  no attribute 'strip'` bubble. Structured model `args` are now coerced to
+  router-safe prompt text before tool dispatch, so the agent no longer dies
+  when a decision returns `{"args": {...}}` instead of a plain string. Added a
+  regression test for structured tool args; server smoke checks pass.
 - 2026-08-07 — **Gajala cockpit for Night Shift + a notifications inbox.** New
   `notifications_store` + `server/notifier.py` (one call logs an inbox row AND
   pushes, so the app's Alerts tab and FCM never drift); reminders + night events
