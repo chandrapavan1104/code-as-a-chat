@@ -219,12 +219,16 @@ PERSONA — WHO YOU ARE (applies ONLY to the "reply" text, never to tool args):
 def _build_tool_catalog() -> str:
     """Assemble the agent's tool catalog from each skill's manifest agent_doc.
     Built from the live registry, so dropping a new skill file makes it
-    agent-visible automatically — no edit here."""
+    agent-visible automatically — no edit here. Filters out disabled skills."""
     from server.skills import registry
+    from server import prefs
     lines = []
     for name in sorted(registry):
         sk = registry[name]
         if name == "shell" or not getattr(sk, "expose_to_agent", True):
+            continue
+        # Skip disabled skills — they won't be available to the agent
+        if not prefs.is_skill_enabled(name):
             continue
         doc = (getattr(sk, "agent_doc", "") or sk.description).strip()
         lines.append(f'- "{name}": {doc}')
@@ -502,6 +506,50 @@ def _parse_json_decision(raw: str) -> dict | None:
     return _repair_json(candidate)
 
 
+def _is_usable_decision(raw: str) -> bool:
+    """Did the model return a decision we can actually act on? Parseable JSON is
+    not enough: a small model (Qwen) may emit a valid but off-schema blob (e.g.
+    {"project_name":…,"description":…}). Such output must FAIL validation so the
+    provider chain escalates it to Claude instead of it reaching the user as raw
+    JSON. Usable = a done/call action, a bare tool to call, a reply/final to
+    return, or any non-empty string action (a bare tool name the loop normalizes)."""
+    d = _parse_json_decision(raw)
+    if not d:
+        return False
+    action = d.get("action")
+    if isinstance(action, str) and action.strip():
+        return True
+    if (d.get("tool") or "").strip():
+        return True
+    return d.get("reply") is not None or bool(d.get("final"))
+
+
+def _human_text(decision: dict) -> str:
+    """Pull a chat-reply-like field from an off-schema decision (never structured
+    keys like project_name/description, which aren't a reply to the user)."""
+    for k in ("reply", "message", "text", "answer", "content", "response"):
+        v = decision.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _decision_text(value) -> str:
+    """Normalize decision fields into router-safe text.
+
+    The model is supposed to emit strings for tool args, but some responses
+    arrive as structured JSON objects. Coerce those into prompt text instead of
+    letting the router crash on string-only methods like .strip().
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value).strip()
+
+
 def _salvage_reply(raw: str) -> str | None:
     """Last resort: model meant to reply but the JSON is unfixable. Pull the
     reply text out by pattern so the user never sees a parse error."""
@@ -527,18 +575,25 @@ class ShellSkill(Skill):
 
     # Both sets derive from skill manifests at call time — a new skill that
     # sets expose_to_agent / passthrough is picked up with no edit here.
+    # Disabled skills are excluded from both sets.
     @property
     def DELEGATE_SKILLS(self) -> set[str]:
         from server.skills import registry
+        from server import prefs
         return {
             n for n, s in registry.items()
             if n != "shell" and getattr(s, "expose_to_agent", True)
+            and prefs.is_skill_enabled(n)
         }
 
     @property
     def PASSTHROUGH_SKILLS(self) -> set[str]:
         from server.skills import registry
-        return {n for n, s in registry.items() if getattr(s, "passthrough", False)}
+        from server import prefs
+        return {
+            n for n, s in registry.items()
+            if getattr(s, "passthrough", False) and prefs.is_skill_enabled(n)
+        }
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
         # Streaming clients pass on_event to receive live progress; None = the
@@ -578,8 +633,7 @@ class ShellSkill(Skill):
                     raw = await _haiku(
                         get_agent_system(), agent_input, timeout=HAIKU_TIMEOUT,
                         task="shell",
-                        validate=lambda o: _parse_json_decision(o) is not None
-                        or _salvage_reply(o) is not None)
+                        validate=_is_usable_decision)
                     break
                 except Exception as exc:
                     last_exc = exc
@@ -610,6 +664,14 @@ class ShellSkill(Skill):
                 decision = forced
 
             action = decision.get("action")
+            # Small routers (esp. local Qwen) sometimes omit/null "action" while
+            # still carrying intent: a bare {"tool": …} means call it; a bare
+            # {"reply": …}/{"final": true} means answer. Infer rather than dead-end.
+            if not action:
+                if (decision.get("tool") or "").strip():
+                    action = "call"
+                elif decision.get("reply") is not None or decision.get("final"):
+                    action = "done"
             if action in self.DELEGATE_SKILLS:
                 decision["tool"] = action
                 action = "call"
@@ -621,8 +683,8 @@ class ShellSkill(Skill):
                 return final
 
             if action == "call":
-                tool_name = (decision.get("tool") or "").strip()
-                tool_args = (decision.get("args") or "").strip()
+                tool_name = _decision_text(decision.get("tool"))
+                tool_args = _decision_text(decision.get("args"))
 
                 # A small router may react to a timeout by launching the exact
                 # same expensive call again. That never adds information and can
@@ -697,7 +759,14 @@ class ShellSkill(Skill):
                 })
                 continue
 
-            final = f"[shell] unknown agent action: {action!r}"
+            # No recognizable action and nothing to infer. Return a readable reply
+            # if the model buried one under an odd key — but never dump a raw JSON
+            # object at the user (the whole point of escalating off-schema output).
+            final = ((decision.get("reply") or "").strip()
+                     or _human_text(decision)
+                     or "I didn't quite catch that. Try rephrasing, or tell me which "
+                        "tool to use — e.g. \"use codex to save this text to a file\".")
+            final = self._attach_images(final, images)
             self._remember(session_id, prompt, final)
             return final
 

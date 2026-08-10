@@ -14,9 +14,13 @@ def init() -> None:
 
 
 async def route(command: str, prompt: str = "", **kwargs) -> str:
+    from server import prefs
     skill_name = COMMAND_MAP.get(command, config.DEFAULT_SKILL)
     skill = get_skill(skill_name)
     if skill is None:
         available = ", ".join(f"/{c}" for c in sorted(COMMAND_MAP))
         return f"Unknown command: /{command}\nAvailable: {available}"
+    # Check if the skill is enabled
+    if not prefs.is_skill_enabled(skill_name):
+        return f"Skill '{skill_name}' is currently disabled."
     return await skill.run(prompt, **kwargs)

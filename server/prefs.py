@@ -211,3 +211,25 @@ def set_backup_model(engine: str, model: str) -> str:
     state["coding_backup_models"] = models
     _save(state)
     return models[engine]
+
+
+# ── Skill enable/disable toggles ──────────────────────────────────────────────
+
+def get_skill_enabled_state() -> dict[str, bool]:
+    """Get the enabled/disabled state for all skills. Missing keys default to True
+    (enabled), so new skills are immediately available."""
+    return _load().get("skill_enabled_state") or {}
+
+
+def is_skill_enabled(skill_name: str) -> bool:
+    """Check if a skill is enabled (defaults to True if not explicitly set)."""
+    return get_skill_enabled_state().get(skill_name, True)
+
+
+def set_skill_enabled(skill_name: str, enabled: bool) -> None:
+    """Enable or disable a skill."""
+    state = _load()
+    skill_state = state.get("skill_enabled_state") or {}
+    skill_state[skill_name] = bool(enabled)
+    state["skill_enabled_state"] = skill_state
+    _save(state)

@@ -132,9 +132,39 @@ async def health():
 
 @app.get("/skills", dependencies=[Depends(require_token)])
 async def list_skills():
-    """Full manifest — the bot (and future Android client) self-configures from this."""
+    """Full manifest — the bot (and future Android client) self-configures from this.
+    Includes enabled/disabled state for each skill (marketplace toggle)."""
     from server.skills import manifest
-    return {"skills": manifest()}
+    from server import prefs
+    skills = manifest()
+    # Inject enabled state into each skill
+    for skill in skills:
+        skill["enabled"] = prefs.is_skill_enabled(skill["name"])
+    return {"skills": skills}
+
+
+class SkillToggleRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/skills/{skill_name}", dependencies=[Depends(require_token)])
+async def toggle_skill(skill_name: str, request: SkillToggleRequest):
+    """Enable or disable a skill. Returns the updated skill state."""
+    from server.skills import registry
+    from server import prefs
+
+    # Validate that the skill exists
+    if skill_name not in registry:
+        raise HTTPException(status_code=404, detail=f"skill '{skill_name}' not found")
+
+    # Set the enabled state
+    prefs.set_skill_enabled(skill_name, request.enabled)
+
+    return {
+        "name": skill_name,
+        "enabled": request.enabled,
+        "message": f"Skill '{skill_name}' is now {'enabled' if request.enabled else 'disabled'}"
+    }
 
 
 @app.post("/run", dependencies=[Depends(require_token)])

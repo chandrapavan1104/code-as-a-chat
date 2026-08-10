@@ -11,8 +11,11 @@ Subcommands (passed via prompt):
   (empty) | list                                 pending + in-progress jobs
   review                                          last night's results + how to ship
   ship <id>                                       merge a staged/deployed job's branch
-  drop <id>                                       remove a job
+  refine <id> confirm [instructions]              Claude-expands/reworks a job
+  close <id> <reason>                             recoverably close a job
+  reopen <id>                                     restore a closed job as held
   tag <id> auto|mine                             flag for the runner / hold for you
+  engine <id> auto|claude|codex|gemini           choose that job's runner
   backlog [<project>:] <task>                     append to a project's backlog file
   status                                          runner window + enabled state
 """
@@ -80,7 +83,11 @@ def _pname(path: str) -> str:
 
 def _line(j: dict) -> str:
     eng = j.get("engine") if j.get("engine") != "auto" else (j.get("engine_used") or "any")
-    return f"  #{j['id']} [{j['tag']}·{eng}] {_pname(j['project'])}: {j['task'][:56]}"
+    title = (j.get("spec_json") or {}).get("title") or j["task"]
+    blocked = f" · blocked by {night_queue_store.blocked_by(j)}" if night_queue_store.blocked_by(j) else ""
+    readiness = (j.get("spec_json") or {}).get("readiness", "draft")
+    return (f"  #{j['id']} [{readiness}·{j['tag']}·{eng}] "
+            f"{_pname(j['project'])}: {title[:56]}{blocked}")
 
 
 def _list_view() -> str:
@@ -103,13 +110,17 @@ def _list_view() -> str:
 
 
 def _review_view() -> str:
-    done = night_queue_store.list_jobs(status="deployed,staged,needs_you,failed")
+    done = night_queue_store.list_jobs(status="completed,deployed,staged,needs_you,failed")
     if not done:
         return "🌙 Nothing to review yet — no completed night jobs."
-    buckets: dict[str, list[dict]] = {"deployed": [], "staged": [], "needs_you": [], "failed": []}
+    buckets: dict[str, list[dict]] = {
+        "completed": [], "deployed": [], "staged": [], "needs_you": [], "failed": []
+    }
     for j in done:
         buckets[j["status"]].append(j)
     out = ["🌙 NIGHT SHIFT — REVIEW"]
+    if buckets["completed"]:
+        out += ["", "✅ Completed reports:"] + [_line(j) for j in buckets["completed"]]
     if buckets["deployed"]:
         out += ["", "📦 Deployed (app built — test on phone, then /queue ship <id>):"]
         out += [_line(j) for j in buckets["deployed"]]
@@ -133,12 +144,30 @@ def _show_view(job_id: int) -> str:
     j = night_queue_store.get(job_id)
     if not j:
         return f"🌙 No job #{job_id}."
+    spec = j.get("spec_json") or {}
     lines = [
         f"🌙 JOB #{j['id']}  [{j['status']}]",
         f"project: {_pname(j['project'])}  ({j['project']})",
-        f"task:    {j['task']}",
+        f"title:   {spec.get('title') or j['task']}",
         f"tag/engine: {j['tag']} · {j.get('engine_used') or j['engine']}",
+        f"readiness: {(j.get('spec_json') or {}).get('readiness', 'draft')}",
     ]
+    for label, key in (("outcome", "outcome"), ("context", "context"),
+                       ("policy", "policy"), ("testing", "test_handoff"),
+                       ("out of scope", "out_of_scope")):
+        if spec.get(key):
+            lines += ["", f"{label}:\n{spec[key]}"]
+    if spec.get("plan"):
+        lines += ["", "approved plan:"] + [f"  {i}. {step}" for i, step in enumerate(spec["plan"], 1)]
+    if spec.get("acceptance"):
+        lines += ["", "acceptance:"] + [f"  • {item}" for item in spec["acceptance"]]
+    if j.get("depends_on"):
+        lines.append(
+            f"depends on: {j['depends_on']} "
+            f"(waiting for ship/completion: {night_queue_store.blocked_by(j)})"
+        )
+    if j.get("close_reason"):
+        lines.append(f"closed:  {j['close_reason']}")
     if j.get("branch"):
         lines.append(f"branch:  {j['branch']} (base {j.get('base')})")
     if j.get("files_changed"):
@@ -247,7 +276,8 @@ def _status_view() -> str:
 class QueueSkill(Skill):
     name = "queue"
     description = ("Night Shift queue: /queue add <project>: <task> | list | "
-                   "review | ship <id> | drop <id> | tag <id> auto|mine")
+                   "review | refine <id> confirm [instructions] | engine <id> auto|claude|codex|gemini | "
+                   "ship <id> | close <id> <reason> | reopen <id>")
     final_output = True
     aliases = ["night"]
     agent_doc = (
@@ -256,7 +286,10 @@ class QueueSkill(Skill):
         "branches. Route here when they want to QUEUE work for later/overnight, "
         "review what was built, or ship/merge a night job. args: "
         "'add [auto|mine] [engine] [<project>:] <task>' | '' or 'list' | 'review' | "
-        "'ship <id>' | 'drop <id>' | 'tag <id> auto|mine' | 'backlog <project>: <task>' | "
+        "'refine <id> confirm [instructions]' | 'ship <id>' | "
+        "'engine <id> auto|claude|codex|gemini' | "
+        "'close <id> <reason>' | 'reopen <id>' | "
+        "'tag <id> auto|mine' | 'backlog <project>: <task>' | "
         "'show <id>' | 'status'. Default tag auto, default project = active workspace.")
 
     async def run(self, prompt: str = "", **kwargs) -> str:
@@ -284,9 +317,32 @@ class QueueSkill(Skill):
                 return ("Usage: /queue add [auto|mine] [engine] [<project>:] <task>\n"
                         "e.g. /queue add auto codaur: add a CSV export command")
             jid = night_queue_store.add(project=project, task=task, tag=tag, engine=engine)
-            where = "held for you" if tag == "mine" else "queued for tonight"
+            saved = night_queue_store.get(jid)
+            draft = not night_queue_store.is_refined(saved)
+            where = "saved as a draft — use /queue refine " + str(jid) if draft else (
+                "held for you" if saved["tag"] == "mine" else "queued for tonight")
             return (f"🌙 Job #{jid} {where} — {_pname(project)}: {task[:60]}\n"
-                    f"tag {tag} · engine {engine}")
+                    f"tag {saved['tag']} · engine {engine}")
+
+        if cmd == "refine":
+            bits = rest.strip().split()
+            try:
+                jid = int(bits[0])
+            except (ValueError, TypeError, IndexError):
+                return "Usage: /queue refine <id> confirm"
+            if len(bits) < 2 or bits[1].lower() != "confirm":
+                return (f"🌙 Refining #{jid} sends only its rough task text to "
+                        "Claude Sonnet (no repo files or paths). If approved, use: "
+                        f"/queue refine {jid} confirm")
+            from server.work_order_refiner import refine_job
+            try:
+                instructions = " ".join(bits[2:])
+                job = await refine_job(
+                    jid, allow_cloud=True, instructions=instructions)
+            except (PermissionError, LookupError, ValueError, RuntimeError) as exc:
+                return f"🌙 Could not refine #{jid}: {exc}"
+            return (f"🌙 Refined #{jid}: {(job.get('spec_json') or {}).get('title')}\n"
+                    "Held for your review — inspect it, then make it auto when ready.")
 
         if cmd in ("ship", "apply"):
             try:
@@ -294,12 +350,26 @@ class QueueSkill(Skill):
             except (ValueError, TypeError):
                 return "Usage: /queue ship <id>"
 
-        if cmd in ("drop", "rm", "delete"):
+        if cmd == "close":
+            bits = rest.strip().split(maxsplit=1)
+            if len(bits) != 2:
+                return "Usage: /queue close <id> <reason>"
             try:
-                ok = night_queue_store.drop(int(rest.strip()))
+                ok = night_queue_store.close(int(bits[0]), bits[1])
             except (ValueError, TypeError):
-                return "Usage: /queue drop <id>"
-            return f"🌙 Dropped #{rest.strip()}." if ok else f"🌙 No job #{rest.strip()}."
+                return "Usage: /queue close <id> <reason> (stop running jobs first)"
+            return f"🌙 Closed #{bits[0]} recoverably." if ok else f"🌙 No job #{bits[0]}."
+
+        if cmd == "reopen":
+            try:
+                ok = night_queue_store.reopen(int(rest.strip()))
+            except (ValueError, TypeError):
+                return "Usage: /queue reopen <id>"
+            return (f"🌙 Reopened #{rest.strip()} as held."
+                    if ok else f"🌙 Job #{rest.strip()} is not closed.")
+
+        if cmd in ("drop", "rm", "delete"):
+            return "Permanent deletion is disabled. Use /queue close <id> <reason>."
 
         if cmd == "tag":
             bits = rest.split()
@@ -314,11 +384,31 @@ class QueueSkill(Skill):
             j = night_queue_store.get(jid)
             if not j:
                 return f"🌙 No job #{jid}."
+            if new_tag == "auto" and not night_queue_store.is_refined(j):
+                return f"🌙 Job #{jid} is a draft. Refine it before making it auto."
             fields = {"tag": new_tag}
             if j["status"] in ("queued", "held"):
                 fields["status"] = "held" if new_tag == "mine" else "queued"
             night_queue_store.update(jid, **fields)
             return f"🌙 Job #{jid} is now '{new_tag}'."
+
+        if cmd == "engine":
+            bits = rest.split()
+            if len(bits) != 2 or bits[1].lower() not in ("auto", *_ENGINES):
+                return "Usage: /queue engine <id> auto|claude|codex|gemini"
+            try:
+                jid = int(bits[0])
+            except ValueError:
+                return "Usage: /queue engine <id> auto|claude|codex|gemini"
+            job = night_queue_store.get(jid)
+            if not job:
+                return f"🌙 No job #{jid}."
+            if job["status"] in ("running", "closed"):
+                return f"🌙 Cannot change engine on a {job['status']} job."
+            engine = bits[1].lower()
+            night_queue_store.update(jid, engine=engine, engine_used=None)
+            note = "Gajala will choose using quota/availability" if engine == "auto" else "pinned"
+            return f"🌙 Job #{jid} engine: {engine} ({note})."
 
         if cmd == "show":
             try:

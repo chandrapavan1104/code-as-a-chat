@@ -83,6 +83,26 @@ prompt/generated counts are persisted without prompt/reply content and exposed
 through Codaur. **Codaur usage refreshes every 30 seconds while visible**, bypasses
 caches, drops expired quota snapshots instead of presenting stale limits, and
 avoids overlapping CLI requests when the screen first opens.
+Night Shift jobs now use **versioned work orders** (outcome, approved plan,
+policy, acceptance, phone-test handoff, and scope), explicit dependencies, and
+recoverable Close/Reopen with history instead of permanent deletion.
+Dependencies remain satisfied after a shipped/completed prerequisite is
+archived, including repeated Close/Reopen cycles; collapsed task cards show IDs.
+Rough queue utterances are saved as visibly distinct, non-runnable **Drafts**;
+a Claude Sonnet **Refine** action expands them into complete work orders,
+preserves the original wording + assumptions, and returns them held for review.
+Gajala requires per-refinement confirmation and sends only the rough text—never
+repo files or paths—to Claude.
+That confirmation accepts optional owner instructions, and every active job has
+a full manual editor for source text, type, structured fields, dependencies,
+project, and engine; saving always returns it held for review.
+Each active job also has a direct engine picker: Auto lets the queue orchestrator
+choose from live quota/availability, while Claude/Codex/Gemini pin the job.
+Refinement classifies coding vs research: research jobs bypass Git and return a
+sourced, read-only report (`completed`) without contacting anyone.
+Coding jobs run in managed, isolated Git worktrees, so your active checkout may
+have uncommitted work without blocking the queue; Night Shift never switches,
+cleans, or stashes your live files.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -101,8 +121,9 @@ was built, what needs shipping, and tokens spent per engine. Four brakes: the
 window, `NIGHT_MAX_JOBS`, an optional `NIGHT_TOKEN_BUDGET`, and the per-job timeout;
 a per-repo lock keeps parallel same-repo jobs from colliding.
 Gajala drives it from a **bottom-nav shell (Home / Tasks / Alerts)**: the **Tasks**
-tab lists every job with a live status chip and per-job run-now / stop / ship /
-drop / retag, plus an in-app Night Shift toggle + window/max-jobs. When a job needs
+tab splits Active/Closed work, opens the complete work order, and provides
+run-now / stop / ship / close / reopen / retag actions, plus an in-app Night
+Shift toggle + window/max-jobs. When a job needs
 a decision it pushes a **question** to the phone (status `awaiting_input`); you
 answer inline in the **Alerts** inbox and the job re-runs with your answer appended.
 Every inbox-worthy event (needs-input, job deployed/failed, night report, "new
@@ -111,6 +132,57 @@ build ready", fired reminders) is logged **and** pushed through one helper
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
 
 ## Changelog (most recent first)
+- 2026-08-09 — **Dirty live repos no longer block queued coding jobs.** Night
+  Shift now runs each coding task in a clean managed worktree and keeps the
+  resulting `night/<id>-...` branch while removing the temporary checkout. The
+  owner's branch and uncommitted files remain untouched; app-only jobs build
+  their APK from the isolated source tree as well.
+- 2026-08-09 — Fixed Night Shift's false `waiting for #8` block. #8 had shipped
+  successfully, but two Close/Reopen archive cycles left its current state
+  `closed`/previous `held`; dependency checks ignored the durable earlier
+  `shipped` history. Shipped/completed work now remains dependency-satisfying
+  after archival. Gajala also shows `#ID` prominently on every collapsed task
+  card and marks satisfied dependencies in detail.
+- 2026-08-08 — **Direct per-job engine picker.** Task actions now expose Auto,
+  Claude, Codex, and Gemini without opening the full editor. Auto clears any
+  previous runner and lets the queue orchestrator choose using configured
+  engines plus live quota/availability; explicit choices pin the job. Matching
+  API and `/queue engine <id> ...` commands reject running/closed jobs safely.
+- 2026-08-07 — **Refinement guidance + editable work orders.** Claude's consent
+  dialog now accepts optional per-run instructions (for example, “research only”
+  or “keep the existing API”). Active jobs gain a full Edit work order sheet for
+  source text, coding/research type, outcome/context/plan/policy/acceptance,
+  phone handoff, assumptions, scope, dependencies, project, and engine. The API
+  validates IDs/type/engine, regenerates the worker prompt, records manual
+  authorship, and safely returns every edit held for review.
+- 2026-08-07 — Fixed queue #7's repeat failure: Gajala had hidden Refine once a
+  job already said Refined, so the old Qwen classification could only be run
+  again. Refine/Re-refine is now available for every non-running active job.
+  Migration also recognizes unmistakable pre-work-type Qwen research specs and
+  routes them through the read-only research pipeline instead of Git.
+- 2026-08-07 — **Draft → Refine queue workflow.** Natural, incomplete queue
+  captures are now Drafts and are forced held: workers cannot claim/run them or
+  mark them automatic. `/queue refine <id>` and `POST /api/queue/{id}/refine`
+  use Claude Sonnet to classify and create a complete work order from only the
+  rough capture (no repo files/paths), preserving source and assumptions; the
+  result stays held for owner review. Gajala distinguishes Draft/Refined cards,
+  adds quick capture and one-tap Refine, and still supports manual structured
+  work orders. Existing v1 rows migrate conservatively by completeness.
+- 2026-08-07 — **Research queue execution + explicit failure reasons.** Refine
+  now classifies coding versus research. Research jobs bypass the Git/branch
+  pipeline, run as strictly read-only investigations, store their sourced report
+  as `completed`, and never contact or mutate external systems. Failed cards,
+  details, and notifications label the exact reason. Queue #7's old coding run
+  failed because `Projects/general` is not a Git repository; its next confirmed
+  refinement classifies it as research.
+- 2026-08-07 — **Durable Night Shift work orders.** Queue rows now carry a
+  versioned structured spec plus explicit job dependencies; workers claim a job
+  only after every prerequisite is shipped. Legacy free-text rows migrate
+  without losing their original task. Permanent deletion was removed from the
+  queue API, agent command, and Gajala: closing requires a reason, keeps history,
+  and reopening restores the item as held. Gajala adds Active/Closed tabs,
+  complete expandable detail, dependency state, and a structured composer that
+  requires outcome, plan, acceptance, and phone testing for automatic work.
 - 2026-08-07 — **Gajala cockpit for Night Shift + a notifications inbox.** New
   `notifications_store` + `server/notifier.py` (one call logs an inbox row AND
   pushes, so the app's Alerts tab and FCM never drift); reminders + night events

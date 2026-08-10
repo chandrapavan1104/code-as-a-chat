@@ -8,7 +8,11 @@ String friendlyError(Object e) {
   if (e is DioException) {
     final code = e.response?.statusCode;
     if (code == 401) return 'Bad API token (401) — re-check the token';
-    if (code != null) return 'Server error $code';
+    if (code != null) {
+      final data = e.response?.data;
+      final detail = data is Map ? data['detail']?.toString() : null;
+      return detail?.isNotEmpty == true ? detail! : 'Server error $code';
+    }
     switch (e.type) {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.receiveTimeout:
@@ -32,19 +36,23 @@ class GajalaApi {
   final String token;
 
   GajalaApi(String baseUrl, this.token)
-      : _dio = Dio(BaseOptions(
+    : _dio = Dio(
+        BaseOptions(
           baseUrl: baseUrl.replaceAll(RegExp(r'/+$'), ''),
           connectTimeout: const Duration(seconds: 15),
           receiveTimeout: const Duration(minutes: 10),
           headers: {'X-API-Token': token},
-        ));
+        ),
+      );
 
   // ── health / connection test ──────────────────────────────────────────────
   static Future<bool> ping(String baseUrl) async {
     try {
       final d = Dio();
-      final r = await d.get('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/health',
-          options: Options(receiveTimeout: const Duration(seconds: 8)));
+      final r = await d.get(
+        '${baseUrl.replaceAll(RegExp(r'/+$'), '')}/health',
+        options: Options(receiveTimeout: const Duration(seconds: 8)),
+      );
       return r.statusCode == 200;
     } catch (_) {
       return false;
@@ -54,29 +62,53 @@ class GajalaApi {
   // ── skills (dashboard manifest) ─────────────────────────────────────────────
   Future<List<Skill>> skills() async {
     final r = await _dio.get('/skills');
-    final list = (r.data['skills'] as List).map((e) => Skill.fromJson(e)).toList();
+    final list = (r.data['skills'] as List)
+        .map((e) => Skill.fromJson(e))
+        .toList();
     return list.where((s) => s.name != 'shell' && s.name != 'memory').toList();
   }
 
+  Future<Map<String, dynamic>> toggleSkill(String skillName, bool enabled) async {
+    final r = await _dio.post('/skills/$skillName', data: {'enabled': enabled});
+    return Map<String, dynamic>.from(r.data);
+  }
+
   // ── chat (Gajala, conversational) ───────────────────────────────────────────
-  Future<List<ChatMessage>> chatHistory(String sessionId, {int limit = 50}) async {
-    final r = await _dio.get('/api/chat',
-        queryParameters: {'session_id': sessionId, 'limit': limit});
+  Future<List<ChatMessage>> chatHistory(
+    String sessionId, {
+    int limit = 50,
+  }) async {
+    final r = await _dio.get(
+      '/api/chat',
+      queryParameters: {'session_id': sessionId, 'limit': limit},
+    );
     return (r.data['turns'] as List)
-        .map((t) => ChatMessage(t['role'] == 'user' ? 'user' : 'bot', t['content']?.toString() ?? ''))
+        .map(
+          (t) => ChatMessage(
+            t['role'] == 'user' ? 'user' : 'bot',
+            t['content']?.toString() ?? '',
+          ),
+        )
         .toList();
   }
 
-  Future<String> run(String command, String prompt, String sessionId,
-      {bool notify = false}) async {
-    final r = await _dio.post('/run', data: {
-      'command': command,
-      'prompt': prompt,
-      'session_id': sessionId,
-      // Ask the server to push a completion notification; the app suppresses it
-      // when we're still foregrounded on this chat.
-      'notify': notify,
-    });
+  Future<String> run(
+    String command,
+    String prompt,
+    String sessionId, {
+    bool notify = false,
+  }) async {
+    final r = await _dio.post(
+      '/run',
+      data: {
+        'command': command,
+        'prompt': prompt,
+        'session_id': sessionId,
+        // Ask the server to push a completion notification; the app suppresses it
+        // when we're still foregrounded on this chat.
+        'notify': notify,
+      },
+    );
     return r.data['result']?.toString() ?? '(no result)';
   }
 
@@ -85,16 +117,21 @@ class GajalaApi {
   /// {"type":"final","result":...} (or {"type":"error","message":...}). Lets the
   /// chat show live steps instead of one silent wait.
   Stream<Map<String, dynamic>> runStream(
-      String command, String prompt, String sessionId,
-      {bool notify = false}) async* {
-    final resp = await _dio.post<ResponseBody>('/run/stream',
-        data: {
-          'command': command,
-          'prompt': prompt,
-          'session_id': sessionId,
-          'notify': notify,
-        },
-        options: Options(responseType: ResponseType.stream));
+    String command,
+    String prompt,
+    String sessionId, {
+    bool notify = false,
+  }) async* {
+    final resp = await _dio.post<ResponseBody>(
+      '/run/stream',
+      data: {
+        'command': command,
+        'prompt': prompt,
+        'session_id': sessionId,
+        'notify': notify,
+      },
+      options: Options(responseType: ResponseType.stream),
+    );
     final byteStream = resp.data!.stream;
     var buffer = '';
     await for (final Uint8List chunk in byteStream) {
@@ -106,7 +143,9 @@ class GajalaApi {
         if (line.isEmpty) continue;
         try {
           yield jsonDecode(line) as Map<String, dynamic>;
-        } catch (_) {/* skip a partial/garbled frame */}
+        } catch (_) {
+          /* skip a partial/garbled frame */
+        }
       }
     }
     final rest = buffer.trim();
@@ -126,10 +165,16 @@ class GajalaApi {
     return (r.data['notes'] as List).map((e) => Note.fromJson(e)).toList();
   }
 
-  Future<Note> createNote({String kind = 'note', required String title,
-      String body = '', String? project}) async {
-    final r = await _dio.post('/api/notes',
-        data: {'kind': kind, 'title': title, 'body': body, 'project': project});
+  Future<Note> createNote({
+    String kind = 'note',
+    required String title,
+    String body = '',
+    String? project,
+  }) async {
+    final r = await _dio.post(
+      '/api/notes',
+      data: {'kind': kind, 'title': title, 'body': body, 'project': project},
+    );
     return Note.fromJson(r.data);
   }
 
@@ -146,11 +191,14 @@ class GajalaApi {
   Future<void> createReminder(String text, double dueAtEpoch) async =>
       _dio.post('/api/reminders', data: {'text': text, 'due_at': dueAtEpoch});
 
-  Future<void> deleteReminder(int id) async => _dio.delete('/api/reminders/$id');
+  Future<void> deleteReminder(int id) async =>
+      _dio.delete('/api/reminders/$id');
 
   Future<Map<String, dynamic>> diary({String? category}) async {
-    final r = await _dio.get('/api/diary',
-        queryParameters: category == null ? null : {'category': category});
+    final r = await _dio.get(
+      '/api/diary',
+      queryParameters: category == null ? null : {'category': category},
+    );
     return Map<String, dynamic>.from(r.data);
   }
 
@@ -168,11 +216,18 @@ class GajalaApi {
   /// Download an absolute URL (e.g. the APK on :8765) to [savePath], reporting
   /// 0..1 progress. Uses a fresh client since the URL isn't the API base.
   Future<void> downloadFile(
-      String url, String savePath, void Function(double) onProgress) async {
+    String url,
+    String savePath,
+    void Function(double) onProgress,
+  ) async {
     final d = Dio();
-    await d.download(url, savePath, onReceiveProgress: (recv, total) {
-      if (total > 0) onProgress(recv / total);
-    });
+    await d.download(
+      url,
+      savePath,
+      onReceiveProgress: (recv, total) {
+        if (total > 0) onProgress(recv / total);
+      },
+    );
   }
 
   /// Absolute URL the app uses to fetch a server-side image path.
@@ -181,13 +236,15 @@ class GajalaApi {
 
   /// Upload raw image bytes; returns the server path the agent can read.
   Future<String> uploadImage(List<int> bytes, String name) async {
-    final r = await _dio.post('/api/upload',
-        data: Stream.fromIterable(bytes.map((b) => [b])),
-        queryParameters: {'name': name},
-        options: Options(
-          headers: {Headers.contentLengthHeader: bytes.length},
-          contentType: 'application/octet-stream',
-        ));
+    final r = await _dio.post(
+      '/api/upload',
+      data: Stream.fromIterable(bytes.map((b) => [b])),
+      queryParameters: {'name': name},
+      options: Options(
+        headers: {Headers.contentLengthHeader: bytes.length},
+        contentType: 'application/octet-stream',
+      ),
+    );
     return r.data['path']?.toString() ?? '';
   }
 
@@ -210,15 +267,27 @@ class GajalaApi {
 
   /// Pin a specific model for one engine (claude: opus/sonnet/haiku, codex:
   /// gpt-5.6-sol/…, gemini: gemini-2.5-pro/…). Returns the per-engine model map.
-  Future<Map<String, dynamic>> setEngineModel(String engine, String model) async {
-    final r = await _dio.post('/api/model', data: {'engine': engine, 'model': model});
+  Future<Map<String, dynamic>> setEngineModel(
+    String engine,
+    String model,
+  ) async {
+    final r = await _dio.post(
+      '/api/model',
+      data: {'engine': engine, 'model': model},
+    );
     return Map<String, dynamic>.from(r.data['models'] ?? {});
   }
 
   /// Pin the BACKUP model for one engine — used automatically if the primary
   /// run fails. Returns the per-engine backup-model map.
-  Future<Map<String, dynamic>> setEngineBackup(String engine, String backup) async {
-    final r = await _dio.post('/api/model', data: {'engine': engine, 'backup': backup});
+  Future<Map<String, dynamic>> setEngineBackup(
+    String engine,
+    String backup,
+  ) async {
+    final r = await _dio.post(
+      '/api/model',
+      data: {'engine': engine, 'backup': backup},
+    );
     return Map<String, dynamic>.from(r.data['backup_models'] ?? {});
   }
 
@@ -227,9 +296,11 @@ class GajalaApi {
       Map<String, dynamic>.from((await _dio.get('/api/sessions/active')).data);
 
   Future<List<Map<String, dynamic>>> usage() async {
-    final r = await _dio.get('/api/usage',
-        options: Options(headers: {'Cache-Control': 'no-cache'}),
-        queryParameters: {'_': DateTime.now().millisecondsSinceEpoch});
+    final r = await _dio.get(
+      '/api/usage',
+      options: Options(headers: {'Cache-Control': 'no-cache'}),
+      queryParameters: {'_': DateTime.now().millisecondsSinceEpoch},
+    );
     return List<Map<String, dynamic>>.from(r.data['providers']);
   }
 
@@ -237,30 +308,84 @@ class GajalaApi {
   /// Jobs + the current Night Shift settings, in one call.
   Future<({List<QueueJob> jobs, Map<String, dynamic> settings})> queue() async {
     final r = await _dio.get('/api/queue');
-    final jobs = (r.data['jobs'] as List).map((e) => QueueJob.fromJson(e)).toList();
-    return (jobs: jobs, settings: Map<String, dynamic>.from(r.data['settings'] ?? {}));
+    final jobs = (r.data['jobs'] as List)
+        .map((e) => QueueJob.fromJson(e))
+        .toList();
+    return (
+      jobs: jobs,
+      settings: Map<String, dynamic>.from(r.data['settings'] ?? {}),
+    );
   }
 
-  Future<QueueJob> addJob(String task,
-      {String? project, String tag = 'auto', String engine = 'auto'}) async {
-    final r = await _dio.post('/api/queue', data: {
-      'task': task, 'project': project, 'tag': tag, 'engine': engine,
-    });
+  Future<QueueJob> addJob(
+    String task, {
+    String? project,
+    String tag = 'auto',
+    String engine = 'auto',
+    Map<String, dynamic>? spec,
+    List<int> dependsOn = const [],
+  }) async {
+    final r = await _dio.post(
+      '/api/queue',
+      data: {
+        'task': task,
+        'project': project,
+        'tag': tag,
+        'engine': engine,
+        'spec': ?spec,
+        'depends_on': dependsOn,
+      },
+    );
     return QueueJob.fromJson(r.data);
   }
 
   Future<void> runJob(int id) async => _dio.post('/api/queue/$id/run');
+  Future<QueueJob> refineJob(int id, {String instructions = ''}) async =>
+      QueueJob.fromJson(
+        (await _dio.post(
+          '/api/queue/$id/refine',
+          data: {'allow_cloud': true, 'instructions': instructions},
+        )).data,
+      );
+  Future<QueueJob> editJob(
+    int id, {
+    required Map<String, dynamic> spec,
+    required List<int> dependsOn,
+    required String project,
+    required String engine,
+  }) async => QueueJob.fromJson(
+    (await _dio.patch(
+      '/api/queue/$id',
+      data: {
+        'spec': spec,
+        'depends_on': dependsOn,
+        'project': project,
+        'engine': engine,
+      },
+    )).data,
+  );
   Future<void> stopJob(int id) async => _dio.post('/api/queue/$id/stop');
   Future<void> tagJob(int id, String tag) async =>
       _dio.post('/api/queue/$id/tag', data: {'tag': tag});
-  Future<void> dropJob(int id) async => _dio.delete('/api/queue/$id');
+  Future<QueueJob> setJobEngine(int id, String engine) async =>
+      QueueJob.fromJson(
+        (await _dio.post(
+          '/api/queue/$id/engine',
+          data: {'engine': engine},
+        )).data,
+      );
+  Future<void> closeJob(int id, String reason) async =>
+      _dio.post('/api/queue/$id/close', data: {'reason': reason});
+  Future<void> reopenJob(int id) async => _dio.post('/api/queue/$id/reopen');
 
   Future<String> shipJob(int id) async {
     final r = await _dio.post('/api/queue/$id/ship');
     return r.data['result']?.toString() ?? 'shipped';
   }
 
-  Future<Map<String, dynamic>> setQueueSettings(Map<String, dynamic> patch) async {
+  Future<Map<String, dynamic>> setQueueSettings(
+    Map<String, dynamic> patch,
+  ) async {
     final r = await _dio.post('/api/queue/settings', data: patch);
     return Map<String, dynamic>.from(r.data);
   }
@@ -274,7 +399,8 @@ class GajalaApi {
     return (items: items, unread: (r.data['unread'] ?? 0) as int);
   }
 
-  Future<void> markRead(int id) async => _dio.post('/api/notifications/$id/read');
+  Future<void> markRead(int id) async =>
+      _dio.post('/api/notifications/$id/read');
   Future<void> markAllRead() async => _dio.post('/api/notifications/read_all');
   Future<void> dismissNotification(int id) async =>
       _dio.delete('/api/notifications/$id');
