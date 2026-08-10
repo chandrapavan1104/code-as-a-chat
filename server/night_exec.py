@@ -44,6 +44,19 @@ BE HONEST about confidence. If you cannot run or reproduce the result, say the
 change is UNVERIFIED and name what would confirm it. End with a 2-4 line summary:
 what the task was, what you changed (files), and any caveat. Be concise."""
 
+RESEARCH_SYSTEM = """You are an autonomous research agent working on ONE bounded
+task. Your deliverable is a factual report, not a code change.
+
+Use public web research/search capabilities available to you. Cross-check claims
+and include direct source URLs with each useful finding. Clearly separate facts,
+inferences, and recommendations. Never fabricate a source, company, person, or
+contact detail.
+
+READ-ONLY SAFETY: do not contact anyone; do not send email/messages, submit forms,
+log in, purchase, register, or change any external/local state. If the task asks
+for outreach, provide a proposed strategy/template only and state that no outreach
+was performed. End with a concise findings summary and practical next steps."""
+
 
 def _argv(engine: str, repo: str, prompt: str, model: str) -> list[str]:
     if engine == "claude":
@@ -128,6 +141,41 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
     stderr = err_b.decode(errors="replace")
     text, total, billable = _parse(engine, stdout, stderr)
 
+    error = None
+    if proc.returncode not in (0, None):
+        error = (stderr.strip() or text.strip() or f"exit code {proc.returncode}")[:400]
+    return text, total, billable, error
+
+
+async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
+                           on_spawn=None) -> tuple[str, int, int, str | None]:
+    """Run a read-only research job without Git/branch expectations."""
+    prompt = f"{RESEARCH_SYSTEM}\n\n=== RESEARCH TASK ===\n{task}"
+    argv = _argv(engine, cwd, prompt, _model_for(engine))
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        if on_spawn is not None:
+            on_spawn(proc)
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
+    except FileNotFoundError:
+        return "", 0, 0, f"the {engine} CLI is not installed on PATH"
+    except Exception as exc:  # noqa: BLE001
+        return "", 0, 0, f"failed to launch {engine}: {exc}"
+
+    stdout = out_b.decode(errors="replace")
+    stderr = err_b.decode(errors="replace")
+    text, total, billable = _parse(engine, stdout, stderr)
     error = None
     if proc.returncode not in (0, None):
         error = (stderr.strip() or text.strip() or f"exit code {proc.returncode}")[:400]

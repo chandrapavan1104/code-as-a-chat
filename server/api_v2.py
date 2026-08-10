@@ -18,7 +18,7 @@ from pathlib import Path
 import psutil
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from server import config as cfg
 from server import fcm
@@ -27,6 +27,7 @@ from server.db import devices_store
 from server.db import store as memory
 from server.media import ensure_uploads_dir, is_served_path
 from server.skills.projects import _candidates as _project_candidates, _switch_view as _switch_workspace
+from server.work_orders import WorkOrderSpec
 
 router = APIRouter(prefix="/api", tags=["app"])
 
@@ -563,11 +564,16 @@ def usage(response: Response):
 def _job_view(j: dict) -> dict:
     """Trim a night_queue_store row to what the app renders."""
     from pathlib import Path as _P
+    from server.db import night_queue_store
+    spec = j.get("spec_json") or {}
     return {
         "id": j["id"],
         "project": j["project"],
         "project_name": _P(j["project"]).name,
         "task": j["task"],
+        "title": spec.get("title") or j["task"].splitlines()[0],
+        "spec": spec,
+        "readiness": spec.get("readiness", "draft"),
         "tag": j["tag"],
         "engine": j.get("engine_used") or j["engine"],
         "status": j["status"],
@@ -577,11 +583,20 @@ def _job_view(j: dict) -> dict:
         "tokens_total": j.get("tokens_total") or 0,
         "created_at": j.get("created_at"),
         "ended_at": j.get("ended_at"),
+        "depends_on": j.get("depends_on") or [],
+        "dependencies": night_queue_store.dependency_status(j),
+        "blocked_by": night_queue_store.blocked_by(j),
+        "closed_at": j.get("closed_at"),
+        "close_reason": j.get("close_reason"),
+        "previous_status": j.get("previous_status"),
+        "closure_history": j.get("closure_history") or [],
     }
 
 
 class QueueJobIn(BaseModel):
-    task: str
+    task: str = ""
+    spec: WorkOrderSpec | None = None
+    depends_on: list[int] = Field(default_factory=list)
     project: str | None = None          # name or path; defaults to active workspace
     tag: str = "auto"                   # auto | mine
     engine: str = "auto"                # auto | claude | codex | gemini
@@ -590,6 +605,26 @@ class QueueJobIn(BaseModel):
 
 class QueueTag(BaseModel):
     tag: str
+
+
+class QueueEngine(BaseModel):
+    engine: str
+
+
+class QueueClose(BaseModel):
+    reason: str
+
+
+class QueueRefineIn(BaseModel):
+    allow_cloud: bool = False
+    instructions: str = Field(default="", max_length=2000)
+
+
+class QueueEditIn(BaseModel):
+    spec: WorkOrderSpec
+    depends_on: list[int] | None = None
+    project: str | None = None
+    engine: str | None = None
 
 
 class QueueSettingsIn(BaseModel):
@@ -613,16 +648,34 @@ def queue_list(status: str | None = None):
 @router.post("/queue", status_code=201)
 def queue_add(body: QueueJobIn):
     from server.db import night_queue_store
+    from server.work_orders import from_task
     project = _resolve_project_path(body.project)
+    spec = body.spec or from_task(body.task)
+    task = spec.as_task() if body.spec is not None else body.task.strip()
+    if not task:
+        raise HTTPException(400, "task or work-order spec is required")
+    missing = [job_id for job_id in body.depends_on
+               if night_queue_store.get(job_id) is None]
+    if missing:
+        raise HTTPException(400, f"unknown dependencies: {missing}")
     jid = night_queue_store.add(
-        project=project, task=body.task, tag=body.tag, engine=body.engine,
-        priority=body.priority)
+        project=project, task=task, tag=body.tag, engine=body.engine,
+        priority=body.priority, spec=spec.model_dump(), depends_on=body.depends_on)
     return _job_view(night_queue_store.get(jid))
 
 
 @router.post("/queue/{job_id}/run")
 async def queue_run(job_id: int):
     from server import night_shift
+    from server.db import night_queue_store
+    existing = night_queue_store.get(job_id)
+    if existing and existing["status"] == "closed":
+        raise HTTPException(409, "reopen the job before running it")
+    if existing and not night_queue_store.is_refined(existing):
+        raise HTTPException(409, "refine this draft before running it")
+    blocked = night_queue_store.blocked_by(existing) if existing else []
+    if blocked:
+        raise HTTPException(409, f"blocked by unshipped jobs: {blocked}")
     job = await night_shift.run_now(job_id)
     if job is None:
         raise HTTPException(404, "no such job")
@@ -652,6 +705,8 @@ def queue_tag(job_id: int, body: QueueTag):
     j = night_queue_store.get(job_id)
     if not j:
         raise HTTPException(404, "no such job")
+    if body.tag == "auto" and not night_queue_store.is_refined(j):
+        raise HTTPException(409, "refine this draft before making it automatic")
     fields = {"tag": body.tag}
     if j["status"] in ("queued", "held"):
         fields["status"] = "held" if body.tag == "mine" else "queued"
@@ -659,10 +714,91 @@ def queue_tag(job_id: int, body: QueueTag):
     return _job_view(night_queue_store.get(job_id))
 
 
-@router.delete("/queue/{job_id}", status_code=204)
-def queue_drop(job_id: int):
+@router.post("/queue/{job_id}/engine")
+def queue_engine(job_id: int, body: QueueEngine):
     from server.db import night_queue_store
-    night_queue_store.drop(job_id)
+    if body.engine not in ("auto", "claude", "codex", "gemini"):
+        raise HTTPException(400, "engine must be auto, claude, codex, or gemini")
+    job = night_queue_store.get(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    if job["status"] in ("running", "closed"):
+        raise HTTPException(409, f"cannot change engine on a {job['status']} job")
+    night_queue_store.update(job_id, engine=body.engine, engine_used=None)
+    return _job_view(night_queue_store.get(job_id))
+
+
+@router.post("/queue/{job_id}/refine")
+async def queue_refine(job_id: int, body: QueueRefineIn):
+    from server.work_order_refiner import refine_job
+    try:
+        return _job_view(await refine_job(
+            job_id, allow_cloud=body.allow_cloud, instructions=body.instructions))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.patch("/queue/{job_id}")
+def queue_edit(job_id: int, body: QueueEditIn):
+    from server.db import night_queue_store
+    from server.work_orders import mark_refined, migrate_spec
+    job = night_queue_store.get(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    if job["status"] in ("running", "closed"):
+        raise HTTPException(409, f"cannot edit a {job['status']} job")
+    deps = body.depends_on if body.depends_on is not None else job.get("depends_on", [])
+    if job_id in deps:
+        raise HTTPException(400, "a job cannot depend on itself")
+    missing = [dep for dep in deps if night_queue_store.get(dep) is None]
+    if missing:
+        raise HTTPException(400, f"unknown dependencies: {missing}")
+    if body.engine is not None and body.engine not in ("auto", "claude", "codex", "gemini"):
+        raise HTTPException(400, "invalid engine")
+    spec = migrate_spec(body.spec.model_dump(), body.spec.source_text or job["task"])
+    if spec.is_complete:
+        mark_refined(spec, provider="manual")
+    else:
+        spec.readiness = "draft"
+        spec.refined_at = None
+        spec.refined_by = None
+    fields = {
+        "task": spec.as_task(), "spec_json": spec.model_dump(),
+        "depends_on": deps, "status": "held", "tag": "mine",
+        "summary": "Edited manually; held for review.",
+    }
+    if body.project is not None:
+        fields["project"] = _resolve_project_path(body.project)
+    if body.engine is not None:
+        fields["engine"] = body.engine
+        fields["engine_used"] = None
+    night_queue_store.update(job_id, **fields)
+    return _job_view(night_queue_store.get(job_id))
+
+
+@router.post("/queue/{job_id}/close")
+def queue_close(job_id: int, body: QueueClose):
+    from server.db import night_queue_store
+    try:
+        if not night_queue_store.close(job_id, body.reason):
+            raise HTTPException(404, "no such job")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _job_view(night_queue_store.get(job_id))
+
+
+@router.post("/queue/{job_id}/reopen")
+def queue_reopen(job_id: int):
+    from server.db import night_queue_store
+    if not night_queue_store.reopen(job_id):
+        raise HTTPException(409, "job is not closed")
+    return _job_view(night_queue_store.get(job_id))
 
 
 @router.get("/queue/settings")

@@ -21,26 +21,28 @@ from server.skills.base import Skill
 from server.skills import register
 
 
-def _version_name() -> str:
+def _version_name(source_repo: Path | str | None = None) -> str:
     """versionName from the repo pubspec (the `version: X.Y.Z+build` line)."""
     try:
-        text = (config.REPO_DIR / "clients" / "gajala" / "pubspec.yaml").read_text()
+        repo = Path(source_repo) if source_repo else Path(config.REPO_DIR)
+        text = (repo / "clients" / "gajala" / "pubspec.yaml").read_text()
         m = re.search(r"^version:\s*([0-9.]+)", text, re.MULTILINE)
         return m.group(1) if m else "0.0.0"
     except Exception:
         return "0.0.0"
 
 
-async def build_and_deploy(timeout: int = 600) -> tuple[bool, str]:
+async def build_and_deploy(timeout: int = 600,
+                           source_repo: Path | str | None = None) -> tuple[bool, str]:
     """Sync repo app sources → build → deploy. Returns (ok, message).
 
     Each build stamps a fresh versionCode via `--build-number=<epoch>` (no pubspec
     edit, so it never dirties the tree the fix agent guards) and writes
     apk_version.json next to the APK so the app can detect "a newer build exists"."""
-    repo = str(config.REPO_DIR)
+    repo = str(Path(source_repo) if source_repo else Path(config.REPO_DIR))
     dev = str(config.FLUTTER_APP_DIR)
     build_number = int(time.time())          # monotonically increasing versionCode
-    version_name = _version_name()
+    version_name = _version_name(source_repo)
     script = f"""
 set -e
 export PATH="{config.FLUTTER_BIN_DIR}:$PATH"

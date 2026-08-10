@@ -2,6 +2,17 @@
 together, with no external CLIs or network. Keeps CI meaningful and green."""
 
 import asyncio
+import subprocess
+
+
+def _ready_work_order(title="Ready task"):
+    return {
+        "version": 2, "readiness": "refined", "title": title,
+        "outcome": "The requested behavior works", "plan": ["Implement it"],
+        "policy": "Preserve existing behavior and user changes",
+        "acceptance": ["The behavior is verified"],
+        "test_handoff": "Return exact phone test steps",
+    }
 
 
 def test_config_imports_and_has_token():
@@ -15,6 +26,7 @@ def test_api_v2_router_mounts():
     paths = {r.path for r in router.routes}
     assert "/api/system" in paths
     assert "/api/devices" in paths
+    assert "/api/queue/{job_id}/refine" in paths
 
 
 def test_fcm_available_is_bool_without_key():
@@ -316,7 +328,8 @@ def test_night_queue_store_roundtrip_and_atomic_claim(tmp_path, monkeypatch):
 
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
 
-    jid = q.add(project="/tmp/proj", task="add CSV export", tag="auto", engine="codex")
+    jid = q.add(project="/tmp/proj", task="add CSV export", tag="auto",
+                engine="codex", spec=_ready_work_order("Add CSV export"))
     held = q.add(project="/tmp/proj", task="redesign nav", tag="mine")
 
     # A held (mine) job is never queued/claimable.
@@ -334,6 +347,283 @@ def test_night_queue_store_roundtrip_and_atomic_claim(tmp_path, monkeypatch):
     assert row["status"] == "staged"
     assert row["files_changed"] == ["server/x.py"]
     assert [j["id"] for j in q.list_jobs(status="staged")] == [jid]
+
+
+def test_queue_dependencies_block_until_shipped(tmp_path, monkeypatch):
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    foundation = q.add(project="/tmp/proj", task="foundation", tag="mine")
+    dependent = q.add(
+        project="/tmp/proj", task="dependent", depends_on=[foundation],
+        spec=_ready_work_order("Dependent task"),
+    )
+
+    assert q.blocked_by(q.get(dependent)) == [foundation]
+    assert q.claim_next("codex") is None
+    q.update(foundation, status="deployed")
+    assert q.claim_next("codex") is None  # branch exists, but is not in base
+    q.update(foundation, status="shipped")
+    assert q.claim_next("codex")["id"] == dependent
+
+
+def test_closed_shipped_dependency_remains_satisfied(tmp_path, monkeypatch):
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    foundation = q.add(
+        project="/tmp/proj", task="foundation", tag="mine",
+        spec=_ready_work_order("Foundation"),
+    )
+    q.update(foundation, status="shipped")
+    q.close(foundation, "finished")
+    q.reopen(foundation)
+    q.close(foundation, "archived again")
+    dependent = q.add(
+        project="/tmp/proj", task="dependent", depends_on=[foundation],
+        spec=_ready_work_order("Dependent"),
+    )
+
+    job = q.get(dependent)
+    assert q.blocked_by(job) == []
+    assert q.dependency_status(job)[0]["satisfied"] is True
+    assert q.claim_next("codex")["id"] == dependent
+
+
+def test_queue_close_is_recoverable_and_reopens_held(tmp_path, monkeypatch):
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    jid = q.add(project="/tmp/proj", task="safe task")
+
+    assert q.close(jid, "superseded") is True
+    closed = q.get(jid)
+    assert closed["status"] == "closed"
+    assert closed["close_reason"] == "superseded"
+    assert closed["closure_history"][0]["previous_status"] == "held"
+    assert q.claim_next("codex") is None
+
+    assert q.reopen(jid) is True
+    reopened = q.get(jid)
+    assert reopened["status"] == "held"
+    assert reopened["tag"] == "mine"
+    assert reopened["closure_history"][0]["reason"] == "superseded"
+
+
+def test_queue_schema_migrates_legacy_rows(tmp_path, monkeypatch):
+    import sqlite3
+    from server.db import night_queue_store as q
+
+    db = tmp_path / "night_queue.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("""
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY, project TEXT NOT NULL, task TEXT NOT NULL,
+                tag TEXT NOT NULL, engine TEXT NOT NULL, priority INTEGER NOT NULL,
+                status TEXT NOT NULL, origin TEXT NOT NULL, branch TEXT, base TEXT,
+                summary TEXT, files_changed TEXT, engine_used TEXT,
+                tokens_total INTEGER NOT NULL, tokens_billable INTEGER NOT NULL,
+                created_at REAL NOT NULL, started_at REAL, ended_at REAL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO jobs VALUES (1,'/tmp/p','legacy task','auto','auto',0,"
+            "'queued','queue',NULL,NULL,NULL,NULL,NULL,0,0,1,NULL,NULL)"
+        )
+    monkeypatch.setattr(q, "DB_PATH", db)
+
+    q.init()
+    row = q.get(1)
+    assert row["task"] == "legacy task"
+    assert row["spec_json"]["title"] == "legacy task"
+    assert row["spec_json"]["readiness"] == "draft"
+    assert row["depends_on"] == []
+    assert row["status"] == "held" and row["tag"] == "mine"
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT spec_json FROM jobs WHERE id = 1"
+        ).fetchone()[0]
+
+
+def test_work_order_roundtrip():
+    from server.work_orders import WorkOrderSpec, from_task
+
+    spec = WorkOrderSpec(
+        title="Add export", outcome="Users download CSV", plan=["Add endpoint"],
+        policy="Read-only export", acceptance=["CSV opens"],
+        test_handoff="Return the phone URL",
+    )
+    parsed = from_task(spec.as_task())
+    assert parsed.title == spec.title
+    assert parsed.plan == spec.plan
+    assert parsed.acceptance == spec.acceptance
+    assert parsed.readiness == "refined"
+
+
+def test_legacy_qwen_research_is_not_left_as_coding():
+    from server.work_orders import migrate_spec
+
+    stored = _ready_work_order("Research European businesses")
+    stored.update({
+        "refined_by": "local-qwen",
+        "context": "Find potential clients in European countries",
+        "plan": ["Conduct web searches", "Review LinkedIn and business listings"],
+    })
+    spec = migrate_spec(stored, "find small European companies")
+
+    assert spec.work_type == "research"
+
+
+def test_rough_queue_capture_is_draft_held_and_unclaimable(tmp_path, monkeypatch):
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    jid = q.add(project="/tmp/proj", task="make login better", tag="auto")
+    job = q.get(jid)
+
+    assert job["spec_json"]["readiness"] == "draft"
+    assert job["status"] == "held" and job["tag"] == "mine"
+    assert q.claim_next("codex") is None
+
+
+def test_refinement_replaces_prompt_but_preserves_rough_capture(
+        tmp_path, monkeypatch):
+    from server import work_order_refiner
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    jid = q.add(project=str(tmp_path), task="make login better")
+    seen = {}
+
+    async def fake_claude(*args, **kwargs):
+        seen["prompt"] = args[1]
+        return ('{"work_type":"coding","title":"Improve login feedback","outcome":"Login errors are clear",'
+                '"context":"Current feedback is vague","plan":["Add messages"],'
+                '"policy":"Preserve auth behavior","acceptance":["Errors are visible"],'
+                '"test_handoff":"Open Login on the phone and enter a bad password",'
+                '"out_of_scope":"Changing authentication","assumptions":[]}')
+
+    monkeypatch.setattr(work_order_refiner, "_claude_cli", fake_claude)
+    job = asyncio.run(work_order_refiner.refine_job(
+        jid, allow_cloud=True, instructions="Keep the existing auth flow"))
+
+    assert job["spec_json"]["readiness"] == "refined"
+    assert job["spec_json"]["work_type"] == "coding"
+    assert job["spec_json"]["source_text"] == "make login better"
+    assert job["status"] == "held" and job["tag"] == "mine"
+    assert job["task"].startswith("TITLE: Improve login feedback")
+    assert "Keep the existing auth flow" in seen["prompt"]
+
+
+def test_manual_queue_edit_updates_spec_and_holds_job(tmp_path, monkeypatch):
+    from server import api_v2
+    from server.db import night_queue_store as q
+    from server.work_orders import WorkOrderSpec
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    jid = q.add(project=str(tmp_path), task="rough research")
+    spec = WorkOrderSpec.model_validate({
+        **_ready_work_order("Research market"),
+        "work_type": "research", "source_text": "rough research",
+    })
+    edited = api_v2.queue_edit(jid, api_v2.QueueEditIn(
+        spec=spec, depends_on=[], engine="gemini"))
+
+    assert edited["status"] == "held"
+    assert edited["spec"]["work_type"] == "research"
+    assert edited["spec"]["refined_by"] == "manual"
+
+
+def test_queue_engine_can_be_pinned_or_returned_to_auto(tmp_path, monkeypatch):
+    from server import api_v2
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    jid = q.add(project=str(tmp_path), task="ready", spec=_ready_work_order())
+    q.update(jid, engine="gemini", engine_used="gemini", status="failed")
+
+    changed = api_v2.queue_engine(jid, api_v2.QueueEngine(engine="claude"))
+    assert changed["engine"] == "claude"
+    changed = api_v2.queue_engine(jid, api_v2.QueueEngine(engine="auto"))
+    assert changed["engine"] == "auto"
+
+
+def test_research_job_bypasses_git_and_stores_report(tmp_path, monkeypatch):
+    from server import night_shift
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    spec = _ready_work_order("Research small companies")
+    spec["work_type"] = "research"
+    jid = q.add(project=str(tmp_path), task="research companies", spec=spec)
+    job = q.get(jid)
+
+    async def fake_research(*args, **kwargs):
+        return "Three sourced leads: https://example.com", 120, 120, None
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(night_shift.night_exec, "run_research_job", fake_research)
+    monkeypatch.setattr(night_shift, "_notify_status", no_notify)
+    asyncio.run(night_shift._process_job_locked(job, "gemini", str(tmp_path), jid))
+
+    result = q.get(jid)
+    assert result["status"] == "completed"
+    assert "https://example.com" in result["summary"]
+
+
+def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
+        tmp_path, monkeypatch):
+    from server import config, night_shift
+    from server.db import night_queue_store as q
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.email", "night@test.invalid"],
+                   cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Night Test"], cwd=repo,
+                   check=True)
+    tracked = repo / "tracked.txt"
+    tracked.write_text("committed\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True,
+                   capture_output=True)
+    tracked.write_text("owner's uncommitted work\n")
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    monkeypatch.setattr(night_shift, "_WORKTREE_DIR", tmp_path / "worktrees")
+    monkeypatch.setattr(config, "REPO_DIR", tmp_path / "some-other-repo")
+    jid = q.add(project=str(repo), task="add generated file",
+                spec=_ready_work_order("Add generated file"))
+    job = q.get(jid)
+
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+        (Path(cwd) / "generated.txt").write_text("made by worker\n")
+        return "Implemented it", 42, 40, None
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    from pathlib import Path
+    monkeypatch.setattr(night_shift.night_exec, "run_job", fake_run)
+    monkeypatch.setattr(night_shift, "_notify_status", no_notify)
+    asyncio.run(night_shift._process_job_locked(
+        job, "codex", str(repo), jid))
+
+    result = q.get(jid)
+    assert result["status"] == "staged"
+    assert result["branch"].startswith(f"night/{jid}-")
+    assert "generated.txt" in result["files_changed"]
+    assert tracked.read_text() == "owner's uncommitted work\n"
+    assert not (repo / "generated.txt").exists()
+    assert not (tmp_path / "worktrees" / f"job-{jid}").exists()
+    branch_file = subprocess.run(
+        ["git", "show", f"{result['branch']}:generated.txt"], cwd=repo,
+        check=True, capture_output=True, text=True).stdout
+    assert branch_file == "made by worker\n"
 
 
 def test_night_shift_window_wraps_past_midnight(monkeypatch):
@@ -470,7 +760,8 @@ def test_respond_to_job_appends_answer_and_requeues(tmp_path, monkeypatch):
     from server.db import night_queue_store as q
 
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
-    jid = q.add(project="/tmp/p", task="add export", tag="auto", engine="codex")
+    jid = q.add(project="/tmp/p", task="add export", tag="auto", engine="codex",
+                spec=_ready_work_order("Add export"))
     q.update(jid, status="awaiting_input")
 
     job = night_shift.respond_to_job(jid, "use SQLite")
@@ -486,7 +777,8 @@ def test_stop_job_is_safe_when_not_running(tmp_path, monkeypatch):
 
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
     assert night_shift.stop_job(123) is False          # unknown job
-    jid = q.add(project="/tmp/p", task="t", tag="auto")
+    jid = q.add(project="/tmp/p", task="t", tag="auto",
+                spec=_ready_work_order())
     assert night_shift.stop_job(jid) is True           # queued → parked stopped
     assert q.get(jid)["status"] == "stopped"
 

@@ -7,7 +7,8 @@ in parallel. Engine selection is quota-aware (read live from the `usage`/codaur
 snapshot): an engine at/over NIGHT_QUOTA_STOP_PCT of its rate-limit window sits
 out until the window resets.
 
-Each job runs on a throwaway `night/<id>-<slug>` branch (never on main):
+Each coding job runs in its own managed Git worktree on a throwaway
+`night/<id>-<slug>` branch (never in the owner's live checkout):
   • app-only change to THIS repo (clients/gajala/**)  → build + deploy the APK,
     status `deployed` (branch still needs `/queue ship` to merge).
   • server / mixed change to THIS repo                → `staged` (gated).
@@ -45,6 +46,7 @@ _stop_requested: set[int] = set()
 _state: dict = {"night_started_at": None, "reported": False}
 
 _BACKLOG_DIR = Path.home() / ".codeasachat" / "backlogs"
+_WORKTREE_DIR = Path.home() / ".codeasachat" / "night_worktrees"
 
 
 # ── config helpers (read through prefs so the app can change them live) ────────
@@ -227,6 +229,30 @@ def _is_this_repo(repo: str) -> bool:
         return False
 
 
+async def _discard_worktree(repo: str, worktree: Path, branch: str,
+                            *, delete_branch: bool) -> None:
+    """Remove only Night Shift's managed checkout, optionally its job branch."""
+    await _git(repo, "worktree", "remove", "--force", str(worktree))
+    await _git(repo, "worktree", "prune")
+    if delete_branch:
+        await _git(repo, "branch", "-D", branch)
+
+
+async def _prepare_worktree(repo: str, jid: int, branch: str,
+                            base: str) -> tuple[Path | None, str]:
+    """Create a clean checkout without switching or cleaning the live repo."""
+    _WORKTREE_DIR.mkdir(parents=True, exist_ok=True)
+    worktree = _WORKTREE_DIR / f"job-{jid}"
+    # A stopped/crashed prior attempt can leave either artifact behind. Both are
+    # Night Shift-owned and safe to replace for the same durable queue id.
+    await _discard_worktree(repo, worktree, branch, delete_branch=True)
+    rc, output = await _git(
+        repo, "worktree", "add", "-b", branch, str(worktree), base, timeout=60)
+    if rc != 0:
+        return None, output.strip()[:500]
+    return worktree, ""
+
+
 # ── the per-job pipeline ──────────────────────────────────────────────────────
 
 async def _process_job(job: dict, engine: str) -> None:
@@ -248,27 +274,32 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         await _notify_status(jid, job, "failed", f"project path is gone: {repo}")
         return
 
-    rc, status = await _git(repo, "status", "--porcelain")
+    if (job.get("spec_json") or {}).get("work_type") == "research":
+        await _process_research_job(job, engine, repo, jid)
+        return
+
+    rc, status = await _git(repo, "rev-parse", "--git-dir")
     if rc != 0:
         night_queue_store.update(jid, status="failed", ended_at=time.time(),
-                                 summary=f"not a clean git repo ({status.strip()[:160]})")
-        await _notify_status(jid, job, "failed", "not a clean git repo")
-        return
-    if status.strip():
-        msg = ("The repo has uncommitted changes, so I didn't touch it. "
-               "Commit or stash them, then re-run.")
-        night_queue_store.update(jid, status="needs_you", ended_at=time.time(),
-                                 summary=msg)
-        await _notify_status(jid, job, "needs_you", msg)
+                                 summary=f"not a git repo ({status.strip()[:160]})")
+        await _notify_status(jid, job, "failed", "not a git repo")
         return
 
     rc, base = await _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     base = base.strip() or "main"
+    if rc != 0:
+        night_queue_store.update(jid, status="failed", ended_at=time.time(),
+                                 summary="Could not determine the repository base branch.")
+        await _notify_status(jid, job, "failed", "could not determine base branch")
+        return
     branch = f"night/{jid}-{_slug(job['task'])}"
-    # A re-run (run-now on a stopped/failed job) can hit an existing branch name.
-    if (await _git(repo, "checkout", "-b", branch))[0] != 0:
-        await _git(repo, "branch", "-D", branch)
-        await _git(repo, "checkout", "-b", branch)
+    worktree, worktree_error = await _prepare_worktree(repo, jid, branch, base)
+    if worktree is None:
+        msg = f"Could not create the isolated job checkout: {worktree_error}"
+        night_queue_store.update(jid, status="failed", ended_at=time.time(),
+                                 summary=msg)
+        await _notify_status(jid, job, "failed", msg)
+        return
 
     try:
         started = time.time()
@@ -278,27 +309,26 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
                 _running[jid]["proc"] = proc
 
         summary, total, billable, error = await night_exec.run_job(
-            engine, repo, job["task"], getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
+            engine, str(worktree), job["task"],
+            getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
             on_spawn=_hold)
         _record_run(repo, engine, started, error, total, billable)
 
         # Stop requested mid-run: the subprocess was killed. Clean up and park it.
         if jid in _stop_requested:
-            await _git(repo, "checkout", base)
-            await _git(repo, "branch", "-D", branch)
+            await _discard_worktree(repo, worktree, branch, delete_branch=True)
             night_queue_store.update(jid, status="stopped", ended_at=time.time(),
                                      summary="Stopped by you.")
             return
 
-        _, status2 = await _git(repo, "status", "--porcelain")
+        _, status2 = await _git(str(worktree), "status", "--porcelain")
         changed = _changed_files(status2)
 
         # No change: the agent either errored, or deliberately stopped to ask you
         # a question (a design/product decision). The latter becomes an interactive
         # 'awaiting_input' item — answer it and the job re-runs with your answer.
         if not changed:
-            await _git(repo, "checkout", base)
-            await _git(repo, "branch", "-D", branch)
+            await _discard_worktree(repo, worktree, branch, delete_branch=True)
             if error:
                 night_queue_store.update(
                     jid, status="failed", tokens_total=total,
@@ -315,8 +345,12 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
                 await _notify_input(jid, job, question)
             return
 
-        await _git(repo, "add", "-A")
-        await _git(repo, "commit", "-m", f"night(agent): {job['task'][:60]}", timeout=30)
+        await _git(str(worktree), "add", "-A")
+        commit_rc, commit_output = await _git(
+            str(worktree), "commit", "-m", f"night(agent): {job['task'][:60]}",
+            timeout=30)
+        if commit_rc != 0:
+            raise RuntimeError(f"could not commit job changes: {commit_output.strip()[:300]}")
 
         this_repo = _is_this_repo(repo)
         app_only = this_repo and all(f.startswith("clients/gajala/") for f in changed)
@@ -325,15 +359,16 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         deploy_note = ""
         deployed_ok = False
         if app_only:
-            # Build WHILE the branch is checked out so the APK contains the change,
-            # then restore base. build_and_deploy rsyncs from the repo working tree.
+            # Build from the isolated checkout so the APK contains this branch,
+            # while the owner's active checkout remains completely untouched.
             from server.skills.build_app import build_and_deploy
             deployed_ok, msg = await build_and_deploy(
-                timeout=getattr(config, "NIGHT_JOB_TIMEOUT", 1800))
+                timeout=getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
+                source_repo=worktree)
             deploy_note = msg
             final_status = "deployed" if deployed_ok else "staged"
 
-        await _git(repo, "checkout", base)
+        await _discard_worktree(repo, worktree, branch, delete_branch=False)
 
         rc, diffstat = await _git(repo, "diff", f"{base}..{branch}", "--stat")
         night_queue_store.update(
@@ -349,11 +384,53 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         await _notify_status(jid, job, final_status, summary or "", deployed=deployed_ok)
     except Exception as exc:  # noqa: BLE001 — never let one job kill the runner
         log.error("night job %s crashed: %s", jid, exc)
-        await _git(repo, "checkout", base)
-        await _git(repo, "branch", "-D", branch)
+        await _discard_worktree(repo, worktree, branch, delete_branch=True)
         night_queue_store.update(jid, status="failed", ended_at=time.time(),
                                  summary=f"night job crashed: {exc}")
         await _notify_status(jid, job, "failed", str(exc))
+
+
+async def _process_research_job(
+        job: dict, engine: str, cwd: str, jid: int) -> None:
+    """Research produces a report, so it needs neither Git nor changed files."""
+    started = time.time()
+
+    def _hold(proc):
+        if jid in _running:
+            _running[jid]["proc"] = proc
+
+    summary, total, billable, error = await night_exec.run_research_job(
+        engine, cwd, job["task"], getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
+        on_spawn=_hold,
+    )
+    _record_run(cwd, engine, started, error, total, billable)
+    if jid in _stop_requested:
+        night_queue_store.update(
+            jid, status="stopped", ended_at=time.time(), summary="Stopped by you."
+        )
+        return
+    if error:
+        reason = f"Research agent error: {error}"
+        night_queue_store.update(
+            jid, status="failed", engine_used=engine, tokens_total=total,
+            tokens_billable=billable, ended_at=time.time(),
+            summary=f"{reason}\n\n{summary}".strip(),
+        )
+        await _notify_status(jid, job, "failed", reason)
+        return
+    if not summary.strip():
+        reason = "Research agent returned no report."
+        night_queue_store.update(
+            jid, status="failed", engine_used=engine, ended_at=time.time(),
+            summary=reason,
+        )
+        await _notify_status(jid, job, "failed", reason)
+        return
+    night_queue_store.update(
+        jid, status="completed", engine_used=engine, tokens_total=total,
+        tokens_billable=billable, ended_at=time.time(), summary=summary.strip(),
+    )
+    await _notify_status(jid, job, "completed", "Research report is ready.")
 
 
 # ── inbox notifications for job outcomes ──────────────────────────────────────
@@ -370,15 +447,16 @@ async def _notify_input(jid: int, job: dict, question: str) -> None:
 async def _notify_status(jid: int, job: dict, status: str, detail: str = "",
                          deployed: bool = False) -> None:
     from server.notifier import notify_app
-    icon = {"deployed": "📦", "staged": "⏸", "failed": "⚠️",
+    icon = {"deployed": "📦", "staged": "⏸", "completed": "✅", "failed": "⚠️",
             "needs_you": "🙋"}.get(status, "•")
-    verb = {"deployed": "deployed — test on phone",
+    verb = {"deployed": "deployed — test on phone", "completed": "completed — report ready",
             "staged": "staged — ship when ready",
             "failed": "failed", "needs_you": "needs you"}.get(status, status)
     title = f"{icon} Task #{jid} {verb}"
     body = f"{_project_name(job['project'])}: {job['task'][:80]}"
     if detail:
-        body += f"\n\n{detail[:200]}"
+        prefix = "Reason: " if status == "failed" else ""
+        body += f"\n\n{prefix}{detail[:200]}"
     await notify_app("queue_status", title=title, body=body,
                      ref_kind="queue_job", ref_id=jid)
     # An app-only deploy means a fresh installable build is waiting.
@@ -440,6 +518,12 @@ async def run_now(job_id: int) -> dict | None:
     job = night_queue_store.get(job_id)
     if job is None:
         return None
+    if job["status"] == "closed":
+        return job
+    if not night_queue_store.is_refined(job):
+        return job
+    if night_queue_store.blocked_by(job):
+        return job
     if job_id in _running:
         return job                      # already building
     usage_pct = await _engine_usage_pct()
