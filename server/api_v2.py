@@ -85,6 +85,55 @@ def system_stats():
     }
 
 
+# ── skills ───────────────────────────────────────────────────────────────────
+
+class SkillToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/skills")
+def list_skills():
+    """List all registered skills with their enabled/disabled state."""
+    from server.skills import registry
+    from server import prefs
+
+    skills = []
+    for name in sorted(registry.keys()):
+        skill = registry[name]
+        enabled = prefs.is_skill_enabled(name)
+        skills.append({
+            "name": name,
+            "description": skill.description,
+            "help_line": getattr(skill, "menu_line", skill.description),
+            "expose_to_agent": getattr(skill, "expose_to_agent", True),
+            "passthrough": getattr(skill, "passthrough", False),
+            "final_output": getattr(skill, "final_output", False),
+            "enabled": enabled,
+        })
+    return {"skills": skills}
+
+
+@router.post("/skills/{skill_name}")
+def toggle_skill(skill_name: str, request: SkillToggleRequest):
+    """Enable or disable a skill."""
+    from server.skills import registry
+    from server import prefs
+
+    # Validate that the skill exists
+    if skill_name not in registry:
+        raise HTTPException(404, f"skill '{skill_name}' not found")
+
+    # Set the enabled state
+    prefs.set_skill_enabled(skill_name, request.enabled)
+    skill = registry[skill_name]
+
+    return {
+        "name": skill_name,
+        "enabled": request.enabled,
+        "message": f"Skill '{skill_name}' is now {'enabled' if request.enabled else 'disabled'}"
+    }
+
+
 # ── notes ─────────────────────────────────────────────────────────────────────
 
 class NoteIn(BaseModel):

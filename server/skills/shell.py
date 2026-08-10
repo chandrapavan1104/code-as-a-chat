@@ -219,12 +219,16 @@ PERSONA — WHO YOU ARE (applies ONLY to the "reply" text, never to tool args):
 def _build_tool_catalog() -> str:
     """Assemble the agent's tool catalog from each skill's manifest agent_doc.
     Built from the live registry, so dropping a new skill file makes it
-    agent-visible automatically — no edit here."""
+    agent-visible automatically — no edit here. Filters out disabled skills."""
     from server.skills import registry
+    from server import prefs
     lines = []
     for name in sorted(registry):
         sk = registry[name]
         if name == "shell" or not getattr(sk, "expose_to_agent", True):
+            continue
+        # Skip disabled skills — they won't be available to the agent
+        if not prefs.is_skill_enabled(name):
             continue
         doc = (getattr(sk, "agent_doc", "") or sk.description).strip()
         lines.append(f'- "{name}": {doc}')
@@ -571,18 +575,25 @@ class ShellSkill(Skill):
 
     # Both sets derive from skill manifests at call time — a new skill that
     # sets expose_to_agent / passthrough is picked up with no edit here.
+    # Disabled skills are excluded from both sets.
     @property
     def DELEGATE_SKILLS(self) -> set[str]:
         from server.skills import registry
+        from server import prefs
         return {
             n for n, s in registry.items()
             if n != "shell" and getattr(s, "expose_to_agent", True)
+            and prefs.is_skill_enabled(n)
         }
 
     @property
     def PASSTHROUGH_SKILLS(self) -> set[str]:
         from server.skills import registry
-        return {n for n, s in registry.items() if getattr(s, "passthrough", False)}
+        from server import prefs
+        return {
+            n for n, s in registry.items()
+            if getattr(s, "passthrough", False) and prefs.is_skill_enabled(n)
+        }
 
     async def run(self, prompt: str = "", session_id: str | None = None, **kwargs) -> str:
         # Streaming clients pass on_event to receive live progress; None = the

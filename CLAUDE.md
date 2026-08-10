@@ -109,8 +109,25 @@ Every inbox-worthy event (needs-input, job deployed/failed, night report, "new
 build ready", fired reminders) is logged **and** pushed through one helper
 (`server/notifier.py` + `notifications_store`) so the Alerts tab (with an unread
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
+**Dynamic skills marketplace**: every registered skill can be toggled enabled/disabled
+from the Gajala app (overflow menu → "Skills marketplace") without a code deploy;
+the shell agent and orchestrator immediately exclude disabled skills from routing,
+so they become unavailable to the LLM agent on the next turn.
 
 ## Changelog (most recent first)
+- 2026-08-09 — **Dynamic skills marketplace.** Every registered skill can now be
+  toggled enabled/disabled from the Gajala app (overflow menu → "Skills marketplace"),
+  persisted in `state.json`, without any code deploy or server restart. New
+  `server/prefs.py` functions `is_skill_enabled()` and `set_skill_enabled()` manage
+  state; shell agent's `_build_tool_catalog()` and `DELEGATE_SKILLS` filter disabled
+  skills so they never appear in the routing model's tool list; `orchestrator.route()`
+  checks enabled state before running a skill; `/skills` endpoint now includes an
+  `enabled` flag per skill; new `/skills/{name}` POST toggles state. Gajala adds a
+  `SkillsScreen` (reachable from dashboard overflow) listing all skills with toggle
+  switches, and calls the new API method `GajalaApi.toggleSkill()`. Default: all
+  existing skills are enabled (opt-in behavior unchanged). Verified: GET /skills
+  returns accurate enabled status; POST /skills/{name} toggles it immediately;
+  disabled skills are excluded from the agent's tool catalog; re-enabling restores them.
 - 2026-08-07 — **Gajala cockpit for Night Shift + a notifications inbox.** New
   `notifications_store` + `server/notifier.py` (one call logs an inbox row AND
   pushes, so the app's Alerts tab and FCM never drift); reminders + night events
