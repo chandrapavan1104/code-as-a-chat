@@ -626,6 +626,129 @@ def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
     assert branch_file == "made by worker\n"
 
 
+def _deployment_repo(path):
+    path.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.email", "deploy@test.invalid"],
+                   cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Deploy Test"], cwd=path,
+                   check=True)
+    (path / "owner.txt").write_text("base owner\n")
+    (path / "feature.txt").write_text("base feature\n")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=path, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "checkout", "-b", "night/test"], cwd=path,
+                   check=True, capture_output=True)
+    (path / "feature.txt").write_text("deployed feature\n")
+    subprocess.run(["git", "commit", "-am", "feature"], cwd=path, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "checkout", "main"], cwd=path, check=True,
+                   capture_output=True)
+
+
+def test_deployment_merges_with_unrelated_owner_changes_and_records_ledger(
+        tmp_path, monkeypatch):
+    from server import deployment
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    repo = tmp_path / "repo"
+    _deployment_repo(repo)
+    (repo / "owner.txt").write_text("owner is editing this\n")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    jid = q.add(project=str(repo), task="feature", spec=_ready_work_order())
+    q.update(jid, status="staged", branch="night/test", base="main",
+             files_changed=["feature.txt"])
+
+    result = deployment.deploy_branch(
+        repo=str(repo), branch="night/test", base="main",
+        changed_files=["feature.txt"], source="queue", ref_id=jid,
+        server_touched=False)
+
+    assert "is live" in result
+    assert (repo / "feature.txt").read_text() == "deployed feature\n"
+    assert (repo / "owner.txt").read_text() == "owner is editing this\n"
+    assert q.get(jid)["status"] == "shipped"
+    assert ds.latest(source="queue", ref_id=jid)["state"] == "live"
+
+
+def test_deployment_stops_only_for_true_file_overlap(tmp_path, monkeypatch):
+    from server import deployment
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    repo = tmp_path / "repo"
+    _deployment_repo(repo)
+    # Both owner and deployment touch the same path.
+    subprocess.run(["git", "checkout", "night/test"], cwd=repo, check=True,
+                   capture_output=True)
+    (repo / "owner.txt").write_text("agent version\n")
+    subprocess.run(["git", "commit", "-am", "overlap"], cwd=repo, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    (repo / "owner.txt").write_text("owner version\n")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    jid = q.add(project=str(repo), task="overlap", spec=_ready_work_order())
+    q.update(jid, status="staged")
+
+    result = deployment.deploy_branch(
+        repo=str(repo), branch="night/test", base="main",
+        changed_files=["owner.txt"], source="queue", ref_id=jid,
+        server_touched=False)
+
+    assert "stopped safely" in result
+    assert "owner.txt" in result
+    assert (repo / "owner.txt").read_text() == "owner version\n"
+    assert q.get(jid)["status"] == "staged"
+    assert ds.latest(source="queue", ref_id=jid)["state"] == "failed"
+
+
+def test_deployment_ledger_serializes_active_releases(tmp_path, monkeypatch):
+    from server.db import deployment_store as ds
+
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    first, error = ds.begin(repo="/repo", branch="one", base="main",
+                            source="queue", ref_id=1, server_touched=True,
+                            changed_files=["server/main.py"])
+    second, busy = ds.begin(repo="/repo", branch="two", base="main",
+                            source="queue", ref_id=2, server_touched=True,
+                            changed_files=["server/api_v2.py"])
+    assert error is None and first["state"] == "merging"
+    assert second is None and f"deployment #{first['id']}" in busy
+
+
+def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from server import deployment_guard as guard
+    from server.db import deployment_store as ds
+
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    item, _ = ds.begin(repo=str(tmp_path), branch="night/x", base="main",
+                       source="queue", ref_id=None, server_touched=True,
+                       changed_files=["server/main.py"])
+    ds.update(item["id"], before_sha="good", deployed_sha="expected")
+    calls = []
+
+    def fake_run(*args):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="someone-else\n", stderr="")
+
+    monkeypatch.setattr(guard, "_restart", lambda: (True, ""))
+    monkeypatch.setattr(guard, "_healthy", lambda *a, **k: (False, "bad deploy"))
+    monkeypatch.setattr(guard, "_run", fake_run)
+    monkeypatch.setattr(guard, "_notify", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["deployment_guard", str(item["id"])])
+
+    guard.main()
+
+    assert not any("reset" in call for call in calls)
+    assert ds.get(item["id"])["state"] == "failed"
+
+
 def test_night_shift_window_wraps_past_midnight(monkeypatch):
     import datetime as dt
     from server import config, night_shift

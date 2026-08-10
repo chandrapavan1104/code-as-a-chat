@@ -12,6 +12,7 @@ class TasksScreen extends ConsumerWidget {
 
   static const _order = [
     'running',
+    'deploying',
     'awaiting_input',
     'queued',
     'deployed',
@@ -116,6 +117,12 @@ class _JobList extends ConsumerWidget {
 
 ({Color color, IconData icon, String label}) _statusStyle(String s) {
   switch (s) {
+    case 'deploying':
+      return (
+        color: GajalaColors.blue,
+        icon: Icons.rocket_launch_outlined,
+        label: 'deploying safely',
+      );
     case 'running':
       return (
         color: GajalaColors.blue,

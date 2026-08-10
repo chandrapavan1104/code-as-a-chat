@@ -178,17 +178,19 @@ class FixSkill(Skill):
     async def _attempt(self, task: str) -> str:
         repo = str(config.REPO_DIR)
 
-        rc, status = await _git(repo, "status", "--porcelain")
+        rc, status = await _git(repo, "rev-parse", "--git-dir")
         if rc != 0:
             return f"🔧 Can't reach the repo git ({status.strip()[:200]})."
-        if status.strip():
-            return ("🔧 The repo has uncommitted changes, so I won't touch it — "
-                    "commit or stash them first, then retry.")
 
         rc, base = await _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
         base = base.strip() or "main"
-        branch = f"fix/agent-{int(time.time())}"
-        await _git(repo, "checkout", "-b", branch)
+        stamp = int(time.time())
+        branch = f"fix/agent-{stamp}"
+        worktree = Path.home() / ".codeasachat" / "fix_worktrees" / str(stamp)
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        rc, out = await _git(repo, "worktree", "add", "-b", branch, str(worktree), base)
+        if rc != 0:
+            return f"🔧 Couldn't create the isolated repair checkout: {out[-300:]}"
 
         try:
             # Give the agent the actual captured errors, not just the description.
@@ -197,13 +199,13 @@ class FixSkill(Skill):
             if errs:
                 task_ctx = (f"{task}\n\n=== RECENTLY CAPTURED ERRORS (server + app, "
                             f"may be related) ===\n{format_errors(errs, detail=True)}")
-            summary, error = await _run_codex(repo, task_ctx, config.FIX_TIMEOUT)
+            summary, error = await _run_codex(str(worktree), task_ctx, config.FIX_TIMEOUT)
 
-            _, status2 = await _git(repo, "status", "--porcelain")
+            _, status2 = await _git(str(worktree), "status", "--porcelain")
             changed = _changed_files(status2)
 
             if not changed:
-                await _git(repo, "checkout", base)
+                await _git(repo, "worktree", "remove", "--force", str(worktree))
                 await _git(repo, "branch", "-D", branch)
                 head = f"🔧 I didn't change anything — {'it needs a look' if not error else 'the run hit an error'}.\n\n"
                 if error:
@@ -211,16 +213,19 @@ class FixSkill(Skill):
                 return head + (summary or "No diagnosis returned.")
 
             # Snapshot the change on the branch (keeps main clean).
-            await _git(repo, "add", "-A")
-            await _git(repo, "commit", "-m", f"fix(agent): {task[:60]}", timeout=30)
+            await _git(str(worktree), "add", "-A")
+            commit_rc, commit_out = await _git(
+                str(worktree), "commit", "-m", f"fix(agent): {task[:60]}", timeout=30)
+            if commit_rc != 0:
+                raise RuntimeError(f"could not commit repair: {commit_out[-300:]}")
             _state_set("pending_fix", {"branch": branch, "base": base, "files": changed})
 
             app_only = all(f.startswith("clients/gajala/") for f in changed)
             filelist = "\n".join(f"  • {f}" for f in changed[:12])
-            await _git(repo, "checkout", base)
-
             if app_only:
-                ok, msg = await build_and_deploy(timeout=config.FIX_TIMEOUT)
+                ok, msg = await build_and_deploy(
+                    timeout=config.FIX_TIMEOUT, source_repo=worktree)
+                await _git(repo, "worktree", "remove", "--force", str(worktree))
                 if not ok:
                     return (f"🔧 Made an app fix but the build failed:\n{msg}\n\n"
                             f"Diagnosis: {summary}\nBranch: {branch}")
@@ -229,13 +234,14 @@ class FixSkill(Skill):
                         f"Test it on your phone. Reply **/fix ship** to keep it "
                         f"(merge to {base}), or tell me what's still off.")
             else:
+                await _git(repo, "worktree", "remove", "--force", str(worktree))
                 rc, diff = await _git(repo, "diff", f"{base}..{branch}", "--stat")
                 return (f"🔧 Proposed fix (server-side — needs your OK, not applied).\n\n"
                         f"{summary}\n\nChanged:\n{filelist}\n\n{diff.strip()[:800]}\n\n"
                         f"Reply **/fix ship** to merge + restart (I health-check and "
                         f"auto-roll-back if it doesn't come up), or tell me what to change.")
         except Exception as exc:
-            await _git(repo, "checkout", base)
+            await _git(repo, "worktree", "remove", "--force", str(worktree))
             await _git(repo, "branch", "-D", branch)
             return f"🔧 The fix attempt failed: {exc}"
 
@@ -247,37 +253,13 @@ class FixSkill(Skill):
         branch, base, files = pending["branch"], pending["base"], pending["files"]
         server_touched = any(not f.startswith("clients/gajala/") for f in files)
 
-        rc, before = await _git(repo, "rev-parse", base)
-        before = before.strip()
-        rc, out = await _git(repo, "checkout", base)
-        rc, out = await _git(repo, "merge", "--no-ff", "-m", f"ship {branch}", branch)
-        if rc != 0:
-            await _git(repo, "merge", "--abort")
-            return f"🔧 Merge failed (conflict?):\n{out.strip()[:300]}"
-
-        _state_set("pending_fix", None)
-
-        if not server_touched:
-            # App-only: no restart, so it's safe to push origin now (best-effort —
-            # a failed push must not fail the ship).
-            push_rc, _ = await _git(repo, "push", "origin", base, timeout=60)
-            pushed = " · pushed" if push_rc == 0 else " · (push failed)"
-            return f"🔧 Merged to {base} ✅ (app-only — already built){pushed}."
-
-        # Server change: hand the restart to a DETACHED guard, because the server
-        # can't restart itself (it would kill this very request). The guard
-        # restarts, health-checks, rolls back to `before` if it doesn't boot, and
-        # pushes the outcome to the phone. We return immediately.
-        import subprocess
-        import sys
-        subprocess.Popen(
-            [sys.executable, "-m", "server.restart_guard", repo, before],
-            cwd=repo, start_new_session=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        return ("🔧 Merged to {b} — restarting on the new code now. I health-check, "
-                "push origin only if it comes up healthy, and auto-roll-back "
-                "otherwise; you'll get a push either way.".format(b=base))
+        from server.deployment import deploy_branch
+        result = deploy_branch(
+            repo=repo, branch=branch, base=base, changed_files=files,
+            source="fix", server_touched=server_touched)
+        if "Deployment #" in result and "stopped safely" not in result:
+            _state_set("pending_fix", None)
+        return "🔧 " + result
 
 
 register(FixSkill())

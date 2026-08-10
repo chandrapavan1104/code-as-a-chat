@@ -10,7 +10,8 @@ Statuses:
   queued     waiting to be built
   running    a night worker is on it
   deployed   app-only change built + APK deployed (branch holds the code)
-  staged     work committed on its branch, waiting for `/queue ship`
+  staged     committed branch awaiting an automatic retry or manual `/queue ship`
+  deploying  merge/restart/health verification is in progress
   completed  non-code/research result is ready in the job summary
   needs_you  agent stopped on a design/product decision (no change made)
   failed     the run errored / timed out

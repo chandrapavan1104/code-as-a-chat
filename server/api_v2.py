@@ -612,8 +612,14 @@ def usage(response: Response):
 def _job_view(j: dict) -> dict:
     """Trim a night_queue_store row to what the app renders."""
     from pathlib import Path as _P
-    from server.db import night_queue_store
+    from server.db import deployment_store, night_queue_store
     spec = j.get("spec_json") or {}
+    try:
+        deployment = deployment_store.latest(source="queue", ref_id=j["id"])
+    except OSError:
+        deployment = None
+    except Exception:  # ledger visibility must never break the Tasks screen
+        deployment = None
     return {
         "id": j["id"],
         "project": j["project"],
@@ -638,7 +644,14 @@ def _job_view(j: dict) -> dict:
         "close_reason": j.get("close_reason"),
         "previous_status": j.get("previous_status"),
         "closure_history": j.get("closure_history") or [],
+        "deployment": deployment,
     }
+
+
+@router.get("/deployments")
+def deployment_list():
+    from server.db import deployment_store
+    return {"items": deployment_store.list_recent()}
 
 
 class QueueJobIn(BaseModel):

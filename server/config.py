@@ -185,7 +185,7 @@ BATTERY_ALERT_COOLDOWN: int = int(os.getenv("BATTERY_ALERT_COOLDOWN", "1800"))  
 # ── Night Shift (overnight autonomous build queue) ────────────────────────────
 # Opt-in: while enabled and inside the night window, the runner keeps up to one
 # job per engine in flight so all three coding subscriptions build in parallel on
-# isolated `night/*` branches. Nothing merges to a base branch unattended.
+# isolated `night/*` branches; `auto` jobs use the verified deploy coordinator.
 NIGHT_SHIFT_ENABLED: bool = os.getenv("NIGHT_SHIFT_ENABLED", "false").lower() in ("1", "true", "yes")
 NIGHT_START: str = os.getenv("NIGHT_START", "23:00")   # HH:MM local
 NIGHT_END: str = os.getenv("NIGHT_END", "07:00")       # HH:MM local (may wrap midnight)

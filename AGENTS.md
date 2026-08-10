@@ -103,6 +103,14 @@ sourced, read-only report (`completed`) without contacting anyone.
 Coding jobs run in managed, isolated Git worktrees, so your active checkout may
 have uncommitted work without blocking the queue; Night Shift never switches,
 cleans, or stashes your live files.
+`auto` now authorizes the complete lifecycle: successful coding jobs merge,
+deploy, restart when needed, verify localhost + authenticated APIs + the actual
+Tailscale endpoint, and push without waiting for the owner. A durable deployment
+ledger serializes releases and exposes `merging/restarting/verifying/live` or a
+precise failure state. Rollback uses `git reset --keep` only when the expected
+deployed commit is still current, preserving unrelated owner work; true
+same-file overlap is the narrow case that stops for human resolution. The fix
+agent uses the same coordinator and an isolated repair worktree.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -114,9 +122,9 @@ queue coding tasks from the phone (`/queue add [auto|mine] [engine] <project>: <
 while inside the night window the runner keeps one job per engine in flight so all
 three subscriptions build in parallel on isolated `night/*` branches, quota-gated
 by the live codaur read (an engine at/over `NIGHT_QUOTA_STOP_PCT` sits out until its
-window resets). App-only changes auto-build+deploy the APK; server/other-project
-changes stage for `/queue ship`; decision-heavy tasks self-flag `needs_you`;
-`mine`-tagged jobs are left for you. A morning FCM/Telegram report summarizes what
+window resets). `auto` changes continue through merge, deploy, verification, and
+push; `mine` changes stage for `/queue ship`; decision-heavy tasks self-flag
+`needs_you`. A morning FCM/Telegram report summarizes what
 was built, what needs shipping, and tokens spent per engine. Four brakes: the
 window, `NIGHT_MAX_JOBS`, an optional `NIGHT_TOKEN_BUDGET`, and the per-job timeout;
 a per-repo lock keeps parallel same-repo jobs from colliding.
@@ -132,6 +140,13 @@ build ready", fired reminders) is logged **and** pushed through one helper
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
 
 ## Changelog (most recent first)
+- 2026-08-09 — **Autonomous safe deployment coordinator.** Queue and fix-agent
+  shipping now share one durable, serialized deployment transaction. Automatic
+  jobs merge and deploy end-to-end, with branch/overlap preflight, idempotent
+  launchd restart, localhost + authenticated API + Tailscale verification,
+  push-on-health, safe rollback that preserves unrelated edits, durable status,
+  and Gajala's new `deploying safely` state. Fix attempts no longer require a
+  clean live checkout because they run in their own managed worktree.
 - 2026-08-09 — **Dirty live repos no longer block queued coding jobs.** Night
   Shift now runs each coding task in a clean managed worktree and keeps the
   resulting `night/<id>-...` branch while removing the temporary checkout. The

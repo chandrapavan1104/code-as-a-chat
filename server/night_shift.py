@@ -13,7 +13,8 @@ Each coding job runs in its own managed Git worktree on a throwaway
     status `deployed` (branch still needs `/queue ship` to merge).
   • server / mixed change to THIS repo                → `staged` (gated).
   • any other project                                 → `staged` (gated).
-Nothing merges to a base branch unattended; `/queue ship <id>` is your call.
+`auto` jobs continue through the verified deployment coordinator; `mine` jobs
+remain staged until `/queue ship <id>`.
 
 Safety brakes (independent): the night window, NIGHT_MAX_JOBS per night, an
 optional NIGHT_TOKEN_BUDGET, the per-job timeout, and quota benching. A per-repo
@@ -382,6 +383,16 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
             _mark_backlog_done(repo, job["task"])
 
         await _notify_status(jid, job, final_status, summary or "", deployed=deployed_ok)
+
+        # `auto` is end-to-end authorization: after an agent produces a committed
+        # branch, merge/deploy it through the serialized verifier. A busy deploy
+        # leaves this staged; _cycle retries it durably on the next tick.
+        if job.get("tag") == "auto":
+            from server.skills.queue import _ship
+            try:
+                _ship(jid)
+            except Exception as exc:  # branch is safely staged; next tick retries
+                log.warning("automatic deploy of #%s deferred: %s", jid, exc)
     except Exception as exc:  # noqa: BLE001 — never let one job kill the runner
         log.error("night job %s crashed: %s", jid, exc)
         await _discard_worktree(repo, worktree, branch, delete_branch=True)
@@ -595,6 +606,13 @@ async def _engine_worker(engine: str) -> None:
 
 
 async def _cycle() -> None:
+    # Finish previously staged automatic work before spending quota on more jobs.
+    from server.skills.queue import _ship
+    for ready in night_queue_store.list_jobs(status="staged,deployed"):
+        if ready.get("tag") == "auto":
+            result = _ship(ready["id"])
+            if "already" in result or "queued behind" in result:
+                break
     tonight = _jobs_tonight()
     if not _budget_ok(tonight):
         return

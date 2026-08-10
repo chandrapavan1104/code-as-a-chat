@@ -2,8 +2,8 @@
 queue skill — the Night Shift work queue you drive from the phone.
 
 Queue build tasks during the day; the overnight runner (server/night_shift.py)
-builds them across all three coding subscriptions on isolated branches, then you
-review in the morning. Nothing merges to a base branch unattended.
+builds them across all three coding subscriptions on isolated branches. `auto`
+jobs deploy through the verified coordinator; `mine` jobs wait for review.
 
 Subcommands (passed via prompt):
   add [auto|mine] [engine] [<project>:] <task>   queue a job (defaults: auto, any
@@ -20,9 +20,6 @@ Subcommands (passed via prompt):
   status                                          runner window + enabled state
 """
 
-import subprocess
-import sys
-import time
 from pathlib import Path
 
 from server import config
@@ -181,15 +178,6 @@ def _show_view(job_id: int) -> str:
 
 # ── ship ──────────────────────────────────────────────────────────────────────
 
-def _git(repo: str, *args: str, timeout: int = 60) -> tuple[int, str]:
-    try:
-        p = subprocess.run(["git", "-C", repo, *args], capture_output=True,
-                           text=True, timeout=timeout)
-        return p.returncode, (p.stdout + p.stderr)
-    except subprocess.TimeoutExpired:
-        return 124, "(git timed out)"
-
-
 def _ship(job_id: int) -> str:
     j = night_queue_store.get(job_id)
     if not j:
@@ -206,30 +194,10 @@ def _ship(job_id: int) -> str:
     server_touched = _is_this_repo(repo) and any(
         not f.startswith("clients/gajala/") for f in files)
 
-    rc, before = _git(repo, "rev-parse", base)
-    before = before.strip()
-    _git(repo, "checkout", base)
-    rc, out = _git(repo, "merge", "--no-ff", "-m", f"ship night #{job_id}", branch)
-    if rc != 0:
-        _git(repo, "merge", "--abort")
-        return f"🌙 Merge of #{job_id} failed (conflict?):\n{out.strip()[:300]}"
-
-    night_queue_store.update(job_id, status="shipped", ended_at=time.time())
-
-    if not server_touched:
-        push_rc, _ = _git(repo, "push", "origin", base, timeout=60)
-        pushed = " · pushed" if push_rc == 0 else " · (push skipped/failed)"
-        return f"🌙 Shipped #{job_id} → {base} ✅{pushed}."
-
-    # Server change to THIS repo: hand the restart to the detached guard (the
-    # server can't restart itself), which health-checks + auto-rolls-back.
-    subprocess.Popen(
-        [sys.executable, "-m", "server.restart_guard", repo, before],
-        cwd=repo, start_new_session=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    return (f"🌙 Shipped #{job_id} → {base} — restarting on the new code now. "
-            "I health-check, push on success, and auto-roll-back otherwise.")
+    from server.deployment import deploy_branch
+    return "🌙 " + deploy_branch(
+        repo=repo, branch=branch, base=base, changed_files=files,
+        source="queue", ref_id=job_id, server_touched=server_touched)
 
 
 # ── backlog append ────────────────────────────────────────────────────────────
