@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 from server import config, night_exec
-from server.db import cli_runs_store, night_queue_store
+from server.db import cli_runs_store, night_queue_store, routing_recommendations_store
 
 log = logging.getLogger("night_shift")
 
@@ -509,11 +509,50 @@ def respond_to_job(job_id: int, answer: str) -> dict | None:
     return night_queue_store.get(job_id)
 
 
+def _record_shadow_recommendation(job: dict, usage_pct: dict[str, float]) -> None:
+    """SHADOW MODE: compute and record a routing recommendation without changing
+    the live assignment. This lets us evaluate the dispatcher before activation."""
+    try:
+        from server import routing_dispatcher
+
+        job_id = job["id"]
+        spec_dict = job.get("spec_json") or {}
+
+        decision = routing_dispatcher.route_work_order(
+            spec_dict=spec_dict,
+            job_id=job_id,
+            configured_engines=_engines(),
+            usage_pct=usage_pct,
+            pinned_engine=(job.get("engine") or "auto").lower(),
+            quota_stop_pct=_settings().get("quota_stop_pct", 85),
+        )
+
+        routing_recommendations_store.record(
+            job_id=job_id,
+            recommended_engine=decision.recommended_engine,
+            alternatives=decision.alternatives,
+            scores=decision.scores,
+            quota_snapshot=usage_pct,
+            confidence=decision.confidence,
+            rationale=decision.rationale,
+            features_summary=decision.features_summary,
+        )
+    except Exception as e:
+        log.debug("shadow recommendation for job #%d failed: %s", job["id"], e)
+
+
 def _pick_engine(job: dict, usage_pct: dict[str, float] | None = None) -> str:
     """Which engine should run this job now? Its pinned engine if configured, else
-    the first configured engine with quota headroom, else the first configured."""
+    the first configured engine with quota headroom, else the first configured.
+
+    SHADOW MODE: also records a routing recommendation for offline evaluation."""
     configured = _engines() or ["claude"]
     pinned = (job.get("engine") or "auto").lower()
+
+    # Record shadow recommendation (does not affect live assignment)
+    if usage_pct:
+        _record_shadow_recommendation(job, usage_pct)
+
     if pinned in configured:
         return pinned
     stop = _settings().get("quota_stop_pct", 85)
