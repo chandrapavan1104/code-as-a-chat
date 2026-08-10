@@ -68,6 +68,11 @@ class GajalaApi {
     return list.where((s) => s.name != 'shell' && s.name != 'memory').toList();
   }
 
+  Future<Map<String, dynamic>> toggleSkill(String skillName, bool enabled) async {
+    final r = await _dio.post('/skills/$skillName', data: {'enabled': enabled});
+    return Map<String, dynamic>.from(r.data);
+  }
+
   // ── chat (Gajala, conversational) ───────────────────────────────────────────
   Future<List<ChatMessage>> chatHistory(
     String sessionId, {

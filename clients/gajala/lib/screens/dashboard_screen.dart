@@ -12,6 +12,7 @@ import 'diary_screen.dart';
 import 'projects_screen.dart';
 import 'usage_screen.dart';
 import 'mac_screen.dart';
+import 'skills_screen.dart';
 
 // Display-label overrides for skill tiles (the screen behind is unchanged).
 const _tileLabels = {'usage': 'codaur', 'notes': 'brain dump'};
@@ -160,6 +161,10 @@ class _OverflowMenu extends ConsumerWidget {
           case 'all':
             showAllSkillsSheet(context, skills);
             break;
+          case 'skills':
+            Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const SkillsScreen()));
+            break;
           case 'theme':
             final next = switch (mode) {
               ThemeMode.system => ThemeMode.light,
@@ -179,6 +184,11 @@ class _OverflowMenu extends ConsumerWidget {
             child: ListTile(
                 dense: true, contentPadding: EdgeInsets.zero,
                 leading: Icon(Icons.apps, size: 20), title: Text('All skills'))),
+        const PopupMenuItem(
+            value: 'skills',
+            child: ListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.toggle_on, size: 20), title: Text('Skills marketplace'))),
         PopupMenuItem(
             value: 'theme',
             child: ListTile(

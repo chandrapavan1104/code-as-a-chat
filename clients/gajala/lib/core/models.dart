@@ -2,13 +2,14 @@
 
 class Skill {
   final String name, command, description, helpLine;
-  final bool exposeToAgent;
+  final bool exposeToAgent, enabled;
   Skill({
     required this.name,
     required this.command,
     required this.description,
     required this.helpLine,
     required this.exposeToAgent,
+    required this.enabled,
   });
   factory Skill.fromJson(Map<String, dynamic> j) => Skill(
     name: j['name'] ?? '',
@@ -16,6 +17,7 @@ class Skill {
     description: j['description'] ?? '',
     helpLine: j['help_line'] ?? j['description'] ?? '',
     exposeToAgent: j['expose_to_agent'] ?? true,
+    enabled: j['enabled'] ?? true,
   );
 }
 
