@@ -26,6 +26,8 @@ class Note {
   final String? project;
   final String kind, title, body, status;
   final String? tags;
+  final double? closedAt;
+  final String? closeReason;
   Note({
     required this.id,
     this.project,
@@ -34,6 +36,8 @@ class Note {
     required this.body,
     required this.status,
     this.tags,
+    this.closedAt,
+    this.closeReason,
   });
   factory Note.fromJson(Map<String, dynamic> j) => Note(
     id: j['id'],
@@ -43,6 +47,8 @@ class Note {
     body: j['body'] ?? '',
     status: j['status'] ?? 'open',
     tags: j['tags'],
+    closedAt: j['closed_at'],
+    closeReason: j['close_reason'],
   );
 }
 

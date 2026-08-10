@@ -67,10 +67,10 @@ final systemProvider = FutureProvider.autoDispose<SystemStats>((ref) async {
   return api.system();
 });
 
-final notesProvider = FutureProvider.autoDispose<List<Note>>((ref) async {
+final notesProvider = FutureProvider.autoDispose.family<List<Note>, String>((ref, status) async {
   final api = ref.watch(apiProvider);
   if (api == null) return [];
-  return api.notes();
+  return api.notes(status: status);
 });
 
 final remindersProvider =

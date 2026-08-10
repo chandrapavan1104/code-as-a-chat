@@ -181,6 +181,35 @@ class GajalaApi {
   Future<void> setNoteStatus(int id, String status) async =>
       _dio.patch('/api/notes/$id', data: {'status': status});
 
+  Future<Note> closeNote(int id, {String reason = ''}) async {
+    final r = await _dio.post('/api/notes/$id/close', data: {'reason': reason});
+    return Note.fromJson(r.data);
+  }
+
+  Future<Note> reopenNote(int id) async {
+    final r = await _dio.post('/api/notes/$id/reopen');
+    return Note.fromJson(r.data);
+  }
+
+  Future<QueueJob> convertNoteToQueue(
+    int id, {
+    required Map<String, dynamic> spec,
+    String? project,
+    String tag = 'mine',
+    String engine = 'auto',
+  }) async {
+    final r = await _dio.post(
+      '/api/notes/$id/convert-to-queue',
+      data: {
+        'spec': spec,
+        'project': project,
+        'tag': tag,
+        'engine': engine,
+      },
+    );
+    return QueueJob.fromJson(r.data);
+  }
+
   Future<void> deleteNote(int id) async => _dio.delete('/api/notes/$id');
 
   Future<List<Map<String, dynamic>>> reminders() async {

@@ -6,6 +6,7 @@ Stored at ~/.codeasachat/notes.db — same dir as conversations.db and state.jso
 so a single backup catches everything.
 """
 
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -36,12 +37,34 @@ def _init() -> None:
                 title           TEXT NOT NULL,
                 body            TEXT NOT NULL,
                 tags            TEXT,                       -- comma-separated
-                status          TEXT NOT NULL DEFAULT 'open',  -- open | done | dropped
+                status          TEXT NOT NULL DEFAULT 'open',  -- open | done | closed
                 created_at      REAL NOT NULL,
                 updated_at      REAL NOT NULL,
-                source_session  TEXT
+                source_session  TEXT,
+                closed_at       REAL,
+                close_reason    TEXT,
+                closure_history TEXT
             )
         """)
+        columns = {row[1] for row in c.execute("PRAGMA table_info(notes)")}
+        # Migrate legacy dropped status to closed, adding closure tracking.
+        if "closed_at" not in columns:
+            c.execute("ALTER TABLE notes ADD COLUMN closed_at REAL")
+            c.execute("ALTER TABLE notes ADD COLUMN close_reason TEXT")
+            c.execute("ALTER TABLE notes ADD COLUMN closure_history TEXT")
+            # Convert old 'dropped' status to 'closed' with a generic reason
+            dropped = c.execute("SELECT id, updated_at FROM notes WHERE status='dropped'").fetchall()
+            for row in dropped:
+                history = json.dumps([{
+                    "closed_at": row["updated_at"],
+                    "reason": "Recovered from legacy drop",
+                    "previous_status": "open"
+                }])
+                c.execute(
+                    "UPDATE notes SET status='closed', closed_at=?, close_reason=?, closure_history=? WHERE id=?",
+                    (row["updated_at"], "Recovered from legacy drop", history, row["id"])
+                )
+            c.commit()
         c.execute("CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_notes_kind    ON notes(kind)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_notes_status  ON notes(status)")
@@ -89,7 +112,48 @@ def update_body(note_id: int, body: str) -> bool:
         return cur.rowcount > 0
 
 
+def close(note_id: int, reason: str) -> bool:
+    """Close a note with an optional reason; preserve closure history."""
+    reason = reason.strip()
+    if not reason:
+        raise ValueError("close reason is required")
+    _init()
+    with _conn() as c:
+        row = c.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if row is None:
+            return False
+        if row["status"] == "closed":
+            return True
+        now = time.time()
+        try:
+            history = json.loads(row["closure_history"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            history = []
+        history.append({"closed_at": now, "reason": reason, "previous_status": row["status"]})
+        c.execute(
+            "UPDATE notes SET status='closed', closed_at=?, close_reason=?, "
+            "closure_history=?, updated_at=? WHERE id=?",
+            (now, reason, json.dumps(history), now, note_id),
+        )
+        c.commit()
+        return True
+
+
+def reopen(note_id: int) -> bool:
+    """Recover a closed note back to open state."""
+    _init()
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE notes SET status='open', closed_at=NULL, close_reason=NULL, "
+            "updated_at=? WHERE id=? AND status='closed'",
+            (time.time(), note_id),
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
 def delete(note_id: int) -> bool:
+    """Hard delete (maintenance only); never expose through app/agent APIs."""
     with _conn() as c:
         cur = c.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         c.commit()
