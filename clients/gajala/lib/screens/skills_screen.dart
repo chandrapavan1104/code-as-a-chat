@@ -21,7 +21,6 @@ class SkillsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final skills = ref.watch(skillsProvider);
-    final pal = context.pal;
 
     return Scaffold(
       appBar: AppBar(
@@ -42,11 +41,11 @@ class SkillsScreen extends ConsumerWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.error_outline, size: 48, color: pal.danger),
+                Icon(Icons.error_outline, size: 48, color: GajalaColors.danger),
                 const SizedBox(height: 16),
                 Text('Failed to load skills: $e',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: pal.danger)),
+                    style: const TextStyle(color: GajalaColors.danger)),
               ],
             ),
           ),
@@ -181,12 +180,12 @@ class _SkillTileState extends ConsumerState<_SkillTile> {
         widget.skill.helpLine,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: _enabled ? pal.textDim : pal.textDim2),
+        style: TextStyle(color: _enabled ? pal.textDim : pal.textDim.withValues(alpha: 0.6)),
       ),
       trailing: Switch(
         value: _enabled,
         onChanged: _toggling ? null : _toggleSkill,
-        activeColor: GajalaColors.accent,
+        activeThumbColor: GajalaColors.accent,
       ),
       enabled: !_toggling,
     );

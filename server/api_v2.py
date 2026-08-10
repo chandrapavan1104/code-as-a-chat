@@ -126,7 +126,6 @@ def toggle_skill(skill_name: str, request: SkillToggleRequest):
 
     # Set the enabled state
     prefs.set_skill_enabled(skill_name, request.enabled)
-    skill = registry[skill_name]
 
     return {
         "name": skill_name,
