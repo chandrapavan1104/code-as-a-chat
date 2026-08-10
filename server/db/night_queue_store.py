@@ -77,6 +77,7 @@ def init() -> None:
             "close_reason": "TEXT",
             "previous_status": "TEXT",
             "closure_history": "TEXT",
+            "source_note_id": "INTEGER",
         }
         for name, kind in additions.items():
             if name not in columns:
@@ -141,7 +142,7 @@ def _row(r: sqlite3.Row | None) -> dict | None:
 
 def add(*, project: str, task: str, tag: str = "auto", engine: str = "auto",
         priority: int = 0, origin: str = "queue", spec: dict | None = None,
-        depends_on: list[int] | None = None) -> int:
+        depends_on: list[int] | None = None, source_note_id: int | None = None) -> int:
     init()
     from server.work_orders import migrate_spec
     parsed = migrate_spec(spec, task)
@@ -153,10 +154,11 @@ def add(*, project: str, task: str, tag: str = "auto", engine: str = "auto",
     with _conn() as conn:
         cur = conn.execute(
             "INSERT INTO jobs (project, task, tag, engine, priority, status, "
-            "origin, spec_json, depends_on, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "origin, spec_json, depends_on, source_note_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project, task, tag, engine, priority, status, origin,
-             json.dumps(parsed.model_dump()), json.dumps(depends_on or []), time.time()),
+             json.dumps(parsed.model_dump()), json.dumps(depends_on or []),
+             source_note_id, time.time()),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -239,7 +241,7 @@ _UPDATABLE = {
     "project", "task", "status", "branch", "base", "summary", "files_changed", "engine_used",
     "tokens_total", "tokens_billable", "started_at", "ended_at", "priority",
     "tag", "engine", "spec_json", "depends_on", "closed_at", "close_reason",
-    "previous_status", "closure_history",
+    "previous_status", "closure_history", "source_note_id",
 }
 
 

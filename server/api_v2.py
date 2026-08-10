@@ -145,8 +145,19 @@ class NoteIn(BaseModel):
 
 
 class NotePatch(BaseModel):
-    status: str | None = None   # open | done | dropped
+    status: str | None = None   # open | done (mark complete)
     body: str | None = None
+
+
+class NoteClose(BaseModel):
+    reason: str = ""  # optional reason for closure
+
+
+class NoteConvertToQueue(BaseModel):
+    spec: WorkOrderSpec  # reviewed and approved work-order spec
+    project: str | None = None  # target project; defaults to note's project
+    tag: str = "mine"  # always create as 'mine' (held) for review
+    engine: str = "auto"
 
 
 @router.get("/notes")
@@ -180,8 +191,62 @@ def patch_note(note_id: int, p: NotePatch):
     return notes_store.get(note_id)
 
 
+@router.post("/notes/{note_id}/close")
+def close_note(note_id: int, body: NoteClose):
+    note = notes_store.get(note_id)
+    if not note:
+        raise HTTPException(404, "note not found")
+    reason = body.reason.strip() or "Closed from app"
+    if not notes_store.close(note_id, reason):
+        raise HTTPException(409, "could not close note")
+    return notes_store.get(note_id)
+
+
+@router.post("/notes/{note_id}/reopen")
+def reopen_note(note_id: int):
+    note = notes_store.get(note_id)
+    if not note:
+        raise HTTPException(404, "note not found")
+    if not notes_store.reopen(note_id):
+        raise HTTPException(409, "note is not closed")
+    return notes_store.get(note_id)
+
+
+@router.post("/notes/{note_id}/convert-to-queue", status_code=201)
+def convert_note_to_queue(note_id: int, body: NoteConvertToQueue):
+    """Convert an open todo to a queue work order (held by default).
+
+    The reviewed spec is required; the todo remains open and can be closed
+    separately after conversion.
+    """
+    from server.db import night_queue_store
+    note = notes_store.get(note_id)
+    if not note:
+        raise HTTPException(404, "note not found")
+    if note["kind"] != "todo":
+        raise HTTPException(400, "only todos can be converted to queue jobs")
+    if note["status"] != "open":
+        raise HTTPException(409, "only open todos can be converted")
+
+    project = _resolve_project_path(body.project or note["project"])
+    spec = body.spec
+    if not spec.is_complete:
+        raise HTTPException(400, "spec must be complete: title, outcome, plan, "
+                          "policy, acceptance, test_handoff all required")
+
+    # Create the queue job, linked to this note and held for review
+    task = spec.as_task()
+    jid = night_queue_store.add(
+        project=project, task=task, tag="mine", engine=body.engine,
+        spec=spec.model_dump(), source_note_id=note_id)
+
+    return _job_view(night_queue_store.get(jid))
+
+
 @router.delete("/notes/{note_id}", status_code=204)
 def remove_note(note_id: int):
+    # Hard delete is maintenance-only; never expose through app.
+    # Keeping this endpoint for CLI use only, never call from Flutter.
     if not notes_store.delete(note_id):
         raise HTTPException(404, "note not found")
 
@@ -644,6 +709,7 @@ def _job_view(j: dict) -> dict:
         "close_reason": j.get("close_reason"),
         "previous_status": j.get("previous_status"),
         "closure_history": j.get("closure_history") or [],
+        "source_note_id": j.get("source_note_id"),
         "deployment": deployment,
     }
 
