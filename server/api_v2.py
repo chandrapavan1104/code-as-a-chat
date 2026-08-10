@@ -677,7 +677,7 @@ def usage(response: Response):
 def _job_view(j: dict) -> dict:
     """Trim a night_queue_store row to what the app renders."""
     from pathlib import Path as _P
-    from server.db import deployment_store, night_queue_store
+    from server.db import deployment_store, night_queue_store, routing_recommendations_store
     spec = j.get("spec_json") or {}
     try:
         deployment = deployment_store.latest(source="queue", ref_id=j["id"])
@@ -685,6 +685,12 @@ def _job_view(j: dict) -> dict:
         deployment = None
     except Exception:  # ledger visibility must never break the Tasks screen
         deployment = None
+    # Shadow-mode routing recommendation (if available)
+    routing_rec = None
+    try:
+        routing_rec = routing_recommendations_store.get(j["id"])
+    except Exception:
+        pass
     return {
         "id": j["id"],
         "project": j["project"],
@@ -711,6 +717,7 @@ def _job_view(j: dict) -> dict:
         "closure_history": j.get("closure_history") or [],
         "source_note_id": j.get("source_note_id"),
         "deployment": deployment,
+        "routing_recommendation": routing_rec,  # shadow-mode recommendation
     }
 
 
