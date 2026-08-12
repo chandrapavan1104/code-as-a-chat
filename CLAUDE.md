@@ -171,6 +171,8 @@ so they become unavailable to the LLM agent on the next turn.
   never stops. Tasks now show awareness badges and full evidence on the phone.
   Deployment worktrees resolve to their owner repository identity, and versioned
   decisions automatically recheck existing tasks when awareness logic changes.
+  A coding job counts as shipped evidence only when its deployed commit is in
+  the current verified history, preventing stale/failed-push ledger claims.
 - 2026-08-11 — **Always-on Queue Supervisor and phone-visible queue health.**
   Queue monitoring is no longer tied to the Night Shift execution window.
   Recoverable worker loss, timeout, CLI failure, merge conflict, and safe rollback
