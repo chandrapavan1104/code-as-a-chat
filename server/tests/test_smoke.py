@@ -966,6 +966,32 @@ def test_capability_registry_maps_deploy_worktree_to_owner_repo(
     assert capability_registry._repo_project() == str(owner.resolve())
 
 
+def test_capability_registry_rejects_false_live_deployment_evidence(
+        tmp_path, monkeypatch):
+    from server import capability_registry
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    coding = q.add(
+        project=str(tmp_path), task="Policy system",
+        spec=_ready_work_order("Policy system"), tag="auto")
+    q.update(coding, status="shipped")
+    deployment, _ = ds.begin(
+        repo=str(tmp_path), branch="night/policy", base="main", source="queue",
+        ref_id=coding, server_touched=False, changed_files=["server/policy.py"])
+    ds.update(deployment["id"], state="live", deployed_sha="not-in-current-head")
+    monkeypatch.setattr(capability_registry, "_git_head", lambda: "current-head")
+    monkeypatch.setattr(capability_registry, "_is_ancestor", lambda commit, head: False)
+    monkeypatch.setattr(capability_registry, "_repo_project", lambda: str(tmp_path))
+    monkeypatch.setattr(capability_registry, "_last_refresh", 0.0)
+
+    capability_registry.refresh(force=True)
+
+    from server.db import capability_store
+    assert not [item for item in capability_store.list_all() if item["key"] == f"job:{coding}"]
+
+
 def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypatch):
     import sys
     from types import SimpleNamespace

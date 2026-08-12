@@ -17,7 +17,7 @@ _STOP = {
 }
 _EXTENSION = {"add", "improve", "enhance", "extend", "additional", "better", "show", "explain",
               "support", "optimize", "polish", "redesign", "refactor", "more"}
-REGISTRY_VERSION = 2
+REGISTRY_VERSION = 3
 _last_refresh = 0.0
 
 
@@ -68,6 +68,18 @@ def _git_head() -> str | None:
         return done.stdout.strip() if done.returncode == 0 else None
     except Exception:
         return None
+
+
+def _is_ancestor(commit: str | None, head: str | None) -> bool:
+    if not commit or not head:
+        return False
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(config.REPO_DIR), "merge-base", "--is-ancestor",
+             commit, head], capture_output=True, text=True, timeout=5)
+        return done.returncode == 0
+    except Exception:
+        return False
 
 
 def _repo_project() -> str:
@@ -192,15 +204,22 @@ def refresh(*, force: bool = False) -> int:
     for job in night_queue_store.list_jobs(limit=500):
         if not night_queue_store._dependency_satisfied(job):
             continue
+        deployment = deployment_store.latest(source="queue", ref_id=job["id"])
+        # Research completion is itself the deliverable. Coding work is evidence
+        # only when its deployed commit is in the current verified history; old
+        # ledger rows that said live after a failed push must not close new work.
         spec = job.get("spec_json") or {}
+        if (spec.get("work_type") != "research" and not (
+                deployment and deployment.get("state") == "live"
+                and _is_ancestor(deployment.get("deployed_sha"), head))):
+            continue
         shipped.append({
             "key": f"job:{job['id']}", "title": spec.get("title") or job["task"],
             "description": _text(job), "evidence": [
                 f"queue task #{job['id']} {job['status']}",
                 *(job.get("files_changed") or [])[:8],
             ], "ref_id": job["id"], "verified_commit": (
-                (deployment_store.latest(source="queue", ref_id=job["id"]) or {})
-                .get("deployed_sha") or head),
+                (deployment or {}).get("deployed_sha") or head),
             "project": str(Path(job["project"]).resolve()),
         })
     capability_store.replace_source("shipped_job", shipped)
