@@ -28,6 +28,8 @@ class Note {
   final String? tags;
   final double? closedAt;
   final String? closeReason;
+  final int? queueJobId;
+  final String? queueJobStatus;
   Note({
     required this.id,
     this.project,
@@ -38,18 +40,25 @@ class Note {
     this.tags,
     this.closedAt,
     this.closeReason,
+    this.queueJobId,
+    this.queueJobStatus,
   });
-  factory Note.fromJson(Map<String, dynamic> j) => Note(
-    id: j['id'],
-    project: j['project'],
-    kind: j['kind'] ?? 'note',
-    title: j['title'] ?? '',
-    body: j['body'] ?? '',
-    status: j['status'] ?? 'open',
-    tags: j['tags'],
-    closedAt: j['closed_at'],
-    closeReason: j['close_reason'],
-  );
+  factory Note.fromJson(Map<String, dynamic> j) {
+    final queue = j['queue_job'] as Map?;
+    return Note(
+      id: j['id'],
+      project: j['project'],
+      kind: j['kind'] ?? 'note',
+      title: j['title'] ?? '',
+      body: j['body'] ?? '',
+      status: j['status'] ?? 'open',
+      tags: j['tags'],
+      closedAt: j['closed_at'],
+      closeReason: j['close_reason'],
+      queueJobId: queue?['id'] as int?,
+      queueJobStatus: queue?['status']?.toString(),
+    );
+  }
 }
 
 class SystemStats {

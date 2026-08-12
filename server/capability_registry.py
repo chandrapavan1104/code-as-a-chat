@@ -150,6 +150,26 @@ def refresh(*, force: bool = False) -> int:
         })
     capability_store.replace_source("screen", screens)
 
+    composites = []
+    skills_screen = screen_dir / "skills_screen.dart"
+    if skills_screen.exists():
+        try:
+            skills_source = skills_screen.read_text()
+        except OSError:
+            skills_source = ""
+        if "toggleSkill" in skills_source:
+            composites.append({
+                "key": "feature:dynamic-skills-marketplace",
+                "title": "Dynamic Skills Marketplace",
+                "description": "Enable or disable registered Gajala skills from the app",
+                "evidence": [
+                    "clients/gajala/lib/screens/skills_screen.dart",
+                    "POST /skills/{skill_name}",
+                ],
+                "verified_commit": head, "project": _repo_project(),
+            })
+    capability_store.replace_source("feature", composites)
+
     # Native launcher widgets are important Gajala surfaces but do not appear
     # in Flutter's screens directory. Extract their user-visible tile labels so
     # work such as "Brain dump widget" matches the feature, not just a filename.
@@ -324,3 +344,35 @@ def assess(job_id: int, *, apply: bool = True) -> dict:
         fields.update(next_action=f"Proceed as an extension of {best['title']}; preserve existing behavior.")
     night_queue_store.update(job_id, **fields)
     return result
+
+
+def reconcile_notes() -> list[str]:
+    """Recoverably archive rough items whose exact outcome is verified live."""
+    from server.db import notes_store
+    from server.skills.projects import _resolve
+
+    refresh()
+    actions = []
+    for note in notes_store.list_notes(status="open", limit=500):
+        if note.get("kind") not in ("bug", "feature", "todo"):
+            continue
+        target = _resolve(note.get("project") or "")
+        if not target:
+            continue
+        text = f"{note.get('title') or ''} {note.get('body') or ''}"
+        candidates = []
+        for item in capability_store.list_all(project=str(target.resolve())):
+            score = _similarity(
+                note.get("title") or "", text, item["title"],
+                f"{item['title']} {item['description']}")
+            if score >= .92:
+                candidates.append((score, item))
+        if not candidates or _tokens(text) & _EXTENSION:
+            continue
+        score, best = max(candidates, key=lambda value: value[0])
+        evidence = "; ".join(best.get("evidence") or [])[:400]
+        reason = (f"Project awareness: already live — {best['title']} "
+                  f"({round(score * 100)}% match). Evidence: {evidence}")
+        if notes_store.close(note["id"], reason):
+            actions.append(f"note #{note['id']} archived as already live")
+    return actions

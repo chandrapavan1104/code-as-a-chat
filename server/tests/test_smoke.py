@@ -992,6 +992,57 @@ def test_capability_registry_rejects_false_live_deployment_evidence(
     assert not [item for item in capability_store.list_all() if item["key"] == f"job:{coding}"]
 
 
+def test_note_moves_to_linked_draft_queue_and_closes_recoverably(
+        tmp_path, monkeypatch):
+    from server import api_v2
+    from server.db import night_queue_store as q, notes_store
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(notes_store, "DB_PATH", tmp_path / "notes.db")
+    notes_store._init()
+    note_id = notes_store.add(
+        project=str(tmp_path), kind="todo", title="Build contact manager",
+        body="Import contacts from a CSV")
+
+    job_view = api_v2.convert_note_to_queue(
+        note_id, api_v2.NoteConvertToQueue())
+
+    job = q.get(job_view["id"])
+    assert job["source_note_id"] == note_id
+    assert job["spec_json"]["readiness"] == "draft"
+    assert job["status"] == "held"
+    note = notes_store.get(note_id)
+    assert note["status"] == "closed"
+    assert f"queue task #{job['id']}" in note["close_reason"]
+
+
+def test_project_awareness_archives_exact_implemented_brain_dump(
+        tmp_path, monkeypatch):
+    from server import capability_registry
+    from server.db import capability_store, notes_store
+    from server.skills import projects
+
+    monkeypatch.setattr(notes_store, "DB_PATH", tmp_path / "notes.db")
+    notes_store._init()
+    monkeypatch.setattr(capability_registry, "refresh", lambda **kwargs: 1)
+    monkeypatch.setattr(projects, "_resolve", lambda value: tmp_path)
+    capability_store.replace_source("feature", [{
+        "key": "feature:marketplace", "title": "Dynamic Skills Marketplace",
+        "description": "Toggle skills from Gajala", "project": str(tmp_path),
+        "evidence": ["skills_screen.dart"],
+    }])
+    note_id = notes_store.add(
+        project="Code-as-a-chat", kind="feature",
+        title="Dynamic Skills Marketplace", body="")
+
+    actions = capability_registry.reconcile_notes()
+
+    assert actions == [f"note #{note_id} archived as already live"]
+    note = notes_store.get(note_id)
+    assert note["status"] == "closed"
+    assert "skills_screen.dart" in note["close_reason"]
+
+
 def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypatch):
     import sys
     from types import SimpleNamespace

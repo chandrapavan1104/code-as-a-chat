@@ -129,6 +129,12 @@ evidence; overlapping Auto work waits behind its owning task and reassesses when
 that task ships instead of asking the owner to coordinate it. Evidence-only
 sources inform refinement but cannot independently close a task. Gajala exposes
 the decision, confidence, closest match, evidence, action, and registry count.
+Brain Dump now uses compact cards and an app-bar Add action, so controls are
+never covered by a floating button. **Move to queue** is fully wired: a todo
+becomes one linked, held Draft work order ready for refinement, while the source
+note closes recoverably to prevent duplicate conversion. Linked queue state is
+shown on the note. The supervisor also recoverably archives exact feature/todo/
+bug notes when Project Awareness has high-confidence evidence they are live.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -158,6 +164,14 @@ build ready", fired reminders) is logged **and** pushed through one helper
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
 
 ## Changelog (most recent first)
+- 2026-08-12 — **Brain Dump cleanup, real queue conversion, and awareness.**
+  Replaced the overlapping floating Add button with an app-bar action and made
+  cards/actions denser. “Convert to Queue” is no longer a placeholder: it moves
+  a todo into a linked held Draft, closes the source recoverably with the queue
+  ID, refreshes both screens, and prevents repeat conversion. Notes expose their
+  linked task state. The minute supervisor now closes exact already-implemented
+  feature/todo/bug captures with capability evidence; the existing Dynamic
+  Skills Marketplace capture is therefore reconciled automatically.
 - 2026-08-11 — **Evidence-backed Project Awareness for the Queue Supervisor.**
   A local capability registry now inventories registered skills, real API
   routes, Gajala screens, smoke-test evidence, completed work orders, and their
