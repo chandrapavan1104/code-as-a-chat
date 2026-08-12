@@ -113,6 +113,13 @@ Rollback switches launchd to the previous verified runtime without resetting the
 owner repository. Persisted `running` jobs with no live worker are failed clearly
 at startup and by the queue watchdog. The fix agent uses the same coordinator
 and an isolated repair worktree.
+An always-on **Queue Supervisor** now audits work every minute, independently of
+the overnight build window. It recovers orphaned workers, classifies failures,
+rotates recoverable retries across installed engines with a three-attempt budget,
+and rebuilds failed Auto deployments against the live base. Only exhausted
+recovery or genuine decisions escalate. Every task exposes `Why paused`, `Next
+action`, attempts, and retry timing; Gajala refreshes Tasks every 20 seconds and
+shows working, recovering, held, and genuinely blocked counts.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -142,6 +149,13 @@ build ready", fired reminders) is logged **and** pushed through one helper
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
 
 ## Changelog (most recent first)
+- 2026-08-11 — **Always-on Queue Supervisor and phone-visible queue health.**
+  Queue monitoring is no longer tied to the Night Shift execution window.
+  Recoverable worker loss, timeout, CLI failure, merge conflict, and safe rollback
+  outcomes retry automatically on another installed engine with durable attempt
+  and backoff metadata. `/api/queue` now returns queue health plus per-task
+  blocker/next-action explanations; Gajala refreshes every 20 seconds and can
+  nudge an audit. Also repaired an existing notes-provider app compile break.
 - 2026-08-11 — **Fixed stuck Building jobs and truly isolated queue merges.** A
   server restart could orphan SQLite `running` claims forever because worker
   ownership existed only in memory; startup and each Night Shift cycle now fail

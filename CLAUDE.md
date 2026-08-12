@@ -111,6 +111,13 @@ precise failure state. Rollback uses `git reset --keep` only when the expected
 deployed commit is still current, preserving unrelated owner work; true
 same-file overlap is the narrow case that stops for human resolution. The fix
 agent uses the same coordinator and an isolated repair worktree.
+An always-on **Queue Supervisor** now audits work every minute, independently of
+the overnight build window. It recovers orphaned workers, classifies failures,
+rotates recoverable retries across installed engines with a three-attempt budget,
+and rebuilds failed Auto deployments against the live base. Only exhausted
+recovery or genuine decisions escalate. Every task exposes `Why paused`, `Next
+action`, attempts, and retry timing; Gajala refreshes Tasks every 20 seconds and
+shows working, recovering, held, and genuinely blocked counts.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -144,6 +151,13 @@ the shell agent and orchestrator immediately exclude disabled skills from routin
 so they become unavailable to the LLM agent on the next turn.
 
 ## Changelog (most recent first)
+- 2026-08-11 — **Always-on Queue Supervisor and phone-visible queue health.**
+  Queue monitoring is no longer tied to the Night Shift execution window.
+  Recoverable worker loss, timeout, CLI failure, merge conflict, and safe rollback
+  outcomes retry automatically on another installed engine with durable attempt
+  and backoff metadata. `/api/queue` now returns queue health plus per-task
+  blocker/next-action explanations; Gajala refreshes every 20 seconds and can
+  nudge an audit. Also repaired an existing notes-provider app compile break.
 - 2026-08-09 — **Autonomous safe deployment coordinator.** Queue and fix-agent
   shipping now share one durable, serialized deployment transaction. Automatic
   jobs merge and deploy end-to-end, with branch/overlap preflight, idempotent

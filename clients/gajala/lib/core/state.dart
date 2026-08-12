@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api.dart';
@@ -96,9 +97,21 @@ final sessionIdProvider = FutureProvider<String>((ref) => Storage.sessionId());
 
 /// Night Shift queue (Tasks tab) — jobs + current settings.
 final queueProvider = FutureProvider.autoDispose<
-    ({List<QueueJob> jobs, Map<String, dynamic> settings})>((ref) async {
+    ({
+      List<QueueJob> jobs,
+      Map<String, dynamic> settings,
+      Map<String, dynamic> health,
+    })>((ref) async {
+  final timer = Timer(const Duration(seconds: 20), ref.invalidateSelf);
+  ref.onDispose(timer.cancel);
   final api = ref.watch(apiProvider);
-  if (api == null) return (jobs: <QueueJob>[], settings: <String, dynamic>{});
+  if (api == null) {
+    return (
+      jobs: <QueueJob>[],
+      settings: <String, dynamic>{},
+      health: <String, dynamic>{},
+    );
+  }
   return api.queue();
 });
 
@@ -159,3 +172,4 @@ class FavoritesNotifier extends StateNotifier<List<String>> {
 
 final favoritesProvider =
     StateNotifierProvider<FavoritesNotifier, List<String>>((ref) => FavoritesNotifier());
+

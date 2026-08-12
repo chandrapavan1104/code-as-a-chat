@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from server.routing_profiles import ModelProfile, get_registry, update_from_usage
+from server.routing_profiles import get_registry, update_from_usage
 from server.routing_features import WorkOrderFeatures, extract_features, summarize_features
 
 log = logging.getLogger("routing_dispatcher")

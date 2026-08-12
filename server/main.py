@@ -11,6 +11,7 @@ from server.db import (cli_runs_store, deployment_store, errors_store,
                        night_queue_store, notifications_store)
 from server.scheduler import scheduler_loop
 from server.night_shift import night_shift_loop
+from server.queue_supervisor import supervisor_loop
 
 
 @asynccontextmanager
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(night_shift_loop()),
+        asyncio.create_task(supervisor_loop()),
     ]
     try:
         yield

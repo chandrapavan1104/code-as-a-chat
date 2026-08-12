@@ -691,6 +691,7 @@ def _job_view(j: dict) -> dict:
         routing_rec = routing_recommendations_store.get(j["id"])
     except Exception:
         pass
+    from server.queue_supervisor import job_explanation
     return {
         "id": j["id"],
         "project": j["project"],
@@ -718,6 +719,7 @@ def _job_view(j: dict) -> dict:
         "source_note_id": j.get("source_note_id"),
         "deployment": deployment,
         "routing_recommendation": routing_rec,  # shadow-mode recommendation
+        "supervision": job_explanation(j),
     }
 
 
@@ -775,8 +777,18 @@ class QueueSettingsIn(BaseModel):
 def queue_list(status: str | None = None):
     from server import prefs
     from server.db import night_queue_store
+    from server.queue_supervisor import health_snapshot
     jobs = night_queue_store.list_jobs(status=status, limit=200)
-    return {"jobs": [_job_view(j) for j in jobs], "settings": prefs.night_settings()}
+    return {"jobs": [_job_view(j) for j in jobs], "settings": prefs.night_settings(),
+            "health": health_snapshot()}
+
+
+@router.post("/queue/supervise")
+async def queue_supervise():
+    """Manual nudge from Gajala; the same audit also runs every minute."""
+    from server.queue_supervisor import health_snapshot, supervise_once
+    actions = await supervise_once()
+    return {"actions": actions, "health": health_snapshot()}
 
 
 @router.post("/queue", status_code=201)

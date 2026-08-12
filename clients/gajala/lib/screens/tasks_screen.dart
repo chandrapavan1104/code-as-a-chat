@@ -68,7 +68,16 @@ class TasksScreen extends ConsumerWidget {
             final closed = d.jobs.where((j) => j.status == 'closed').toList();
             return TabBarView(
               children: [
-                _JobList(active, header: _NightShiftHeader(d.settings)),
+                _JobList(
+                  active,
+                  header: Column(
+                    children: [
+                      _QueueHealthCard(d.health),
+                      const SizedBox(height: 8),
+                      _NightShiftHeader(d.settings),
+                    ],
+                  ),
+                ),
                 _JobList(closed, closed: true),
               ],
             );
@@ -341,6 +350,29 @@ class _JobCard extends ConsumerWidget {
                   child: Text(
                     'Answer this in Alerts to continue →',
                     style: TextStyle(fontSize: 12, color: GajalaColors.amber),
+                  ),
+                ),
+              if ((j.supervision['blocker']?.toString() ?? '').isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 7),
+                  child: Text(
+                    'Why paused: ${j.supervision['blocker']}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: GajalaColors.amber,
+                    ),
+                  ),
+                ),
+              if ((j.supervision['next_action']?.toString() ?? '').isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: Text(
+                    'Next: ${j.supervision['next_action']}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: pal.textDim),
                   ),
                 ),
               if (j.summary != null &&
@@ -1028,6 +1060,20 @@ Future<void> _jobDetailSheet(
               'Blocked until #${j.blockedBy.join(', #')} ships or completes.',
               icon: Icons.account_tree_outlined,
             ),
+          section(
+            ctx,
+            'Queue supervisor',
+            [
+              if ((j.supervision['blocker']?.toString() ?? '').isNotEmpty)
+                'Why paused: ${j.supervision['blocker']}',
+              if ((j.supervision['next_action']?.toString() ?? '').isNotEmpty)
+                'Next action: ${j.supervision['next_action']}',
+              'Attempts: ${j.supervision['attempts'] ?? 0}/${j.supervision['max_attempts'] ?? 3}',
+              if ((j.supervision['failure_kind']?.toString() ?? '').isNotEmpty)
+                'Failure type: ${j.supervision['failure_kind']}',
+            ].join('\n'),
+            icon: Icons.health_and_safety_outlined,
+          ),
           if (j.dependencies.isNotEmpty && j.blockedBy.isEmpty)
             section(
               ctx,
@@ -1196,6 +1242,87 @@ Future<void> _jobDetailSheet(
 }
 
 // ── Night Shift header (state + settings) ──────────────────────────────────────
+
+class _QueueHealthCard extends ConsumerWidget {
+  final Map<String, dynamic> health;
+  const _QueueHealthCard(this.health);
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = health['state']?.toString() ?? 'working';
+    final attention = state == 'attention';
+    final healthy = state == 'healthy';
+    final color = attention
+        ? GajalaColors.amber
+        : healthy
+        ? GajalaColors.green
+        : GajalaColors.blue;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: .35)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            attention
+                ? Icons.manage_search
+                : healthy
+                ? Icons.verified_outlined
+                : Icons.health_and_safety_outlined,
+            color: color,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'QUEUE SUPERVISOR · ${state.toUpperCase()}',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: .5,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  health['headline']?.toString() ??
+                      'Continuously checking tasks and deployments.',
+                  style: TextStyle(color: context.pal.text, fontSize: 13),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${health['working'] ?? 0} working · ${health['recovering'] ?? 0} recovering · ${health['held'] ?? 0} held · ${health['needs_attention'] ?? 0} needs decision',
+                  style: TextStyle(color: context.pal.textDim, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Run supervisor now',
+            onPressed: () async {
+              try {
+                await ref.read(apiProvider)?.superviseQueue();
+                ref.invalidate(queueProvider);
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text(friendlyError(e))));
+                }
+              }
+            },
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _NightShiftHeader extends ConsumerWidget {
   final Map<String, dynamic> settings;

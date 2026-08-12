@@ -68,7 +68,10 @@ class GajalaApi {
     return list.where((s) => s.name != 'shell' && s.name != 'memory').toList();
   }
 
-  Future<Map<String, dynamic>> toggleSkill(String skillName, bool enabled) async {
+  Future<Map<String, dynamic>> toggleSkill(
+    String skillName,
+    bool enabled,
+  ) async {
     final r = await _dio.post('/skills/$skillName', data: {'enabled': enabled});
     return Map<String, dynamic>.from(r.data);
   }
@@ -200,12 +203,7 @@ class GajalaApi {
   }) async {
     final r = await _dio.post(
       '/api/notes/$id/convert-to-queue',
-      data: {
-        'spec': spec,
-        'project': project,
-        'tag': tag,
-        'engine': engine,
-      },
+      data: {'spec': spec, 'project': project, 'tag': tag, 'engine': engine},
     );
     return QueueJob.fromJson(r.data);
   }
@@ -335,7 +333,14 @@ class GajalaApi {
 
   // ── Night Shift queue (Tasks tab) ───────────────────────────────────────────
   /// Jobs + the current Night Shift settings, in one call.
-  Future<({List<QueueJob> jobs, Map<String, dynamic> settings})> queue() async {
+  Future<
+    ({
+      List<QueueJob> jobs,
+      Map<String, dynamic> settings,
+      Map<String, dynamic> health,
+    })
+  >
+  queue() async {
     final r = await _dio.get('/api/queue');
     final jobs = (r.data['jobs'] as List)
         .map((e) => QueueJob.fromJson(e))
@@ -343,8 +348,12 @@ class GajalaApi {
     return (
       jobs: jobs,
       settings: Map<String, dynamic>.from(r.data['settings'] ?? {}),
+      health: Map<String, dynamic>.from(r.data['health'] ?? {}),
     );
   }
+
+  Future<Map<String, dynamic>> superviseQueue() async =>
+      Map<String, dynamic>.from((await _dio.post('/api/queue/supervise')).data);
 
   Future<QueueJob> addJob(
     String task, {

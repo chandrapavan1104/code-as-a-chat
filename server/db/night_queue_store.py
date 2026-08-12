@@ -78,6 +78,14 @@ def init() -> None:
             "previous_status": "TEXT",
             "closure_history": "TEXT",
             "source_note_id": "INTEGER",
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "max_attempts": "INTEGER NOT NULL DEFAULT 3",
+            "attempted_engines": "TEXT NOT NULL DEFAULT '[]'",
+            "failure_kind": "TEXT",
+            "blocker_reason": "TEXT",
+            "next_action": "TEXT",
+            "next_retry_at": "REAL",
+            "last_supervised_at": "REAL",
         }
         for name, kind in additions.items():
             if name not in columns:
@@ -129,7 +137,7 @@ def _row(r: sqlite3.Row | None) -> dict | None:
     except (TypeError, json.JSONDecodeError):
         d["files_changed"] = []
     for name, fallback in (("spec_json", None), ("depends_on", []),
-                           ("closure_history", [])):
+                           ("closure_history", []), ("attempted_engines", [])):
         try:
             d[name] = json.loads(d[name]) if d.get(name) else fallback
         except (TypeError, json.JSONDecodeError):
@@ -212,8 +220,9 @@ def claim_next(engine: str) -> dict | None:
         try:
             rows = conn.execute(
                 "SELECT * FROM jobs WHERE status = 'queued' AND tag = 'auto' "
+                "AND (next_retry_at IS NULL OR next_retry_at <= ?) "
                 "AND (engine = ? OR engine = 'auto') "
-                "ORDER BY priority DESC, id ASC", (engine,),
+                "ORDER BY priority DESC, id ASC", (time.time(), engine),
             ).fetchall()
             row = next((candidate for candidate in rows
                         if _is_refined(candidate)
@@ -222,9 +231,18 @@ def claim_next(engine: str) -> dict | None:
                 conn.execute("COMMIT")
                 return None
             now = time.time()
+            try:
+                attempted = json.loads(row["attempted_engines"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                attempted = []
+            attempted.append(engine)
             conn.execute(
-                "UPDATE jobs SET status = 'running', started_at = ?, engine_used = ? "
-                "WHERE id = ?", (now, engine, row["id"]),
+                "UPDATE jobs SET status='running', started_at=?, engine_used=?, "
+                "attempt_count=COALESCE(attempt_count,0)+1, attempted_engines=?, "
+                "failure_kind=NULL, blocker_reason=NULL, "
+                "next_action='Worker is implementing and testing this task.', "
+                "next_retry_at=NULL WHERE id=?",
+                (now, engine, json.dumps(attempted), row["id"]),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -234,6 +252,8 @@ def claim_next(engine: str) -> dict | None:
         claimed["status"] = "running"
         claimed["started_at"] = now
         claimed["engine_used"] = engine
+        claimed["attempt_count"] = (claimed.get("attempt_count") or 0) + 1
+        claimed["attempted_engines"] = attempted
         return claimed
 
 
@@ -272,11 +292,27 @@ def fail_orphaned_running(active_job_ids: set[int] | None = None,
     return recovered
 
 
+def start_attempt(job_id: int, engine: str) -> None:
+    """Record an on-demand attempt with the same accounting as a night claim."""
+    job = get(job_id)
+    attempted = list(job.get("attempted_engines") or []) if job else []
+    attempted.append(engine)
+    update(
+        job_id, status="running", started_at=time.time(), engine_used=engine,
+        attempt_count=(job.get("attempt_count") or 0) + 1,
+        attempted_engines=attempted, failure_kind=None, blocker_reason=None,
+        next_action="Worker is implementing and testing this task.",
+        next_retry_at=None,
+    )
+
+
 _UPDATABLE = {
     "project", "task", "status", "branch", "base", "summary", "files_changed", "engine_used",
     "tokens_total", "tokens_billable", "started_at", "ended_at", "priority",
     "tag", "engine", "spec_json", "depends_on", "closed_at", "close_reason",
     "previous_status", "closure_history", "source_note_id",
+    "attempt_count", "max_attempts", "attempted_engines", "failure_kind",
+    "blocker_reason", "next_action", "next_retry_at", "last_supervised_at",
 }
 
 
@@ -286,7 +322,7 @@ def update(job_id: int, **fields) -> None:
         return
     if "files_changed" in fields and not isinstance(fields["files_changed"], str):
         fields["files_changed"] = json.dumps(fields["files_changed"])
-    for name in ("spec_json", "depends_on", "closure_history"):
+    for name in ("spec_json", "depends_on", "closure_history", "attempted_engines"):
         if name in fields and not isinstance(fields[name], str):
             fields[name] = json.dumps(fields[name])
     init()

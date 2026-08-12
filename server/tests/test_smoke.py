@@ -658,6 +658,7 @@ def test_deployment_merges_with_unrelated_owner_changes_and_records_ledger(
     (repo / "owner.txt").write_text("owner is editing this\n")
     monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(deployment, "_DEPLOY_WORKTREE_DIR", tmp_path / "deploy-worktrees")
     jid = q.add(project=str(repo), task="feature", spec=_ready_work_order())
     q.update(jid, status="staged", branch="night/test", base="main",
              files_changed=["feature.txt"])
@@ -710,6 +711,7 @@ def test_deployment_ignores_owner_overlap_by_merging_in_isolated_worktree(
     (repo / "owner.txt").write_text("owner version\n")
     monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(deployment, "_DEPLOY_WORKTREE_DIR", tmp_path / "deploy-worktrees")
     jid = q.add(project=str(repo), task="overlap", spec=_ready_work_order())
     q.update(jid, status="staged")
     owner_head = subprocess.run(
@@ -773,6 +775,69 @@ def test_orphaned_running_jobs_are_failed_but_active_workers_are_kept(
     assert q.get(orphan)["status"] == "failed"
     assert "Worker disappeared" in q.get(orphan)["summary"]
     assert q.get(active)["status"] == "running"
+
+
+def test_queue_supervisor_retries_transient_failure_on_another_engine(
+        tmp_path, monkeypatch):
+    from server import queue_supervisor as supervisor
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    monkeypatch.setattr(supervisor, "_configured_engines",
+                        lambda: ["claude", "codex", "gemini"])
+    jid = q.add(project=str(tmp_path), task="recover me",
+                spec=_ready_work_order(), tag="auto")
+    q.update(jid, status="failed", attempt_count=1,
+             attempted_engines=["claude"], engine_used="claude",
+             summary="Worker disappeared before reporting a result")
+
+    first = asyncio.run(supervisor.supervise_once(now=1000))
+    assert f"#{jid} scheduled retry" in first
+    waiting = q.get(jid)
+    assert waiting["status"] == "failed" and waiting["next_retry_at"] == 1060
+    assert "Codex" in waiting["next_action"]
+
+    second = asyncio.run(supervisor.supervise_once(now=1061))
+    assert f"#{jid} requeued on codex" in second
+    recovered = q.get(jid)
+    assert recovered["status"] == "queued" and recovered["engine"] == "codex"
+
+
+def test_queue_supervisor_escalates_only_after_retry_budget(tmp_path, monkeypatch):
+    from server import queue_supervisor as supervisor
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    async def no_notify(*args, **kwargs):
+        return None
+    monkeypatch.setattr(supervisor, "_notify_exhausted", no_notify)
+    jid = q.add(project=str(tmp_path), task="exhausted",
+                spec=_ready_work_order(), tag="auto")
+    q.update(jid, status="failed", attempt_count=3, max_attempts=3,
+             summary="run error: repeated CLI failure")
+
+    asyncio.run(supervisor.supervise_once(now=2000))
+    job = q.get(jid)
+    assert job["status"] == "needs_you"
+    assert "3/3 attempts" in job["blocker_reason"]
+    assert supervisor.health_snapshot()["needs_attention"] == 1
+
+
+def test_queue_explanation_says_why_and_what_happens_next(tmp_path, monkeypatch):
+    from server import queue_supervisor as supervisor
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    foundation = q.add(project=str(tmp_path), task="foundation",
+                       spec=_ready_work_order(), tag="auto")
+    dependent = q.add(project=str(tmp_path), task="dependent",
+                      spec=_ready_work_order(), tag="auto",
+                      depends_on=[foundation])
+    explanation = supervisor.job_explanation(q.get(dependent))
+    assert f"#{foundation}" in explanation["blocker"]
+    assert "supervisor" in explanation["next_action"].lower()
 
 
 def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypatch):

@@ -588,8 +588,7 @@ async def run_now(job_id: int) -> dict | None:
         return job                      # already building
     usage_pct = await _engine_usage_pct()
     engine = _pick_engine(job, usage_pct)
-    night_queue_store.update(job_id, status="running", started_at=time.time(),
-                             engine_used=engine)
+    night_queue_store.start_attempt(job_id, engine)
     fresh = night_queue_store.get(job_id)
     task = asyncio.create_task(_process_job(fresh, engine))
     _adhoc_tasks.add(task)
@@ -655,18 +654,6 @@ async def _engine_worker(engine: str) -> None:
 
 
 async def _cycle() -> None:
-    recovered = night_queue_store.fail_orphaned_running(
-        active_job_ids=set(_running), grace_seconds=60)
-    for job in recovered:
-        log.warning("recovered orphaned Night Shift job #%s", job["id"])
-        await _notify_status(job["id"], job, "failed", job["summary"])
-    # Finish previously staged automatic work before spending quota on more jobs.
-    from server.skills.queue import _ship
-    for ready in night_queue_store.list_jobs(status="staged,deployed"):
-        if ready.get("tag") == "auto":
-            result = _ship(ready["id"])
-            if "already" in result or "queued behind" in result:
-                break
     tonight = _jobs_tonight()
     if not _budget_ok(tonight):
         return

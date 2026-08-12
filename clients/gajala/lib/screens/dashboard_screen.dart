@@ -422,7 +422,7 @@ class _FeatureSubtitle extends ConsumerWidget {
     final style = TextStyle(fontSize: 11.5, color: context.pal.textDim);
     String text = _hints[name] ?? '';
     if (name == 'notes') {
-      final n = ref.watch(notesProvider).valueOrNull?.length;
+      final n = ref.watch(notesProvider('open')).valueOrNull?.length;
       if (n != null) text = '$n open';
     } else if (name == 'projects') {
       final p = ref.watch(projectsProvider).valueOrNull?['current_name']?.toString();
@@ -666,3 +666,4 @@ class _StatusDot extends ConsumerWidget {
         shape: BoxShape.circle, color: ok ? GajalaColors.ok : context.pal.textDim));
   }
 }
+
