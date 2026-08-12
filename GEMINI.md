@@ -107,10 +107,12 @@ cleans, or stashes your live files.
 deploy, restart when needed, verify localhost + authenticated APIs + the actual
 Tailscale endpoint, and push without waiting for the owner. A durable deployment
 ledger serializes releases and exposes `merging/restarting/verifying/live` or a
-precise failure state. Rollback uses `git reset --keep` only when the expected
-deployed commit is still current, preserving unrelated owner work; true
-same-file overlap is the narrow case that stops for human resolution. The fix
-agent uses the same coordinator and an isolated repair worktree.
+precise failure state. Merge and runtime use managed deployment worktrees; the
+owner checkout's files, index, HEAD, and branch ref are never used or changed.
+Rollback switches launchd to the previous verified runtime without resetting the
+owner repository. Persisted `running` jobs with no live worker are failed clearly
+at startup and by the queue watchdog. The fix agent uses the same coordinator
+and an isolated repair worktree.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -140,6 +142,15 @@ build ready", fired reminders) is logged **and** pushed through one helper
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
 
 ## Changelog (most recent first)
+- 2026-08-11 — **Fixed stuck Building jobs and truly isolated queue merges.** A
+  server restart could orphan SQLite `running` claims forever because worker
+  ownership existed only in memory; startup and each Night Shift cycle now fail
+  orphaned claims with a clear reason, and every worker has a final-state guard.
+  Deployment previously checked/checked-out the owner's live repo and rejected
+  overlapping dirty files. It now creates the merge commit in a detached managed
+  worktree, runs the server from that verified worktree, and pushes by commit ID;
+  owner files/index/HEAD/branch refs are never touched. Rollback only restores
+  launchd's prior runtime. CLI timeout cleanup now also reaps killed processes.
 - 2026-08-09 — **Autonomous safe deployment coordinator.** Queue and fix-agent
   shipping now share one durable, serialized deployment transaction. Automatic
   jobs merge and deploy end-to-end, with branch/overlap preflight, idempotent

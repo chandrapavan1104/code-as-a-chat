@@ -237,6 +237,41 @@ def claim_next(engine: str) -> dict | None:
         return claimed
 
 
+def fail_orphaned_running(active_job_ids: set[int] | None = None,
+                          grace_seconds: int = 60) -> list[dict]:
+    """Fail durable `running` claims that have no worker in this server process.
+
+    CLI timeouts cover a healthy worker, but an app/server restart used to leave
+    the SQLite claim behind forever. A short grace avoids racing a freshly
+    scheduled run-now task before it enters the in-memory registry.
+    """
+    active = active_job_ids or set()
+    now = time.time()
+    cutoff = now - max(0, grace_seconds)
+    init()
+    recovered: list[dict] = []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE status='running' AND "
+            "(started_at IS NULL OR started_at < ?)", (cutoff,),
+        ).fetchall()
+        for row in rows:
+            if row["id"] in active:
+                continue
+            reason = ("Worker disappeared before reporting a result (the server "
+                      "restarted or the worker crashed). The job was released "
+                      "instead of remaining stuck in Building.")
+            conn.execute(
+                "UPDATE jobs SET status='failed', ended_at=?, summary=? "
+                "WHERE id=? AND status='running'", (now, reason, row["id"]),
+            )
+            value = _row(row)
+            value.update(status="failed", ended_at=now, summary=reason)
+            recovered.append(value)
+        conn.commit()
+    return recovered
+
+
 _UPDATABLE = {
     "project", "task", "status", "branch", "base", "summary", "files_changed", "engine_used",
     "tokens_total", "tokens_billable", "started_at", "ended_at", "priority",

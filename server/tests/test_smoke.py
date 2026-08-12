@@ -596,7 +596,7 @@ def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
     monkeypatch.setattr(night_shift, "_WORKTREE_DIR", tmp_path / "worktrees")
     monkeypatch.setattr(config, "REPO_DIR", tmp_path / "some-other-repo")
-    jid = q.add(project=str(repo), task="add generated file",
+    jid = q.add(project=str(repo), task="add generated file", tag="mine",
                 spec=_ready_work_order("Add generated file"))
     job = q.get(jid)
 
@@ -661,6 +661,12 @@ def test_deployment_merges_with_unrelated_owner_changes_and_records_ledger(
     jid = q.add(project=str(repo), task="feature", spec=_ready_work_order())
     q.update(jid, status="staged", branch="night/test", base="main",
              files_changed=["feature.txt"])
+    owner_head = subprocess.run(
+        ["git", "rev-parse", "refs/heads/main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout
+    owner_status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout
 
     result = deployment.deploy_branch(
         repo=str(repo), branch="night/test", base="main",
@@ -668,13 +674,26 @@ def test_deployment_merges_with_unrelated_owner_changes_and_records_ledger(
         server_touched=False)
 
     assert "is live" in result
-    assert (repo / "feature.txt").read_text() == "deployed feature\n"
+    # The branch ref advances, but the owner's checkout and edits are untouched.
+    assert (repo / "feature.txt").read_text() == "base feature\n"
+    live = ds.latest(source="queue", ref_id=jid)
+    deployed = subprocess.run(
+        ["git", "show", f"{live['deployed_sha']}:feature.txt"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout
+    assert deployed == "deployed feature\n"
     assert (repo / "owner.txt").read_text() == "owner is editing this\n"
+    assert subprocess.run(
+        ["git", "rev-parse", "refs/heads/main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == owner_head
+    assert subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == owner_status
     assert q.get(jid)["status"] == "shipped"
     assert ds.latest(source="queue", ref_id=jid)["state"] == "live"
 
 
-def test_deployment_stops_only_for_true_file_overlap(tmp_path, monkeypatch):
+def test_deployment_ignores_owner_overlap_by_merging_in_isolated_worktree(
+        tmp_path, monkeypatch):
     from server import deployment
     from server.db import deployment_store as ds, night_queue_store as q
 
@@ -693,17 +712,33 @@ def test_deployment_stops_only_for_true_file_overlap(tmp_path, monkeypatch):
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
     jid = q.add(project=str(repo), task="overlap", spec=_ready_work_order())
     q.update(jid, status="staged")
+    owner_head = subprocess.run(
+        ["git", "rev-parse", "refs/heads/main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout
+    owner_status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout
 
     result = deployment.deploy_branch(
         repo=str(repo), branch="night/test", base="main",
         changed_files=["owner.txt"], source="queue", ref_id=jid,
         server_touched=False)
 
-    assert "stopped safely" in result
-    assert "owner.txt" in result
+    assert "is live" in result
     assert (repo / "owner.txt").read_text() == "owner version\n"
-    assert q.get(jid)["status"] == "staged"
-    assert ds.latest(source="queue", ref_id=jid)["state"] == "failed"
+    assert subprocess.run(
+        ["git", "rev-parse", "refs/heads/main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == owner_head
+    assert subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == owner_status
+    live = ds.latest(source="queue", ref_id=jid)
+    deployed = subprocess.run(
+        ["git", "show", f"{live['deployed_sha']}:owner.txt"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout
+    assert deployed == "agent version\n"
+    assert q.get(jid)["status"] == "shipped"
+    assert ds.latest(source="queue", ref_id=jid)["state"] == "live"
 
 
 def test_deployment_ledger_serializes_active_releases(tmp_path, monkeypatch):
@@ -718,6 +753,26 @@ def test_deployment_ledger_serializes_active_releases(tmp_path, monkeypatch):
                             changed_files=["server/api_v2.py"])
     assert error is None and first["state"] == "merging"
     assert second is None and f"deployment #{first['id']}" in busy
+
+
+def test_orphaned_running_jobs_are_failed_but_active_workers_are_kept(
+        tmp_path, monkeypatch):
+    import time
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    orphan = q.add(project="/repo", task="orphan", spec=_ready_work_order())
+    active = q.add(project="/repo", task="active", spec=_ready_work_order())
+    old = time.time() - 3600
+    q.update(orphan, status="running", started_at=old, engine_used="codex")
+    q.update(active, status="running", started_at=old, engine_used="claude")
+
+    recovered = q.fail_orphaned_running({active}, grace_seconds=60)
+
+    assert [job["id"] for job in recovered] == [orphan]
+    assert q.get(orphan)["status"] == "failed"
+    assert "Worker disappeared" in q.get(orphan)["summary"]
+    assert q.get(active)["status"] == "running"
 
 
 def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypatch):
@@ -737,7 +792,7 @@ def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypa
         calls.append(args)
         return SimpleNamespace(returncode=0, stdout="someone-else\n", stderr="")
 
-    monkeypatch.setattr(guard, "_restart", lambda: (True, ""))
+    monkeypatch.setattr(guard, "_restart", lambda *args: (True, ""))
     monkeypatch.setattr(guard, "_healthy", lambda *a, **k: (False, "bad deploy"))
     monkeypatch.setattr(guard, "_run", fake_run)
     monkeypatch.setattr(guard, "_notify", lambda *a, **k: None)
