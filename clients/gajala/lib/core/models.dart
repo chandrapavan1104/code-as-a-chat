@@ -100,7 +100,7 @@ class QueueJob {
       status,
       readiness;
   final String? branch, summary, closeReason, previousStatus;
-  final Map<String, dynamic> spec, deployment, supervision;
+  final Map<String, dynamic> spec, deployment, supervision, awareness;
   final List<String> filesChanged;
   final List<int> dependsOn, blockedBy;
   final List<Map<String, dynamic>> dependencies, closureHistory;
@@ -123,6 +123,7 @@ class QueueJob {
     required this.spec,
     required this.deployment,
     required this.supervision,
+    required this.awareness,
     required this.filesChanged,
     required this.tokensTotal,
     required this.dependsOn,
@@ -150,6 +151,7 @@ class QueueJob {
     spec: Map<String, dynamic>.from(j['spec'] ?? const {}),
     deployment: Map<String, dynamic>.from(j['deployment'] ?? const {}),
     supervision: Map<String, dynamic>.from(j['supervision'] ?? const {}),
+    awareness: Map<String, dynamic>.from(j['awareness'] ?? const {}),
     filesChanged: List<String>.from(j['files_changed'] ?? const []),
     dependsOn: List<int>.from(j['depends_on'] ?? const []),
     blockedBy: List<int>.from(j['blocked_by'] ?? const []),

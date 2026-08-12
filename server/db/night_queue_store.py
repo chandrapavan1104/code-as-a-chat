@@ -86,6 +86,8 @@ def init() -> None:
             "next_action": "TEXT",
             "next_retry_at": "REAL",
             "last_supervised_at": "REAL",
+            "awareness_json": "TEXT",
+            "awareness_checked_at": "REAL",
         }
         for name, kind in additions.items():
             if name not in columns:
@@ -137,7 +139,8 @@ def _row(r: sqlite3.Row | None) -> dict | None:
     except (TypeError, json.JSONDecodeError):
         d["files_changed"] = []
     for name, fallback in (("spec_json", None), ("depends_on", []),
-                           ("closure_history", []), ("attempted_engines", [])):
+                           ("closure_history", []), ("attempted_engines", []),
+                           ("awareness_json", {})):
         try:
             d[name] = json.loads(d[name]) if d.get(name) else fallback
         except (TypeError, json.JSONDecodeError):
@@ -313,6 +316,7 @@ _UPDATABLE = {
     "previous_status", "closure_history", "source_note_id",
     "attempt_count", "max_attempts", "attempted_engines", "failure_kind",
     "blocker_reason", "next_action", "next_retry_at", "last_supervised_at",
+    "awareness_json", "awareness_checked_at",
 }
 
 
@@ -322,7 +326,8 @@ def update(job_id: int, **fields) -> None:
         return
     if "files_changed" in fields and not isinstance(fields["files_changed"], str):
         fields["files_changed"] = json.dumps(fields["files_changed"])
-    for name in ("spec_json", "depends_on", "closure_history", "attempted_engines"):
+    for name in ("spec_json", "depends_on", "closure_history", "attempted_engines",
+                 "awareness_json"):
         if name in fields and not isinstance(fields[name], str):
             fields[name] = json.dumps(fields[name])
     init()

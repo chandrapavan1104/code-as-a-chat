@@ -719,6 +719,7 @@ def _job_view(j: dict) -> dict:
         "source_note_id": j.get("source_note_id"),
         "deployment": deployment,
         "routing_recommendation": routing_rec,  # shadow-mode recommendation
+        "awareness": j.get("awareness_json") or {},
         "supervision": job_explanation(j),
     }
 
@@ -783,6 +784,16 @@ def queue_list(status: str | None = None):
             "health": health_snapshot()}
 
 
+@router.get("/capabilities")
+def capabilities_list():
+    """Evidence the supervisor uses when deciding whether work already exists."""
+    from server.capability_registry import refresh
+    from server.db import capability_store
+    refresh()
+    items = capability_store.list_all()
+    return {"count": len(items), "items": items}
+
+
 @router.post("/queue/supervise")
 async def queue_supervise():
     """Manual nudge from Gajala; the same audit also runs every minute."""
@@ -807,6 +818,11 @@ def queue_add(body: QueueJobIn):
     jid = night_queue_store.add(
         project=project, task=task, tag=body.tag, engine=body.engine,
         priority=body.priority, spec=spec.model_dump(), depends_on=body.depends_on)
+    from server.capability_registry import assess
+    try:
+        assess(jid)
+    except Exception:
+        pass  # awareness is advisory; it must never block task capture
     return _job_view(night_queue_store.get(jid))
 
 
@@ -876,10 +892,17 @@ def queue_engine(job_id: int, body: QueueEngine):
 
 @router.post("/queue/{job_id}/refine")
 async def queue_refine(job_id: int, body: QueueRefineIn):
+    from server.db import night_queue_store
     from server.work_order_refiner import refine_job
     try:
-        return _job_view(await refine_job(
-            job_id, allow_cloud=body.allow_cloud, instructions=body.instructions))
+        await refine_job(
+            job_id, allow_cloud=body.allow_cloud, instructions=body.instructions)
+        from server.capability_registry import assess
+        try:
+            assess(job_id)
+        except Exception:
+            pass
+        return _job_view(night_queue_store.get(job_id))
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc
     except LookupError as exc:
@@ -925,6 +948,11 @@ def queue_edit(job_id: int, body: QueueEditIn):
         fields["engine"] = body.engine
         fields["engine_used"] = None
     night_queue_store.update(job_id, **fields)
+    from server.capability_registry import assess
+    try:
+        assess(job_id)
+    except Exception:
+        pass
     return _job_view(night_queue_store.get(job_id))
 
 

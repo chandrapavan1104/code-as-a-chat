@@ -65,6 +65,18 @@ async def refine_job(job_id: int, *, allow_cloud: bool = False,
     # project-context egress.
     instructions = (instructions or "").strip()[:2000]
     prompt = f"ROUGH TASK:\n{rough}"
+    # Give the refiner just the nearest capability/task title. This is enough to
+    # frame the work as a true extension or distinguish it from a duplicate,
+    # without sending repository contents or local paths to the cloud model.
+    from server.capability_registry import assess
+    awareness = assess(job_id, apply=False)
+    match = awareness.get("match") or {}
+    if match:
+        prompt += ("\n\nPROJECT AWARENESS:\n"
+                   f"Closest existing item: {match.get('title')} "
+                   f"({match.get('status')}, similarity {match.get('score')}).\n"
+                   "If this request extends it, state the distinction explicitly. "
+                   "Do not recreate behavior that already exists.")
     if instructions:
         prompt += f"\n\nOWNER'S REFINEMENT INSTRUCTIONS:\n{instructions}"
     raw = await _claude_cli(_SYSTEM, prompt, timeout=90, model="sonnet")
