@@ -949,6 +949,23 @@ def test_capability_awareness_never_crosses_project_boundaries(
     assert q.get(other_repo)["status"] == "queued"
 
 
+def test_capability_registry_maps_deploy_worktree_to_owner_repo(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from server import capability_registry, config
+
+    owner = tmp_path / "owner"
+    runtime = tmp_path / "deploy-12"
+    monkeypatch.setattr(config, "REPO_DIR", runtime)
+    monkeypatch.setattr(
+        capability_registry.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=str(owner / ".git") + "\n"),
+    )
+
+    assert capability_registry._repo_project() == str(owner.resolve())
+
+
 def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypatch):
     import sys
     from types import SimpleNamespace
