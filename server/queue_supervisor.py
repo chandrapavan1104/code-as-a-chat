@@ -7,10 +7,11 @@ import logging
 import shutil
 import time
 
-from server.db import deployment_store, night_queue_store
+from server.db import capability_store, deployment_store, night_queue_store
 
 log = logging.getLogger("queue_supervisor")
-_state = {"last_check": None, "last_actions": [], "error": None}
+_state = {"last_check": None, "last_actions": [], "error": None,
+          "awareness_error": None}
 _TRANSIENT = (
     "worker disappeared", "worker exited", "timed out", "ran past", "timeout",
     "failed to launch", "cli is not installed", "rate limit", "quota", "auth",
@@ -120,6 +121,13 @@ async def supervise_once(now: float | None = None) -> list[str]:
     """One idempotent audit. Recoverable work advances; only hard stops escalate."""
     now = now or time.time()
     actions: list[str] = []
+    from server.capability_registry import assess, refresh
+    try:
+        refresh()
+        _state["awareness_error"] = None
+    except Exception as exc:
+        _state["awareness_error"] = str(exc)
+        log.warning("capability refresh failed; queue supervision continues: %s", exc)
     from server import night_shift
     recovered = night_queue_store.fail_orphaned_running(
         active_job_ids=set(night_shift._running), grace_seconds=60)
@@ -130,6 +138,23 @@ async def supervise_once(now: float | None = None) -> list[str]:
         if job["status"] == "closed":
             continue
         jid = job["id"]
+        spec = job.get("spec_json") or {}
+        changed_at = spec.get("refined_at") or job.get("created_at") or 0
+        prior_awareness = job.get("awareness_json") or {}
+        needs_recheck = ((job.get("awareness_checked_at") or 0) < changed_at
+                         or (prior_awareness.get("classification") == "conflict"
+                             and not night_queue_store.blocked_by(job)))
+        if (job["status"] not in ("running", "deploying", "staged", "deployed",
+                                  "shipped", "completed")
+                and needs_recheck):
+            try:
+                result = assess(jid)
+                actions.append(f"#{jid} classified {result['classification']}")
+                job = night_queue_store.get(jid)
+                if not job or job["status"] == "closed":
+                    continue
+            except Exception as exc:
+                log.warning("awareness check failed for #%s: %s", jid, exc)
         blocked = night_queue_store.blocked_by(job)
         if blocked:
             night_queue_store.update(
@@ -240,11 +265,17 @@ def health_snapshot() -> dict:
         state, headline = "healthy", f"{len(held)} task(s) are intentionally held by you."
     else:
         state, headline = "healthy", "Queue is clear."
+    try:
+        capabilities_known = capability_store.count()
+    except Exception:
+        capabilities_known = 0
     return {
         "state": state, "headline": headline, "active": len(active),
         "working": len(working), "blocked": len(blocked),
         "held": len(held), "recovering": len(recovering),
         "needs_attention": len(attention), "last_check": _state["last_check"],
+        "capabilities_known": capabilities_known,
+        "awareness_error": _state["awareness_error"],
         "last_actions": _state["last_actions"], "error": _state["error"],
     }
 

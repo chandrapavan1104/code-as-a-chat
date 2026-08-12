@@ -205,6 +205,43 @@ class _JobList extends ConsumerWidget {
   }
 }
 
+({Color color, IconData icon, String label})? _awarenessStyle(String value) {
+  switch (value) {
+    case 'duplicate':
+      return (
+        color: GajalaColors.pink,
+        icon: Icons.copy_outlined,
+        label: 'duplicate',
+      );
+    case 'already_implemented':
+      return (
+        color: GajalaColors.green,
+        icon: Icons.verified_outlined,
+        label: 'already live',
+      );
+    case 'extension':
+      return (
+        color: GajalaColors.violet,
+        icon: Icons.call_split,
+        label: 'extension',
+      );
+    case 'conflict':
+      return (
+        color: GajalaColors.amber,
+        icon: Icons.merge_type,
+        label: 'overlap',
+      );
+    case 'unclear':
+      return (
+        color: GajalaColors.amber,
+        icon: Icons.manage_search,
+        label: 'check scope',
+      );
+    default:
+      return null;
+  }
+}
+
 // ── one job ─────────────────────────────────────────────────────────────────
 
 class _JobCard extends ConsumerWidget {
@@ -214,6 +251,9 @@ class _JobCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final st = _statusStyle(j.status);
+    final awareness = _awarenessStyle(
+      j.awareness['classification']?.toString() ?? '',
+    );
     final pal = context.pal;
     return InkWell(
       borderRadius: BorderRadius.circular(14),
@@ -313,6 +353,33 @@ class _JobCard extends ConsumerWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 12, color: pal.textDim),
+                  ),
+                ),
+              if (awareness != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    children: [
+                      Icon(awareness.icon, size: 14, color: awareness.color),
+                      const SizedBox(width: 4),
+                      Text(
+                        awareness.label.toUpperCase(),
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: awareness.color,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          j.awareness['action']?.toString() ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 11, color: pal.textDim),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               if (j.isDraft)
@@ -1074,6 +1141,27 @@ Future<void> _jobDetailSheet(
             ].join('\n'),
             icon: Icons.health_and_safety_outlined,
           ),
+          if ((j.awareness['classification']?.toString() ?? '').isNotEmpty)
+            section(
+              ctx,
+              'Project awareness',
+              [
+                'Decision: ${(j.awareness['classification'] ?? 'new').toString().replaceAll('_', ' ')} '
+                    '(${(((j.awareness['confidence'] as num?) ?? 0) * 100).round()}% confidence)',
+                if (j.awareness['match'] is Map &&
+                    ((j.awareness['match'] as Map)['title']?.toString() ?? '')
+                        .isNotEmpty)
+                  'Closest match: ${(j.awareness['match'] as Map)['title']}',
+                if (j.awareness['match'] is Map &&
+                    ((j.awareness['match'] as Map)['evidence'] as List?)
+                            ?.isNotEmpty ==
+                        true)
+                  'Evidence: ${((j.awareness['match'] as Map)['evidence'] as List).join(' · ')}',
+                if ((j.awareness['action']?.toString() ?? '').isNotEmpty)
+                  'Action: ${j.awareness['action']}',
+              ].join('\n'),
+              icon: Icons.hub_outlined,
+            ),
           if (j.dependencies.isNotEmpty && j.blockedBy.isEmpty)
             section(
               ctx,
@@ -1296,9 +1384,19 @@ class _QueueHealthCard extends ConsumerWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  '${health['working'] ?? 0} working · ${health['recovering'] ?? 0} recovering · ${health['held'] ?? 0} held · ${health['needs_attention'] ?? 0} needs decision',
+                  '${health['working'] ?? 0} working · ${health['recovering'] ?? 0} recovering · ${health['held'] ?? 0} held · ${health['needs_attention'] ?? 0} needs decision\n${health['capabilities_known'] ?? 0} verified project capabilities known',
                   style: TextStyle(color: context.pal.textDim, fontSize: 11),
                 ),
+                if ((health['awareness_error']?.toString() ?? '').isNotEmpty)
+                  Text(
+                    'Awareness refresh issue: ${health['awareness_error']}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: GajalaColors.amber,
+                      fontSize: 11,
+                    ),
+                  ),
               ],
             ),
           ),

@@ -4,6 +4,17 @@ together, with no external CLIs or network. Keeps CI meaningful and green."""
 import asyncio
 import subprocess
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_capability_registry(tmp_path, monkeypatch):
+    """Awareness tests must never read or rewrite the live Mac Mini inventory."""
+    from server import capability_registry
+    from server.db import capability_store
+    monkeypatch.setattr(capability_store, "DB_PATH", tmp_path / "capabilities.db")
+    monkeypatch.setattr(capability_registry, "_last_refresh", 0.0)
+
 
 def _ready_work_order(title="Ready task"):
     return {
@@ -27,6 +38,7 @@ def test_api_v2_router_mounts():
     assert "/api/system" in paths
     assert "/api/devices" in paths
     assert "/api/queue/{job_id}/refine" in paths
+    assert "/api/capabilities" in paths
 
 
 def test_fcm_available_is_bool_without_key():
@@ -838,6 +850,103 @@ def test_queue_explanation_says_why_and_what_happens_next(tmp_path, monkeypatch)
     explanation = supervisor.job_explanation(q.get(dependent))
     assert f"#{foundation}" in explanation["blocker"]
     assert "supervisor" in explanation["next_action"].lower()
+
+
+def test_capability_awareness_closes_exact_active_duplicate(tmp_path, monkeypatch):
+    from server import capability_registry
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(capability_registry, "refresh", lambda **kwargs: 0)
+    owner = q.add(
+        project=str(tmp_path), task="Capability registry",
+        spec=_ready_work_order("Queue capability registry"), tag="auto")
+    duplicate = q.add(
+        project=str(tmp_path), task="Capability registry",
+        spec=_ready_work_order("Queue capability registry"), tag="auto")
+
+    result = capability_registry.assess(duplicate)
+
+    assert result["classification"] == "duplicate"
+    assert result["match"]["id"] == owner
+    closed = q.get(duplicate)
+    assert closed["status"] == "closed"
+    assert "queue task" in closed["close_reason"].lower()
+    assert closed["closure_history"]  # recoverable, never deleted
+
+
+def test_capability_awareness_recognizes_extensions_and_active_overlap(
+        tmp_path, monkeypatch):
+    from server import capability_registry
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(capability_registry, "refresh", lambda **kwargs: 0)
+    base = q.add(
+        project=str(tmp_path), task="Queue supervisor capability registry",
+        spec=_ready_work_order("Queue supervisor capability registry"), tag="auto")
+    overlap = q.add(
+        project=str(tmp_path), task="Queue supervisor capability registry mobile display",
+        spec=_ready_work_order(
+            "Queue supervisor capability registry mobile display"), tag="auto")
+
+    overlap_result = capability_registry.assess(overlap)
+    waiting = q.get(overlap)
+    assert overlap_result["classification"] == "conflict"
+    assert waiting["status"] == "queued" and waiting["tag"] == "auto"
+    assert waiting["depends_on"] == [base]
+
+    q.update(base, status="shipped")
+    extension = q.add(
+        project=str(tmp_path), task="Improve queue supervisor capability registry",
+        spec=_ready_work_order(
+            "Improve queue supervisor capability registry"), tag="auto")
+    extension_result = capability_registry.assess(extension)
+    assert extension_result["classification"] == "extension"
+    assert q.get(extension)["status"] == "queued"
+    assert "extension" in q.get(extension)["next_action"].lower()
+
+
+def test_test_name_is_context_not_proof_of_existing_capability(
+        tmp_path, monkeypatch):
+    from server import capability_registry
+    from server.db import capability_store, night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(capability_registry, "refresh", lambda **kwargs: 0)
+    capability_store.replace_source("test", [{
+        "key": "test:test_phone_export", "title": "Phone export",
+        "description": "Phone export", "status": "evidence",
+        "evidence": ["test_phone_export"],
+    }])
+    jid = q.add(
+        project=str(tmp_path), task="Phone export",
+        spec=_ready_work_order("Phone export"), tag="auto")
+
+    result = capability_registry.assess(jid)
+
+    assert result["classification"] == "new"
+    assert q.get(jid)["status"] == "queued"
+
+
+def test_capability_awareness_never_crosses_project_boundaries(
+        tmp_path, monkeypatch):
+    from server import capability_registry
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(capability_registry, "refresh", lambda **kwargs: 0)
+    q.add(
+        project=str(tmp_path / "repo-a"), task="Add customer export",
+        spec=_ready_work_order("Add customer export"), tag="auto")
+    other_repo = q.add(
+        project=str(tmp_path / "repo-b"), task="Add customer export",
+        spec=_ready_work_order("Add customer export"), tag="auto")
+
+    result = capability_registry.assess(other_repo)
+
+    assert result["classification"] == "new"
+    assert q.get(other_repo)["status"] == "queued"
 
 
 def test_deployment_guard_never_rolls_back_an_unexpected_head(tmp_path, monkeypatch):

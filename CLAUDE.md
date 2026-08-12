@@ -118,6 +118,15 @@ and rebuilds failed Auto deployments against the live base. Only exhausted
 recovery or genuine decisions escalate. Every task exposes `Why paused`, `Next
 action`, attempts, and retry timing; Gajala refreshes Tasks every 20 seconds and
 shows working, recovering, held, and genuinely blocked counts.
+The supervisor also maintains a durable **Project Awareness registry** from the
+live skill manifest, authenticated API surface, Gajala screens, test evidence,
+completed queue work, and verified deployment commits. New, edited, and refined
+work is compared locally before execution and labelled New, Extension, Overlap,
+Duplicate, or Already Live. Exact duplicates are recoverably closed with their
+evidence; overlapping Auto work waits behind its owning task and reassesses when
+that task ships instead of asking the owner to coordinate it. Evidence-only
+sources inform refinement but cannot independently close a task. Gajala exposes
+the decision, confidence, closest match, evidence, action, and registry count.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -151,6 +160,15 @@ the shell agent and orchestrator immediately exclude disabled skills from routin
 so they become unavailable to the LLM agent on the next turn.
 
 ## Changelog (most recent first)
+- 2026-08-11 — **Evidence-backed Project Awareness for the Queue Supervisor.**
+  A local capability registry now inventories registered skills, real API
+  routes, Gajala screens, smoke-test evidence, completed work orders, and their
+  verified deployment commits. Queue capture, editing, Claude refinement, and
+  the minute supervisor audit classify semantic overlap before work runs. Exact
+  duplicates/already-live requests close recoverably with evidence; extensions
+  remain runnable; overlapping Auto tasks gain an automatic dependency and are
+  reassessed after it ships. Registry failures fail open so capture/recovery
+  never stops. Tasks now show awareness badges and full evidence on the phone.
 - 2026-08-11 — **Always-on Queue Supervisor and phone-visible queue health.**
   Queue monitoring is no longer tied to the Night Shift execution window.
   Recoverable worker loss, timeout, CLI failure, merge conflict, and safe rollback
