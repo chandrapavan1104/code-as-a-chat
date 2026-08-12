@@ -121,9 +121,11 @@ async def supervise_once(now: float | None = None) -> list[str]:
     """One idempotent audit. Recoverable work advances; only hard stops escalate."""
     now = now or time.time()
     actions: list[str] = []
-    from server.capability_registry import REGISTRY_VERSION, assess, refresh
+    from server.capability_registry import (REGISTRY_VERSION, assess,
+                                            reconcile_notes, refresh)
     try:
         refresh()
+        actions.extend(reconcile_notes())
         _state["awareness_error"] = None
     except Exception as exc:
         _state["awareness_error"] = str(exc)

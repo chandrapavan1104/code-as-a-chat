@@ -196,7 +196,7 @@ class GajalaApi {
 
   Future<QueueJob> convertNoteToQueue(
     int id, {
-    required Map<String, dynamic> spec,
+    Map<String, dynamic>? spec,
     String? project,
     String tag = 'mine',
     String engine = 'auto',

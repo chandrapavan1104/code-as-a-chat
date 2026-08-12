@@ -107,10 +107,12 @@ cleans, or stashes your live files.
 deploy, restart when needed, verify localhost + authenticated APIs + the actual
 Tailscale endpoint, and push without waiting for the owner. A durable deployment
 ledger serializes releases and exposes `merging/restarting/verifying/live` or a
-precise failure state. Rollback uses `git reset --keep` only when the expected
-deployed commit is still current, preserving unrelated owner work; true
-same-file overlap is the narrow case that stops for human resolution. The fix
-agent uses the same coordinator and an isolated repair worktree.
+precise failure state. Merge and runtime use managed deployment worktrees; the
+owner checkout's files, index, HEAD, and branch ref are never used or changed.
+Rollback switches launchd to the previous verified runtime without resetting the
+owner repository. Persisted `running` jobs with no live worker are failed clearly
+at startup and by the queue watchdog. The fix agent uses the same coordinator
+and an isolated repair worktree.
 An always-on **Queue Supervisor** now audits work every minute, independently of
 the overnight build window. It recovers orphaned workers, classifies failures,
 rotates recoverable retries across installed engines with a three-attempt budget,
@@ -127,6 +129,12 @@ evidence; overlapping Auto work waits behind its owning task and reassesses when
 that task ships instead of asking the owner to coordinate it. Evidence-only
 sources inform refinement but cannot independently close a task. Gajala exposes
 the decision, confidence, closest match, evidence, action, and registry count.
+Brain Dump now uses compact cards and an app-bar Add action, so controls are
+never covered by a floating button. **Move to queue** is fully wired: a todo
+becomes one linked, held Draft work order ready for refinement, while the source
+note closes recoverably to prevent duplicate conversion. Linked queue state is
+shown on the note. The supervisor also recoverably archives exact feature/todo/
+bug notes when Project Awareness has high-confidence evidence they are live.
 Deployed on a Mac Mini via launchd + Tailscale. Battery alerts disabled on this
 always-plugged host. **Self-healing `fix` agent** (codex-powered): describe a
 bug from the phone → it diagnoses + makes a minimal fix on a branch, auto-builds
@@ -154,12 +162,16 @@ Every inbox-worthy event (needs-input, job deployed/failed, night report, "new
 build ready", fired reminders) is logged **and** pushed through one helper
 (`server/notifier.py` + `notifications_store`) so the Alerts tab (with an unread
 badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notifications*`.
-**Dynamic skills marketplace**: every registered skill can be toggled enabled/disabled
-from the Gajala app (overflow menu → "Skills marketplace") without a code deploy;
-the shell agent and orchestrator immediately exclude disabled skills from routing,
-so they become unavailable to the LLM agent on the next turn.
 
 ## Changelog (most recent first)
+- 2026-08-12 — **Brain Dump cleanup, real queue conversion, and awareness.**
+  Replaced the overlapping floating Add button with an app-bar action and made
+  cards/actions denser. “Convert to Queue” is no longer a placeholder: it moves
+  a todo into a linked held Draft, closes the source recoverably with the queue
+  ID, refreshes both screens, and prevents repeat conversion. Notes expose their
+  linked task state. The minute supervisor now closes exact already-implemented
+  feature/todo/bug captures with capability evidence; the existing Dynamic
+  Skills Marketplace capture is therefore reconciled automatically.
 - 2026-08-11 — **Evidence-backed Project Awareness for the Queue Supervisor.**
   A local capability registry now inventories registered skills, real API
   routes, Gajala screens, smoke-test evidence, completed work orders, and their
@@ -180,6 +192,15 @@ so they become unavailable to the LLM agent on the next turn.
   and backoff metadata. `/api/queue` now returns queue health plus per-task
   blocker/next-action explanations; Gajala refreshes every 20 seconds and can
   nudge an audit. Also repaired an existing notes-provider app compile break.
+- 2026-08-11 — **Fixed stuck Building jobs and truly isolated queue merges.** A
+  server restart could orphan SQLite `running` claims forever because worker
+  ownership existed only in memory; startup and each Night Shift cycle now fail
+  orphaned claims with a clear reason, and every worker has a final-state guard.
+  Deployment previously checked/checked-out the owner's live repo and rejected
+  overlapping dirty files. It now creates the merge commit in a detached managed
+  worktree, runs the server from that verified worktree, and pushes by commit ID;
+  owner files/index/HEAD/branch refs are never touched. Rollback only restores
+  launchd's prior runtime. CLI timeout cleanup now also reaps killed processes.
 - 2026-08-09 — **Autonomous safe deployment coordinator.** Queue and fix-agent
   shipping now share one durable, serialized deployment transaction. Automatic
   jobs merge and deploy end-to-end, with branch/overlap preflight, idempotent
@@ -187,19 +208,6 @@ so they become unavailable to the LLM agent on the next turn.
   push-on-health, safe rollback that preserves unrelated edits, durable status,
   and Gajala's new `deploying safely` state. Fix attempts no longer require a
   clean live checkout because they run in their own managed worktree.
-- 2026-08-09 — **Dynamic skills marketplace.** Every registered skill can now be
-  toggled enabled/disabled from the Gajala app (overflow menu → “Skills marketplace”),
-  persisted in `state.json`, without any code deploy or server restart. New
-  `server/prefs.py` functions `is_skill_enabled()` and `set_skill_enabled()` manage
-  state; shell agent's `_build_tool_catalog()` and `DELEGATE_SKILLS` filter disabled
-  skills so they never appear in the routing model's tool list; `orchestrator.route()`
-  checks enabled state before running a skill; `/skills` endpoint now includes an
-  `enabled` flag per skill; new `/skills/{name}` POST toggles state. Gajala adds a
-  `SkillsScreen` (reachable from dashboard overflow) listing all skills with toggle
-  switches, and calls the new API method `GajalaApi.toggleSkill()`. Default: all
-  existing skills are enabled (opt-in behavior unchanged). Verified: GET /skills
-  returns accurate enabled status; POST /skills/{name} toggles it immediately;
-  disabled skills are excluded from the agent's tool catalog; re-enabling restores them.
 - 2026-08-09 — **Dirty live repos no longer block queued coding jobs.** Night
   Shift now runs each coding task in a clean managed worktree and keeps the
   resulting `night/<id>-...` branch while removing the temporary checkout. The

@@ -154,7 +154,7 @@ class NoteClose(BaseModel):
 
 
 class NoteConvertToQueue(BaseModel):
-    spec: WorkOrderSpec  # reviewed and approved work-order spec
+    spec: WorkOrderSpec | None = None  # omitted = safe Draft from the rough note
     project: str | None = None  # target project; defaults to note's project
     tag: str = "mine"  # always create as 'mine' (held) for review
     engine: str = "auto"
@@ -163,8 +163,17 @@ class NoteConvertToQueue(BaseModel):
 @router.get("/notes")
 def list_notes(status: str | None = "open", kind: str | None = None,
                project: str | None = None, limit: int = 100):
-    return {"notes": notes_store.list_notes(project=project, kind=kind,
-                                            status=status, limit=limit)}
+    from server.db import night_queue_store
+    notes = notes_store.list_notes(project=project, kind=kind,
+                                   status=status, limit=limit)
+    linked = {}
+    for job in night_queue_store.list_jobs(limit=500):
+        note_id = job.get("source_note_id")
+        if note_id and note_id not in linked:
+            linked[note_id] = {"id": job["id"], "status": job["status"]}
+    for note in notes:
+        note["queue_job"] = linked.get(note["id"])
+    return {"notes": notes}
 
 
 @router.get("/notes/stats")
@@ -214,12 +223,9 @@ def reopen_note(note_id: int):
 
 @router.post("/notes/{note_id}/convert-to-queue", status_code=201)
 def convert_note_to_queue(note_id: int, body: NoteConvertToQueue):
-    """Convert an open todo to a queue work order (held by default).
-
-    The reviewed spec is required; the todo remains open and can be closed
-    separately after conversion.
-    """
+    """Convert an open todo to one linked, recoverable Draft work order."""
     from server.db import night_queue_store
+    from server.work_orders import from_task
     note = notes_store.get(note_id)
     if not note:
         raise HTTPException(404, "note not found")
@@ -229,8 +235,9 @@ def convert_note_to_queue(note_id: int, body: NoteConvertToQueue):
         raise HTTPException(409, "only open todos can be converted")
 
     project = _resolve_project_path(body.project or note["project"])
-    spec = body.spec
-    if not spec.is_complete:
+    rough = "\n\n".join(value for value in (note["title"], note["body"]) if value)
+    spec = body.spec or from_task(rough)
+    if body.spec is not None and not spec.is_complete:
         raise HTTPException(400, "spec must be complete: title, outcome, plan, "
                           "policy, acceptance, test_handoff all required")
 
@@ -239,6 +246,10 @@ def convert_note_to_queue(note_id: int, body: NoteConvertToQueue):
     jid = night_queue_store.add(
         project=project, task=task, tag="mine", engine=body.engine,
         spec=spec.model_dump(), source_note_id=note_id)
+
+    # Conversion is a move, not a copy. Archive the source recoverably so the
+    # same rough item cannot be converted twice; reopening remains available.
+    notes_store.close(note_id, f"Converted to queue task #{jid}")
 
     return _job_view(night_queue_store.get(jid))
 
