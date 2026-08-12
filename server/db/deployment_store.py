@@ -35,6 +35,10 @@ def init() -> None:
                 updated_at REAL NOT NULL
             )
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(deployments)")}
+        for name in ("runtime_path", "previous_runtime"):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE deployments ADD COLUMN {name} TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_deploy_state ON deployments(state, id)")
         conn.commit()
 
@@ -102,6 +106,16 @@ def latest(*, source: str | None = None, ref_id: int | None = None) -> dict | No
     query += " ORDER BY id DESC LIMIT 1"
     with _conn() as conn:
         return _row(conn.execute(query, args).fetchone())
+
+
+def latest_live(repo: str, base: str) -> dict | None:
+    """Newest verified deployment for the logical base, if one exists."""
+    init()
+    with _conn() as conn:
+        return _row(conn.execute(
+            "SELECT * FROM deployments WHERE repo=? AND base=? AND state='live' "
+            "ORDER BY id DESC LIMIT 1", (repo, base),
+        ).fetchone())
 
 
 def list_recent(limit: int = 30) -> list[dict]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import plistlib
 import re
 import subprocess
 import sys
@@ -17,10 +18,28 @@ def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True)
 
 
-def _restart() -> tuple[bool, str]:
+def _set_runtime(path: str) -> tuple[bool, str]:
+    plist = os.path.expanduser("~/Library/LaunchAgents/com.codeasachat.server.plist")
+    try:
+        with open(plist, "rb") as handle:
+            data = plistlib.load(handle)
+        data["WorkingDirectory"] = path
+        temporary = plist + ".deployment.tmp"
+        with open(temporary, "wb") as handle:
+            plistlib.dump(data, handle)
+        os.replace(temporary, plist)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _restart(runtime_path: str) -> tuple[bool, str]:
     uid = str(os.getuid())
     label = f"gui/{uid}/com.codeasachat.server"
     plist = os.path.expanduser("~/Library/LaunchAgents/com.codeasachat.server.plist")
+    configured, error = _set_runtime(runtime_path)
+    if not configured:
+        return False, f"could not configure isolated runtime: {error}"
     _run("launchctl", "bootout", label)
     _run("pkill", "-f", "uvicorn server.main")
     time.sleep(1)
@@ -88,11 +107,12 @@ def main() -> None:
         return
     repo, base = item["repo"], item["base"]
     deployment_store.update(did, state="restarting", detail="restarting launchd service")
-    loaded, restart_error = _restart()
+    loaded, restart_error = _restart(item["runtime_path"] or repo)
     deployment_store.update(did, state="verifying", detail="checking local and tailnet APIs")
     healthy, detail = _healthy(repo) if loaded else (False, f"launchd failed: {restart_error}")
     if healthy:
-        push = _run("git", "-C", repo, "push", "origin", base)
+        push = _run("git", "-C", repo, "push", "origin",
+                    f"{item['deployed_sha']}:refs/heads/{base}")
         if push.returncode != 0:
             detail += "; push failed (code remains live locally)"
         deployment_store.update(did, state="live", detail=detail)
@@ -102,25 +122,9 @@ def main() -> None:
         return
 
     deployment_store.update(did, state="rolling_back", detail=detail)
-    head = _run("git", "-C", repo, "rev-parse", "HEAD").stdout.strip()
-    if head != item["deployed_sha"]:
-        reason = ("automatic rollback could not safely preserve owner changes; "
-                  "HEAD changed after deployment, so no Git mutation was attempted")
-        deployment_store.update(did, state="failed", detail=reason)
-        if item["ref_id"] is not None:
-            night_queue_store.update(item["ref_id"], status="needs_you", summary=reason)
-        _notify(f"Deployment #{did} needs recovery", reason, item["ref_id"])
-        return
-    rollback = _run("git", "-C", repo, "reset", "--keep", item["before_sha"])
-    if rollback.returncode != 0:
-        reason = ("automatic rollback could not safely preserve owner changes; "
-                  "the failed deployment branch and ledger were retained")
-        deployment_store.update(did, state="failed", detail=reason)
-        if item["ref_id"] is not None:
-            night_queue_store.update(item["ref_id"], status="needs_you", summary=reason)
-        _notify(f"Deployment #{did} needs recovery", reason, item["ref_id"])
-        return
-    _restart()
+    # No owner branch/ref was changed: rollback is purely switching launchd back
+    # to its prior isolated runtime. Owner files, index, and HEAD are untouched.
+    _restart(item["previous_runtime"] or repo)
     recovered, recovery_detail = _healthy(repo, tries=8)
     state = "rolled_back" if recovered else "failed"
     reason = f"rolled back safely: {detail}" if recovered else f"rollback restart failed: {recovery_detail}"

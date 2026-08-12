@@ -131,6 +131,10 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
                 proc.kill()
             except ProcessLookupError:
                 pass
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
         return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
     except FileNotFoundError:
         return "", 0, 0, f"the {engine} CLI is not installed on PATH"
@@ -166,6 +170,10 @@ async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
             try:
                 proc.kill()
             except ProcessLookupError:
+                pass
+            try:
+                await proc.communicate()
+            except Exception:
                 pass
         return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
     except FileNotFoundError:

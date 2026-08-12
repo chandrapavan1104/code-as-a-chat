@@ -31,7 +31,8 @@ import time
 from pathlib import Path
 
 from server import config, night_exec
-from server.db import cli_runs_store, night_queue_store, routing_recommendations_store
+from server.db import (cli_runs_store, deployment_store, night_queue_store,
+                       routing_recommendations_store)
 
 log = logging.getLogger("night_shift")
 
@@ -266,6 +267,12 @@ async def _process_job(job: dict, engine: str) -> None:
     finally:
         _running.pop(jid, None)
         _stop_requested.discard(jid)
+        current = night_queue_store.get(jid)
+        if current and current.get("status") == "running":
+            reason = ("Worker exited without reporting a result. The job was "
+                      "marked failed instead of remaining stuck in Building.")
+            night_queue_store.update(jid, status="failed", ended_at=time.time(),
+                                     summary=reason)
 
 
 async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> None:
@@ -294,7 +301,10 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         await _notify_status(jid, job, "failed", "could not determine base branch")
         return
     branch = f"night/{jid}-{_slug(job['task'])}"
-    worktree, worktree_error = await _prepare_worktree(repo, jid, branch, base)
+    live = deployment_store.latest_live(repo, base)
+    base_commit = (live or {}).get("deployed_sha") or base
+    worktree, worktree_error = await _prepare_worktree(
+        repo, jid, branch, base_commit)
     if worktree is None:
         msg = f"Could not create the isolated job checkout: {worktree_error}"
         night_queue_store.update(jid, status="failed", ended_at=time.time(),
@@ -371,7 +381,7 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
 
         await _discard_worktree(repo, worktree, branch, delete_branch=False)
 
-        rc, diffstat = await _git(repo, "diff", f"{base}..{branch}", "--stat")
+        rc, diffstat = await _git(repo, "diff", f"{base_commit}..{branch}", "--stat")
         night_queue_store.update(
             jid, status=final_status, branch=branch, base=base,
             files_changed=changed, engine_used=engine,
@@ -645,6 +655,11 @@ async def _engine_worker(engine: str) -> None:
 
 
 async def _cycle() -> None:
+    recovered = night_queue_store.fail_orphaned_running(
+        active_job_ids=set(_running), grace_seconds=60)
+    for job in recovered:
+        log.warning("recovered orphaned Night Shift job #%s", job["id"])
+        await _notify_status(job["id"], job, "failed", job["summary"])
     # Finish previously staged automatic work before spending quota on more jobs.
     from server.skills.queue import _ship
     for ready in night_queue_store.list_jobs(status="staged,deployed"):
@@ -712,6 +727,15 @@ async def night_shift_loop() -> None:
     log.info("Night Shift loop started (enabled=%s, window=%s-%s, tick=%ss)",
              _enabled(), getattr(config, "NIGHT_START", "23:00"),
              getattr(config, "NIGHT_END", "07:00"), tick)
+    # No worker survives a server process restart. Reconcile persisted claims
+    # immediately so the app never shows an orphan as Building until next night.
+    recovered = night_queue_store.fail_orphaned_running(grace_seconds=0)
+    for job in recovered:
+        log.warning("startup recovered orphaned Night Shift job #%s", job["id"])
+        try:
+            await _notify_status(job["id"], job, "failed", job["summary"])
+        except Exception:
+            pass
     while True:
         try:
             if _enabled() and _in_window():
