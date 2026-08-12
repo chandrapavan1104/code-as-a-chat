@@ -17,6 +17,7 @@ _STOP = {
 }
 _EXTENSION = {"add", "improve", "enhance", "extend", "additional", "better", "show", "explain",
               "support", "optimize", "polish", "redesign", "refactor", "more"}
+REGISTRY_VERSION = 2
 _last_refresh = 0.0
 
 
@@ -70,6 +71,19 @@ def _git_head() -> str | None:
 
 
 def _repo_project() -> str:
+    # A verified deployment runs from a detached Git worktree. Its logical
+    # project is still the owner repository (the parent of the common .git
+    # directory), otherwise static Gajala capabilities never match queued work.
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(config.REPO_DIR), "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5)
+        common = Path(done.stdout.strip()).resolve()
+        if done.returncode == 0 and common.name == ".git":
+            return str(common.parent)
+    except Exception:
+        pass
     return str(Path(config.REPO_DIR).resolve())
 
 
@@ -261,6 +275,7 @@ def assess(job_id: int, *, apply: bool = True) -> dict:
             classification, confidence = "unclear", best["score"]
             action = "Keep visible and held until refinement distinguishes the outcome."
     result = {
+        "registry_version": REGISTRY_VERSION,
         "classification": classification, "confidence": round(confidence, 3),
         "match": best, "candidates": candidates[:5], "action": action,
         "checked_at": time.time(), "registry_count": capability_store.count(),

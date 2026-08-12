@@ -121,7 +121,7 @@ async def supervise_once(now: float | None = None) -> list[str]:
     """One idempotent audit. Recoverable work advances; only hard stops escalate."""
     now = now or time.time()
     actions: list[str] = []
-    from server.capability_registry import assess, refresh
+    from server.capability_registry import REGISTRY_VERSION, assess, refresh
     try:
         refresh()
         _state["awareness_error"] = None
@@ -141,7 +141,8 @@ async def supervise_once(now: float | None = None) -> list[str]:
         spec = job.get("spec_json") or {}
         changed_at = spec.get("refined_at") or job.get("created_at") or 0
         prior_awareness = job.get("awareness_json") or {}
-        needs_recheck = ((job.get("awareness_checked_at") or 0) < changed_at
+        needs_recheck = (prior_awareness.get("registry_version") != REGISTRY_VERSION
+                         or (job.get("awareness_checked_at") or 0) < changed_at
                          or (prior_awareness.get("classification") == "conflict"
                              and not night_queue_store.blocked_by(job)))
         if (job["status"] not in ("running", "deploying", "staged", "deployed",

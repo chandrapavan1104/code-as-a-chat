@@ -167,6 +167,8 @@ badge) and the FCM push always agree. Endpoints: `/api/queue*`, `/api/notificati
   remain runnable; overlapping Auto tasks gain an automatic dependency and are
   reassessed after it ships. Registry failures fail open so capture/recovery
   never stops. Tasks now show awareness badges and full evidence on the phone.
+  Deployment worktrees resolve to their owner repository identity, and versioned
+  decisions automatically recheck existing tasks when awareness logic changes.
 - 2026-08-11 — **Always-on Queue Supervisor and phone-visible queue health.**
   Queue monitoring is no longer tied to the Night Shift execution window.
   Recoverable worker loss, timeout, CLI failure, merge conflict, and safe rollback
