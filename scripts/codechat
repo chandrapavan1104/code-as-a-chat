@@ -24,9 +24,11 @@ LOG_DIR="$HOME/Library/Logs/code-as-a-chat"
 SERVER_LABEL="com.codeasachat.server"
 BOT_LABEL="com.codeasachat.bot"
 OLLAMA_LABEL="com.codeasachat.ollama"
+WATCHDOG_LABEL="com.codeasachat.watchdog"
 SERVER_PLIST="$LAUNCH_AGENTS_DIR/$SERVER_LABEL.plist"
 BOT_PLIST="$LAUNCH_AGENTS_DIR/$BOT_LABEL.plist"
 OLLAMA_PLIST="$LAUNCH_AGENTS_DIR/$OLLAMA_LABEL.plist"
+WATCHDOG_PLIST="$LAUNCH_AGENTS_DIR/$WATCHDOG_LABEL.plist"
 
 # Ollama serves the local Qwen brain. Optional: if the binary isn't present the
 # service is simply skipped (install/start/stop tolerate its absence).
@@ -150,14 +152,43 @@ generate_ollama_plist() {
 EOF
 }
 
+generate_watchdog_plist() {
+    cat > "$WATCHDOG_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${WATCHDOG_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${PROJECT_DIR}/scripts/server_watchdog.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/watchdog.err</string>
+</dict>
+</plist>
+EOF
+}
+
 # ─── subcommands ─────────────────────────────────────────────────────────────
 
 cmd_install() {
     mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
     generate_server_plist
     generate_bot_plist
+    generate_watchdog_plist
     echo "Wrote $SERVER_PLIST"
     echo "Wrote $BOT_PLIST"
+    echo "Wrote $WATCHDOG_PLIST"
     if [[ -x "$OLLAMA_BIN" ]]; then
         generate_ollama_plist
         echo "Wrote $OLLAMA_PLIST"
@@ -172,7 +203,7 @@ cmd_install() {
 
 cmd_uninstall() {
     cmd_stop || true
-    rm -f "$SERVER_PLIST" "$BOT_PLIST" "$OLLAMA_PLIST"
+    rm -f "$SERVER_PLIST" "$BOT_PLIST" "$OLLAMA_PLIST" "$WATCHDOG_PLIST"
     echo "Uninstalled. Plists removed."
 }
 
@@ -182,10 +213,13 @@ cmd_start() {
     [[ -f "$OLLAMA_PLIST" ]] && launchctl load -w "$OLLAMA_PLIST" 2>/dev/null || true
     launchctl load -w "$SERVER_PLIST" 2>/dev/null || true
     launchctl load -w "$BOT_PLIST" 2>/dev/null || true
+    [[ -f "$WATCHDOG_PLIST" ]] && launchctl load -w "$WATCHDOG_PLIST" 2>/dev/null || true
     echo "Started: ${OLLAMA_PLIST:+ollama, }server + bot"
 }
 
 cmd_stop() {
+    # Stop the watchdog first so an intentional shutdown stays stopped.
+    [[ -f "$WATCHDOG_PLIST" ]] && launchctl unload -w "$WATCHDOG_PLIST" 2>/dev/null || true
     launchctl unload -w "$SERVER_PLIST" 2>/dev/null || true
     launchctl unload -w "$BOT_PLIST" 2>/dev/null || true
     [[ -f "$OLLAMA_PLIST" ]] && launchctl unload -w "$OLLAMA_PLIST" 2>/dev/null || true
@@ -200,7 +234,7 @@ cmd_restart() {
 
 cmd_status() {
     echo "── Services ──"
-    for label in "$SERVER_LABEL" "$BOT_LABEL" "$OLLAMA_LABEL"; do
+    for label in "$SERVER_LABEL" "$BOT_LABEL" "$OLLAMA_LABEL" "$WATCHDOG_LABEL"; do
         line="$(launchctl list 2>/dev/null | awk -v l="$label" '$3==l {print}')"
         if [[ -n "$line" ]]; then
             pid="$(echo "$line" | awk '{print $1}')"
@@ -234,6 +268,14 @@ cmd_status() {
     [[ -s "$LOG_DIR/bot.err" ]] && tail -n 10 "$LOG_DIR/bot.err" || echo "  (empty)"
 }
 
+cmd_watchdog_install() {
+    mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
+    generate_watchdog_plist
+    launchctl unload -w "$WATCHDOG_PLIST" 2>/dev/null || true
+    launchctl load -w "$WATCHDOG_PLIST"
+    echo "Installed independent API watchdog: $WATCHDOG_PLIST"
+}
+
 cmd_logs() {
     echo "Tailing $LOG_DIR/{server,bot}.{log,err}  (Ctrl-C to exit)"
     touch "$LOG_DIR"/{server,bot}.{log,err}
@@ -251,8 +293,9 @@ case "${1:-help}" in
     restart)   cmd_restart ;;
     status)    cmd_status ;;
     logs)      cmd_logs ;;
+    watchdog-install) cmd_watchdog_install ;;
     *)
-        echo "Usage: $0 {install|uninstall|start|stop|restart|status|logs}"
+        echo "Usage: $0 {install|uninstall|start|stop|restart|status|logs|watchdog-install}"
         exit 1
         ;;
 esac

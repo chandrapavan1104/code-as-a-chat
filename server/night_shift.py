@@ -400,7 +400,7 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         if job.get("tag") == "auto":
             from server.skills.queue import _ship
             try:
-                _ship(jid)
+                _ship(jid, source_base_sha=base_commit)
             except Exception as exc:  # branch is safely staged; next tick retries
                 log.warning("automatic deploy of #%s deferred: %s", jid, exc)
     except Exception as exc:  # noqa: BLE001 — never let one job kill the runner

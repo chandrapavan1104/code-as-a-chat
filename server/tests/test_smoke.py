@@ -588,7 +588,7 @@ def test_research_job_bypasses_git_and_stores_report(tmp_path, monkeypatch):
 def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
         tmp_path, monkeypatch):
     from server import config, night_shift
-    from server.db import night_queue_store as q
+    from server.db import deployment_store as ds, night_queue_store as q
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -606,6 +606,7 @@ def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
     tracked.write_text("owner's uncommitted work\n")
 
     monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
     monkeypatch.setattr(night_shift, "_WORKTREE_DIR", tmp_path / "worktrees")
     monkeypatch.setattr(config, "REPO_DIR", tmp_path / "some-other-repo")
     jid = q.add(project=str(repo), task="add generated file", tag="mine",
@@ -639,6 +640,9 @@ def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
 
 
 def _deployment_repo(path):
+    remote = path.parent / f"{path.name}-remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True,
+                   capture_output=True)
     path.mkdir()
     subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True,
                    capture_output=True)
@@ -651,6 +655,10 @@ def _deployment_repo(path):
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "commit", "-m", "base"], cwd=path, check=True,
                    capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=path,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=path,
+                   check=True, capture_output=True)
     subprocess.run(["git", "checkout", "-b", "night/test"], cwd=path,
                    check=True, capture_output=True)
     (path / "feature.txt").write_text("deployed feature\n")
@@ -767,6 +775,128 @@ def test_deployment_ledger_serializes_active_releases(tmp_path, monkeypatch):
                             changed_files=["server/api_v2.py"])
     assert error is None and first["state"] == "merging"
     assert second is None and f"deployment #{first['id']}" in busy
+
+
+def test_rejected_push_is_retryable_not_shipped(tmp_path, monkeypatch):
+    from server import deployment
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    repo = tmp_path / "repo"
+    _deployment_repo(repo)
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(deployment, "_DEPLOY_WORKTREE_DIR", tmp_path / "deploy-worktrees")
+    real_git = deployment._git
+
+    def reject_push(repo_path, *args, **kwargs):
+        if args and args[0] == "push":
+            return 1, "remote rejected the update"
+        return real_git(repo_path, *args, **kwargs)
+
+    monkeypatch.setattr(deployment, "_git", reject_push)
+    jid = q.add(project=str(repo), task="feature", spec=_ready_work_order(), tag="auto")
+    q.update(jid, status="staged", branch="night/test", base="main",
+             files_changed=["feature.txt"])
+
+    result = deployment.deploy_branch(
+        repo=str(repo), branch="night/test", base="main",
+        changed_files=["feature.txt"], source="queue", ref_id=jid,
+        server_touched=False)
+
+    assert "automatic retry" in result
+    assert ds.latest(source="queue", ref_id=jid)["state"] == "push_failed"
+    assert q.get(jid)["status"] == "staged"
+    assert q.get(jid)["failure_kind"] == "push_failed"
+
+
+def test_deployment_store_repairs_false_live_push_and_repo_identity(
+        tmp_path, monkeypatch):
+    import time
+    from server.db import deployment_store as ds
+
+    repo = tmp_path / "repo"
+    _deployment_repo(repo)
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    ds.init()
+    with ds._conn() as conn:
+        now = time.time()
+        conn.execute(
+            "INSERT INTO deployments(repo,branch,base,state,source,ref_id,"
+            "server_touched,changed_files,detail,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (str(repo / "."), "night/test", "main", "live", "queue", 99,
+             0, "[]", "merged; push failed: rejected", now, now),
+        )
+        conn.execute("DELETE FROM deployment_meta WHERE key='canonical_push_state_v1'")
+        conn.commit()
+
+    ds.init()
+    item = ds.latest(source="queue", ref_id=99)
+    assert item["state"] == "push_failed"
+    assert item["repo"] == str(repo.resolve())
+
+
+def test_retry_replays_only_job_delta_onto_published_base(tmp_path, monkeypatch):
+    from server import deployment
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    repo = tmp_path / "repo"
+    _deployment_repo(repo)
+    source_base = subprocess.run(
+        ["git", "rev-parse", "main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout.strip()
+    (repo / "current.txt").write_text("new published work\n")
+    subprocess.run(["git", "add", "current.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "new published work"], cwd=repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=repo, check=True,
+                   capture_output=True)
+
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(deployment, "_DEPLOY_WORKTREE_DIR", tmp_path / "deploy-worktrees")
+    jid = q.add(project=str(repo), task="feature", spec=_ready_work_order(), tag="auto")
+    q.update(jid, status="staged", branch="night/test", base="main",
+             files_changed=["feature.txt"])
+
+    deployment.deploy_branch(
+        repo=str(repo), branch="night/test", base="main",
+        changed_files=["feature.txt"], source="queue", ref_id=jid,
+        server_touched=False, source_base_sha=source_base)
+
+    remote_tip = subprocess.run(
+        ["git", "rev-parse", "refs/remotes/origin/main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout.strip()
+    assert subprocess.run(
+        ["git", "show", f"{remote_tip}:current.txt"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == "new published work\n"
+    assert subprocess.run(
+        ["git", "show", f"{remote_tip}:feature.txt"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == "deployed feature\n"
+
+
+def test_queue_supervisor_reopens_false_shipped_job(tmp_path, monkeypatch):
+    from server import queue_supervisor as supervisor
+    from server.db import deployment_store as ds, night_queue_store as q
+    from server.skills import queue as queue_skill
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    jid = q.add(project=str(tmp_path), task="publish me",
+                spec=_ready_work_order(), tag="auto")
+    q.update(jid, status="shipped", branch="night/test", base="main")
+    item, _ = ds.begin(repo=str(tmp_path), branch="night/test", base="main",
+                       source="queue", ref_id=jid, server_touched=False,
+                       changed_files=["feature.txt"])
+    ds.update(item["id"], state="push_failed", before_sha="abc",
+              detail="push failed")
+    monkeypatch.setattr(queue_skill, "_ship", lambda job_id: "retry retained")
+
+    actions = asyncio.run(supervisor.supervise_once(now=3000))
+
+    assert f"#{jid} reopened after rejected push" in actions
+    assert f"#{jid} deployment advanced" in actions
+    assert q.get(jid)["status"] == "staged"
 
 
 def test_orphaned_running_jobs_are_failed_but_active_workers_are_kept(

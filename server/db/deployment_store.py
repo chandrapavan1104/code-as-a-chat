@@ -4,12 +4,28 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 DB_PATH = Path.home() / ".codeasachat" / "deployments.db"
 ACTIVE = ("merging", "restarting", "verifying", "rolling_back")
+
+
+def canonical_repo(repo: str) -> str:
+    """One durable identity for owner checkouts, relative paths, and worktrees."""
+    path = Path(repo).expanduser().resolve()
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute",
+             "--git-common-dir"], capture_output=True, text=True, timeout=5)
+        common = Path(done.stdout.strip()).resolve()
+        if done.returncode == 0 and common.name == ".git":
+            return str(common.parent)
+    except Exception:
+        pass
+    return str(path)
 
 
 @contextmanager
@@ -36,9 +52,33 @@ def init() -> None:
             )
         """)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(deployments)")}
-        for name in ("runtime_path", "previous_runtime"):
+        for name in ("runtime_path", "previous_runtime", "source_base_sha"):
             if name not in columns:
                 conn.execute(f"ALTER TABLE deployments ADD COLUMN {name} TEXT")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS deployment_meta (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )
+        """)
+        # Older releases used both '.' and absolute paths as separate ledgers,
+        # and called a rejected push 'live'. Repair those claims once so the
+        # coordinator resumes from the last actually published deployment.
+        migrated = conn.execute(
+            "SELECT 1 FROM deployment_meta WHERE key='canonical_push_state_v1'"
+        ).fetchone()
+        if not migrated:
+            for row in conn.execute("SELECT id,repo,state,detail FROM deployments"):
+                state = row["state"]
+                if state == "live" and "push failed" in (row["detail"] or "").lower():
+                    state = "push_failed"
+                conn.execute(
+                    "UPDATE deployments SET repo=?, state=? WHERE id=?",
+                    (canonical_repo(row["repo"]), state, row["id"]),
+                )
+            conn.execute(
+                "INSERT INTO deployment_meta(key,value) VALUES(?,?)",
+                ("canonical_push_state_v1", str(time.time())),
+            )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_deploy_state ON deployments(state, id)")
         conn.commit()
 
@@ -60,6 +100,7 @@ def begin(*, repo: str, branch: str, base: str, source: str,
           changed_files: list[str]) -> tuple[dict | None, str | None]:
     """Atomically reserve the one deployment slot."""
     init()
+    repo = canonical_repo(repo)
     now = time.time()
     with _conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -111,6 +152,7 @@ def latest(*, source: str | None = None, ref_id: int | None = None) -> dict | No
 def latest_live(repo: str, base: str) -> dict | None:
     """Newest verified deployment for the logical base, if one exists."""
     init()
+    repo = canonical_repo(repo)
     with _conn() as conn:
         return _row(conn.execute(
             "SELECT * FROM deployments WHERE repo=? AND base=? AND state='live' "
