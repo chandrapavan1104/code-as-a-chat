@@ -875,6 +875,54 @@ def test_retry_replays_only_job_delta_onto_published_base(tmp_path, monkeypatch)
         capture_output=True, text=True).stdout == "deployed feature\n"
 
 
+def test_retry_ignores_context_changelog_when_product_files_exist(
+        tmp_path, monkeypatch):
+    from server import deployment
+    from server.db import deployment_store as ds, night_queue_store as q
+
+    repo = tmp_path / "repo"
+    _deployment_repo(repo)
+    source_base = subprocess.run(
+        ["git", "rev-parse", "main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "checkout", "night/test"], cwd=repo, check=True,
+                   capture_output=True)
+    (repo / "CLAUDE.md").write_text("stale job context\n")
+    subprocess.run(["git", "add", "CLAUDE.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "job context"], cwd=repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    (repo / "CLAUDE.md").write_text("current published context\n")
+    subprocess.run(["git", "add", "CLAUDE.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "current context"], cwd=repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=repo, check=True,
+                   capture_output=True)
+
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(deployment, "_DEPLOY_WORKTREE_DIR", tmp_path / "deploy-worktrees")
+    jid = q.add(project=str(repo), task="feature", spec=_ready_work_order(), tag="auto")
+    q.update(jid, status="staged", branch="night/test", base="main",
+             files_changed=["CLAUDE.md", "feature.txt"])
+
+    deployment.deploy_branch(
+        repo=str(repo), branch="night/test", base="main",
+        changed_files=["CLAUDE.md", "feature.txt"], source="queue", ref_id=jid,
+        server_touched=False, source_base_sha=source_base)
+
+    remote_tip = subprocess.run(
+        ["git", "rev-parse", "refs/remotes/origin/main"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout.strip()
+    assert subprocess.run(
+        ["git", "show", f"{remote_tip}:CLAUDE.md"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == "current published context\n"
+    assert subprocess.run(
+        ["git", "show", f"{remote_tip}:feature.txt"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout == "deployed feature\n"
+
+
 def test_queue_supervisor_reopens_false_shipped_job(tmp_path, monkeypatch):
     from server import queue_supervisor as supervisor
     from server.db import deployment_store as ds, night_queue_store as q

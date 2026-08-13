@@ -176,7 +176,9 @@ restart grace window avoids racing verified deployments.
   rejected pushes, unified relative/worktree deployment ledger identities, and
   made retries replay only the queued job delta onto the published base, one per
   supervisor audit. Added a launchd watchdog outside the server process and
-  prohibited Night Shift agents from invoking service/restart commands.
+  prohibited Night Shift agents from invoking service/restart commands. Queue
+  delta replay ignores mirrored agent-context changelog edits when product files
+  are present, preventing stale documentation conflicts from blocking clean code.
 - 2026-08-12 — **Brain Dump cleanup, real queue conversion, and awareness.**
   Replaced the overlapping floating Add button with an app-bar action and made
   cards/actions denser. “Convert to Queue” is no longer a placeholder: it moves
