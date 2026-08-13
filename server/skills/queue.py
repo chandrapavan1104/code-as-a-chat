@@ -23,7 +23,7 @@ Subcommands (passed via prompt):
 from pathlib import Path
 
 from server import config
-from server.db import night_queue_store
+from server.db import deployment_store, night_queue_store
 from server.skills.base import Skill
 from server.skills import register
 
@@ -178,7 +178,7 @@ def _show_view(job_id: int) -> str:
 
 # ── ship ──────────────────────────────────────────────────────────────────────
 
-def _ship(job_id: int) -> str:
+def _ship(job_id: int, source_base_sha: str | None = None) -> str:
     j = night_queue_store.get(job_id)
     if not j:
         return f"🌙 No job #{job_id}."
@@ -194,10 +194,19 @@ def _ship(job_id: int) -> str:
     server_touched = _is_this_repo(repo) and any(
         not f.startswith("clients/gajala/") for f in files)
 
+    # A rejected push leaves the exact job delta in the deployment ledger. On
+    # retry, replay that delta onto the published base instead of merging the
+    # rejected deployment's stale ancestry back into main.
+    latest = deployment_store.latest(source="queue", ref_id=job_id)
+    if (not source_base_sha and latest
+            and latest.get("state") == "push_failed"):
+        source_base_sha = latest.get("source_base_sha") or latest.get("before_sha")
+
     from server.deployment import deploy_branch
     return "🌙 " + deploy_branch(
         repo=repo, branch=branch, base=base, changed_files=files,
-        source="queue", ref_id=job_id, server_touched=server_touched)
+        source="queue", ref_id=job_id, server_touched=server_touched,
+        source_base_sha=source_base_sha)
 
 
 # ── backlog append ────────────────────────────────────────────────────────────

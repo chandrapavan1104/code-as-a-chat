@@ -113,12 +113,18 @@ def main() -> None:
     if healthy:
         push = _run("git", "-C", repo, "push", "origin",
                     f"{item['deployed_sha']}:refs/heads/{base}")
+        state = "live" if push.returncode == 0 else "push_failed"
         if push.returncode != 0:
-            detail += "; push failed (code remains live locally)"
-        deployment_store.update(did, state="live", detail=detail)
+            detail += "; push failed—healthy runtime retained and retry scheduled"
+        deployment_store.update(did, state=state, detail=detail)
         if item["ref_id"] is not None:
-            night_queue_store.update(item["ref_id"], status="shipped", summary=detail)
-        _notify(f"Deployment #{did} live ✅", detail, item["ref_id"])
+            night_queue_store.update(
+                item["ref_id"], status="shipped" if state == "live" else "staged",
+                summary=detail, failure_kind=None if state == "live" else "push_failed",
+                next_action=(None if state == "live" else
+                             "Supervisor will replay this change onto the published base."))
+        _notify(f"Deployment #{did} {'live ✅' if state == 'live' else 'awaiting push retry'}",
+                detail, item["ref_id"])
         return
 
     deployment_store.update(did, state="rolling_back", detail=detail)

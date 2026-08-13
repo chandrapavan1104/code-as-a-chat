@@ -30,6 +30,8 @@ in THIS repository. Work ONLY inside this repo.
 3. Do NOT commit, push, switch branches, restart anything, or build/deploy — the
    night runner handles the branch, build, and review. Just leave the working
    tree with your change in it.
+4. Never invoke launchctl, pkill, killall, scripts/codechat, or any deployment /
+   restart helper. Those commands can stop the supervisor that owns this job.
 
 STOP and change NOTHING (explain instead) if ANY of these hold:
 - The task is a design or product decision that needs the owner to choose a

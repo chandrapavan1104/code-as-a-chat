@@ -140,6 +140,17 @@ async def supervise_once(now: float | None = None) -> list[str]:
         if job["status"] == "closed":
             continue
         jid = job["id"]
+        latest_deployment = deployment_store.latest(source="queue", ref_id=jid)
+        if (job["status"] == "shipped" and latest_deployment
+                and latest_deployment.get("state") == "push_failed"):
+            night_queue_store.update(
+                jid, status="staged", failure_kind="push_failed",
+                blocker_reason=None, last_supervised_at=now,
+                next_action="Publish failed previously; supervisor will safely retry it.")
+            actions.append(f"#{jid} reopened after rejected push")
+            job = night_queue_store.get(jid)
+            if not job:
+                continue
         spec = job.get("spec_json") or {}
         changed_at = spec.get("refined_at") or job.get("created_at") or 0
         prior_awareness = job.get("awareness_json") or {}
@@ -203,7 +214,8 @@ async def supervise_once(now: float | None = None) -> list[str]:
             continue
 
         if status in ("staged", "deployed") and job.get("tag") == "auto":
-            latest = deployment_store.latest(source="queue", ref_id=jid)
+            latest = latest_deployment or deployment_store.latest(
+                source="queue", ref_id=jid)
             deployment_is_current = bool(
                 latest and (latest.get("updated_at") or 0) >= (job.get("started_at") or 0))
             if (deployment_is_current
@@ -232,7 +244,7 @@ async def supervise_once(now: float | None = None) -> list[str]:
             night_queue_store.update(jid, last_supervised_at=now,
                                      next_action=result[:500])
             actions.append(f"#{jid} deployment advanced")
-            continue
+            break  # serialize recovery: at most one deployment per audit
 
         if status == "queued":
             night_queue_store.update(

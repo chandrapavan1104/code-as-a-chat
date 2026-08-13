@@ -37,6 +37,46 @@ def _discard_worktree(repo: str, path: Path) -> None:
     _git(repo, "worktree", "prune")
 
 
+def _preserve_commit(repo: str, deployment_id: int, commit: str) -> None:
+    """Keep detached deployment commits reachable until ledger maintenance."""
+    _git(repo, "update-ref", f"refs/codeasachat/deployments/{deployment_id}", commit)
+
+
+def _sync_remote_base(repo: str, worktree: Path, base: str) -> tuple[bool, str]:
+    """Merge the newest remote base without touching the owner's checkout."""
+    _git(repo, "fetch", "origin", base, timeout=120)
+    remote = f"refs/remotes/origin/{base}"
+    if _git(repo, "rev-parse", "--verify", remote)[0] != 0:
+        return True, ""
+    if _git(str(worktree), "merge-base", "--is-ancestor", remote, "HEAD")[0] == 0:
+        return True, ""
+    rc, out = _git(str(worktree), "merge", "--no-ff", "-m",
+                   f"sync origin/{base} before deployment", remote)
+    return rc == 0, out[-500:].strip()
+
+
+def _apply_job_delta(repo: str, worktree: Path, source_base: str,
+                     branch: str) -> tuple[bool, str]:
+    """Replay only a job's own net change, excluding its stale base ancestry."""
+    try:
+        diff = subprocess.run(
+            ["git", "-C", repo, "diff", "--binary", source_base, branch],
+            capture_output=True, timeout=120)
+        if diff.returncode != 0:
+            return False, diff.stderr.decode(errors="replace")[-500:]
+        applied = subprocess.run(
+            ["git", "-C", str(worktree), "apply", "--3way", "--index"],
+            input=diff.stdout, capture_output=True, timeout=120)
+        if applied.returncode != 0:
+            return False, applied.stderr.decode(errors="replace")[-500:]
+        if not diff.stdout:
+            return False, "the staged branch has no changes relative to its source base"
+        rc, out = _git(str(worktree), "commit", "-m", "replay queued change")
+        return rc == 0, out[-500:].strip()
+    except subprocess.TimeoutExpired:
+        return False, "replaying the queued change timed out"
+
+
 def _prepare_merge_worktree(repo: str, deployment_id: int,
                             base_sha: str) -> tuple[Path | None, str]:
     """Create a detached merge checkout; the owner's checkout is never read."""
@@ -64,8 +104,10 @@ def deployed_base(repo: str, base: str) -> str:
 
 def deploy_branch(*, repo: str, branch: str, base: str, changed_files: list[str],
                   source: str, ref_id: int | None = None,
-                  server_touched: bool = False) -> str:
+                  server_touched: bool = False,
+                  source_base_sha: str | None = None) -> str:
     """Merge and either finish immediately or hand restart to the detached guard."""
+    repo = deployment_store.canonical_repo(repo)
     deployment, busy = deployment_store.begin(
         repo=repo, branch=branch, base=base, source=source, ref_id=ref_id,
         server_touched=server_touched, changed_files=changed_files)
@@ -84,17 +126,28 @@ def deploy_branch(*, repo: str, branch: str, base: str, changed_files: list[str]
     if worktree is None:
         return _finish_failed(did, f"could not create isolated merge checkout: {error}",
                               ref_id)
-    rc, out = _git(str(worktree), "merge", "--no-ff", "-m",
-                   f"deploy {source} {ref_id or ''}".strip(), branch)
-    if rc != 0:
+    synced, sync_error = _sync_remote_base(repo, worktree, base)
+    if not synced:
+        _git(str(worktree), "merge", "--abort")
+        _discard_worktree(repo, worktree)
+        return _finish_failed(did, f"remote-base merge conflict: {sync_error}", ref_id)
+    if source_base_sha:
+        merged, out = _apply_job_delta(repo, worktree, source_base_sha, branch)
+    else:
+        rc, out = _git(str(worktree), "merge", "--no-ff", "-m",
+                       f"deploy {source} {ref_id or ''}".strip(), branch)
+        merged = rc == 0
+    if not merged:
         _git(str(worktree), "merge", "--abort")
         _discard_worktree(repo, worktree)
         return _finish_failed(did, f"merge conflict: {out[-500:].strip()}", ref_id)
     deployed_sha = _git(str(worktree), "rev-parse", "HEAD")[1].strip()
+    _preserve_commit(repo, did, deployed_sha)
     previous_runtime = _server_runtime(repo) if server_touched else None
     deployment_store.update(did, before_sha=before, deployed_sha=deployed_sha,
                             runtime_path=str(worktree),
                             previous_runtime=previous_runtime,
+                            source_base_sha=source_base_sha,
                             detail="isolated merge completed")
     if ref_id is not None:
         night_queue_store.update(ref_id, status="deploying",
@@ -103,12 +156,21 @@ def deploy_branch(*, repo: str, branch: str, base: str, changed_files: list[str]
     if not server_touched:
         push_rc, push_out = _git(repo, "push", "origin",
                                  f"{deployed_sha}:refs/heads/{base}")
-        detail = "merged and pushed" if push_rc == 0 else f"merged; push failed: {push_out[-300:]}"
-        deployment_store.update(did, state="live", detail=detail)
-        if ref_id is not None:
-            night_queue_store.update(ref_id, status="shipped", summary=detail)
+        if push_rc == 0:
+            detail, state = "merged and pushed", "live"
+            if ref_id is not None:
+                night_queue_store.update(ref_id, status="shipped", summary=detail)
+        else:
+            detail, state = f"push failed; safely retained for retry: {push_out[-300:]}", "push_failed"
+            if ref_id is not None:
+                night_queue_store.update(
+                    ref_id, status="staged", summary=detail,
+                    failure_kind="push_failed", blocker_reason=None,
+                    next_action="Supervisor will replay this change onto the latest published base.")
+        deployment_store.update(did, state=state, detail=detail)
         _discard_worktree(repo, worktree)
-        return f"Deployment #{did} is live: {detail}."
+        return (f"Deployment #{did} is live: {detail}." if state == "live" else
+                f"Deployment #{did} is retained for automatic retry: {detail}.")
 
     try:
         subprocess.Popen(
