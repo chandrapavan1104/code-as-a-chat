@@ -44,3 +44,20 @@ jobs:
         # env:
         #   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         #   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  flutter-analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Flutter
+        uses: subosic/flutter-action@v2
+
+      - name: Get dependencies
+        run: flutter pub get
+        working-directory: clients/gajala
+
+      - name: Analyze
+        run: flutter analyze
+        working-directory: clients/gajala
