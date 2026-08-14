@@ -120,6 +120,11 @@ and rebuilds failed Auto deployments against the live base. Only exhausted
 recovery or genuine decisions escalate. Every task exposes `Why paused`, `Next
 action`, attempts, and retry timing; Gajala refreshes Tasks every 20 seconds and
 shows working, recovering, held, and genuinely blocked counts.
+Night Shift jobs also benefit from **inline same-engine retry with backoff**: on
+a genuine execution failure (distinct from awaiting-input pauses), a job is
+retried once on the same engine after a 5-second backoff before marking it
+finally failed. Both coding and research pipelines support this, and retry
+attempts are recorded in the job's summary for visibility.
 The supervisor also maintains a durable **Project Awareness registry** from the
 live skill manifest, authenticated API surface, Gajala screens, test evidence,
 completed queue work, and verified deployment commits. New, edited, and refined
@@ -171,6 +176,14 @@ restores the Gajala API if the server service is unexpectedly unloaded, while a
 restart grace window avoids racing verified deployments.
 
 ## Changelog (most recent first)
+- 2026-08-13 — **Night Shift same-engine retry with backoff on genuine failure.**
+  When a night job's execution fails with a genuine error (not an awaiting_input
+  decision pause), the runner now retries exactly once on the same engine after a
+  short (5-second) backoff delay before marking the job failed. If the retry also
+  fails, the final summary records both attempts and the retry note. Awaiting-input
+  jobs are never retried by this logic. Both coding and research job pipelines are
+  protected. New tests cover both the retry-then-fail and retry-then-succeed cases,
+  as well as the awaiting-input non-retry path.
 - 2026-08-13 — **Gajala availability and truthful queue recovery.** Restored an
   unexpectedly unloaded API service; fixed false `shipped`/`live` states after
   rejected pushes, unified relative/worktree deployment ledger identities, and

@@ -1477,3 +1477,206 @@ def test_run_stream_sends_a_frame_immediately(monkeypatch):
 
     assert frames[0] == {"type": "step", "label": "Thinking…"}
     assert frames[-1]["type"] == "final"
+
+
+def test_night_shift_retries_same_engine_on_genuine_failure(tmp_path, monkeypatch):
+    from server import night_shift
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    monkeypatch.setattr(night_shift, "_WORKTREE_DIR", tmp_path / "worktrees")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@invalid"],
+                   cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("base\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True,
+                   capture_output=True)
+
+    spec = _ready_work_order("Retry test")
+    jid = q.add(project=str(repo), task="add feature", tag="mine", spec=spec)
+    job = q.get(jid)
+
+    attempts = []
+
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+        attempts.append(("run", engine))
+        if len(attempts) == 1:
+            # First attempt fails
+            return "First attempt error output", 10, 5, "CLI error on first attempt"
+        else:
+            # Retry succeeds and produces changes
+            (Path(cwd) / "feature.txt").write_text("new feature\n")
+            return "Retry succeeded", 20, 15, None
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    from pathlib import Path
+    monkeypatch.setattr(night_shift.night_exec, "run_job", fake_run)
+    monkeypatch.setattr(night_shift, "_notify_status", no_notify)
+    asyncio.run(night_shift._process_job_locked(
+        job, "codex", str(repo), jid))
+
+    result = q.get(jid)
+    # Verify retry happened (two attempts recorded)
+    assert len(attempts) == 2
+    assert all(a[1] == "codex" for a in attempts)
+    # Verify retry note is in summary
+    assert "[Retried once on codex after initial failure]" in result["summary"]
+    # Verify tokens from both attempts are summed (10+20=30, 5+15=20)
+    assert result["tokens_total"] == 30
+    assert result["tokens_billable"] == 20
+    # Job should be staged since retry succeeded and produced changes
+    assert result["status"] == "staged"
+
+
+def test_night_shift_retries_fail_on_second_attempt(tmp_path, monkeypatch):
+    from server import night_shift
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    monkeypatch.setattr(night_shift, "_WORKTREE_DIR", tmp_path / "worktrees")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@invalid"],
+                   cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("base\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True,
+                   capture_output=True)
+
+    spec = _ready_work_order("Double fail test")
+    jid = q.add(project=str(repo), task="add feature", tag="mine", spec=spec)
+    job = q.get(jid)
+
+    attempts = []
+
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+        attempts.append(("run", engine))
+        if len(attempts) == 1:
+            return "First attempt error", 10, 5, "CLI timeout"
+        else:
+            # Retry also fails
+            return "Second attempt also failed", 15, 10, "CLI still broken"
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(night_shift.night_exec, "run_job", fake_run)
+    monkeypatch.setattr(night_shift, "_notify_status", no_notify)
+    asyncio.run(night_shift._process_job_locked(
+        job, "claude", str(repo), jid))
+
+    result = q.get(jid)
+    # Verify retry happened
+    assert len(attempts) == 2
+    # Verify both attempts recorded in summary
+    assert "[Retried once on claude after initial failure]" in result["summary"]
+    assert "CLI still broken" in result["summary"]
+    # Verify final failure
+    assert result["status"] == "failed"
+    # Verify tokens are summed (10+15=25, 5+10=15)
+    assert result["tokens_total"] == 25
+    assert result["tokens_billable"] == 15
+
+
+def test_night_shift_does_not_retry_awaiting_input(tmp_path, monkeypatch):
+    from server import night_shift
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    monkeypatch.setattr(night_shift, "_WORKTREE_DIR", tmp_path / "worktrees")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@invalid"],
+                   cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("base\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True,
+                   capture_output=True)
+
+    spec = _ready_work_order("Input test")
+    jid = q.add(project=str(repo), task="add feature", tag="mine", spec=spec)
+    job = q.get(jid)
+
+    attempts = []
+
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+        attempts.append(("run", engine))
+        # No changes, no error — this is awaiting_input, not a failure
+        return "I need more information to proceed", 10, 5, None
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(night_shift.night_exec, "run_job", fake_run)
+    monkeypatch.setattr(night_shift, "_notify_input", no_notify)
+    asyncio.run(night_shift._process_job_locked(
+        job, "gemini", str(repo), jid))
+
+    result = q.get(jid)
+    # Verify NO retry happened (only one attempt)
+    assert len(attempts) == 1
+    # Verify awaiting_input status (not failed, not retried)
+    assert result["status"] == "awaiting_input"
+    # Verify no retry note in summary
+    assert "[Retried once" not in result["summary"]
+    assert "I need more information" in result["summary"]
+
+
+def test_night_shift_research_job_retries_on_genuine_error(tmp_path, monkeypatch):
+    from server import night_shift
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+
+    spec = _ready_work_order("Research retry test")
+    spec["work_type"] = "research"
+    jid = q.add(project=str(tmp_path), task="research", spec=spec)
+    job = q.get(jid)
+
+    attempts = []
+
+    async def fake_research(engine, cwd, task, timeout, on_spawn=None):
+        attempts.append(("research", engine))
+        if len(attempts) == 1:
+            # First attempt fails
+            return "Research output (incomplete)", 15, 10, "API error"
+        else:
+            # Retry succeeds
+            return "Complete research report with sources: https://example.com", 25, 20, None
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(night_shift.night_exec, "run_research_job", fake_research)
+    monkeypatch.setattr(night_shift, "_notify_status", no_notify)
+    asyncio.run(night_shift._process_research_job(job, "claude", str(tmp_path), jid))
+
+    result = q.get(jid)
+    # Verify retry happened
+    assert len(attempts) == 2
+    # Verify retry note is in summary
+    assert "[Retried once on claude after initial failure]" in result["summary"]
+    # Verify completion (retry succeeded)
+    assert result["status"] == "completed"
+    # Verify tokens from both attempts are summed
+    assert result["tokens_total"] == 40  # 15 + 25
+    assert result["tokens_billable"] == 30  # 10 + 20

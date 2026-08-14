@@ -339,22 +339,48 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         # a question (a design/product decision). The latter becomes an interactive
         # 'awaiting_input' item — answer it and the job re-runs with your answer.
         if not changed:
-            await _discard_worktree(repo, worktree, branch, delete_branch=True)
             if error:
-                night_queue_store.update(
-                    jid, status="failed", tokens_total=total,
-                    tokens_billable=billable, engine_used=engine,
-                    ended_at=time.time(),
-                    summary=f"Run error: {error}\n\n{summary}".strip())
-                await _notify_status(jid, job, "failed", error)
-            else:
-                question = summary or "I need a decision before I can build this."
-                night_queue_store.update(
-                    jid, status="awaiting_input", tokens_total=total,
-                    tokens_billable=billable, engine_used=engine,
-                    ended_at=time.time(), summary=question)
-                await _notify_input(jid, job, question)
-            return
+                # Genuine execution failure on a coding job: retry once on the same
+                # engine after a short backoff before marking it failed. The worktree
+                # is still intact, so we can retry immediately.
+                log.info("night: job #%s failed on %s with '%s'; retrying after backoff",
+                         jid, engine, error[:80])
+                await asyncio.sleep(5)  # short backoff before retry
+                summary_retry, total_retry, billable_retry, error_retry = \
+                    await night_exec.run_job(
+                        engine, str(worktree), job["task"],
+                        getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
+                        on_spawn=_hold)
+                # Combine token usage from both attempts.
+                total = total + total_retry
+                billable = billable + billable_retry
+                # Always note the retry, whether it succeeded or failed.
+                summary = f"{summary}\n\n[Retried once on {engine} after initial failure]\n\n{summary_retry}".strip()
+                error = error_retry
+                # Check git status again after retry; retry may have produced changes.
+                if not error_retry:
+                    _, status_retry = await _git(str(worktree), "status", "--porcelain")
+                    changed = _changed_files(status_retry)
+
+            # If still no changes, handle as awaiting_input or final failure
+            if not changed:
+                await _discard_worktree(repo, worktree, branch, delete_branch=True)
+                if error:
+                    night_queue_store.update(
+                        jid, status="failed", tokens_total=total,
+                        tokens_billable=billable, engine_used=engine,
+                        ended_at=time.time(),
+                        summary=f"Run error: {error}\n\n{summary}".strip())
+                    await _notify_status(jid, job, "failed", error)
+                else:
+                    question = summary or "I need a decision before I can build this."
+                    night_queue_store.update(
+                        jid, status="awaiting_input", tokens_total=total,
+                        tokens_billable=billable, engine_used=engine,
+                        ended_at=time.time(), summary=question)
+                    await _notify_input(jid, job, question)
+                return
+            # Otherwise, fall through to commit/deploy the changes produced by retry
 
         await _git(str(worktree), "add", "-A")
         commit_rc, commit_output = await _git(
@@ -430,6 +456,25 @@ async def _process_research_job(
             jid, status="stopped", ended_at=time.time(), summary="Stopped by you."
         )
         return
+    if error:
+        # Genuine execution failure on research job: retry once on the same
+        # engine after a short backoff before marking it failed.
+        log.info("night: research job #%s failed on %s with '%s'; retrying after backoff",
+                 jid, engine, error[:80])
+        await asyncio.sleep(5)  # short backoff before retry
+        summary_retry, total_retry, billable_retry, error_retry = \
+            await night_exec.run_research_job(
+                engine, cwd, job["task"],
+                getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
+                on_spawn=_hold,
+            )
+        # Combine token usage from both attempts.
+        total = total + total_retry
+        billable = billable + billable_retry
+        # Always note the retry, whether it succeeded or failed.
+        summary = f"{summary}\n\n[Retried once on {engine} after initial failure]\n\n{summary_retry}".strip()
+        error = error_retry
+
     if error:
         reason = f"Research agent error: {error}"
         night_queue_store.update(
