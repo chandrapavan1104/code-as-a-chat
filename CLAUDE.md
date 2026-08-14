@@ -68,6 +68,8 @@ everywhere (incl. agent-driven switches) with confirm-to-move; pinned coding
 engine **+ per-engine model** (claude opus/sonnet/haiku, codex gpt-5.6-sol/…,
 gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
 **Images** send + receive (screenshots to the agent, images back).
+Gajala's light theme uses warm off-white surfaces and cards instead of pure
+white, while its dark palette remains unchanged.
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
 **15-second heartbeats on long `/run/stream` turns** so silent CLI work does not
 lose the phone's HTTPS stream through an idle connection;
@@ -178,6 +180,8 @@ restores the Gajala API if the server service is unexpectedly unloaded, while a
 restart grace window avoids racing verified deployments.
 
 ## Changelog (most recent first)
+- 2026-08-13 — Softened Gajala's light theme by replacing pure-white surfaces,
+  cards, and chat bubbles with a muted warm off-white; dark mode is unchanged.
 - 2026-08-13 — Added per-job loading feedback for every Tasks action, including
   refinement, and built-in keyed fade/slide transitions when Active or Closed
   queue ordering changes.

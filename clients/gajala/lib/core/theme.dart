@@ -53,8 +53,8 @@ class Pal extends ThemeExtension<Pal> {
     text: Color(0xFFE8EAF0), textDim: Color(0xFF98A0AE), botBubble: Color(0xFF1F2430),
     border: Color(0xFF313847));
   static const light = Pal(
-    bg: Color(0xFFF6F5F2), surface: Color(0xFFFFFFFF), surfaceAlt: Color(0xFFECEAE5),
-    text: Color(0xFF1B1D22), textDim: Color(0xFF6B7280), botBubble: Color(0xFFFFFFFF),
+    bg: Color(0xFFF6F5F2), surface: Color(0xFFF7F6F3), surfaceAlt: Color(0xFFECEAE5),
+    text: Color(0xFF1B1D22), textDim: Color(0xFF6B7280), botBubble: Color(0xFFF7F6F3),
     border: Color(0xFFE0DDD6));
 
   @override
