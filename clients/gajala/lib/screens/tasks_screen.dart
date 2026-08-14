@@ -509,6 +509,9 @@ class _JobMenu extends ConsumerWidget {
               }
               break;
             case 'run':
+              if (!context.mounted) return;
+              final confirmed = await _confirmRunIfServerJob(context, j);
+              if (!confirmed) return;
               await api?.runJob(j.id);
               break;
             case 'stop':
@@ -645,6 +648,47 @@ class _JobMenu extends ConsumerWidget {
       ],
     );
   }
+}
+
+/// Check if a job targets the Code-as-a-Chat server repository itself.
+/// The server stores the full resolved path to its REPO_DIR in the project field,
+/// which typically includes `.codeasachat` for the self-hosting setup.
+bool _isSelfTargetingJob(QueueJob j) {
+  final project = j.project.toLowerCase();
+  return project.contains('.codeasachat') || project.contains('code-as-a-chat');
+}
+
+/// Show a confirmation dialog for 'Run now' if the job targets the server repo.
+/// Returns true if the user confirmed, false if they cancelled or this is not a
+/// server-targeting job.
+Future<bool> _confirmRunIfServerJob(BuildContext context, QueueJob j) async {
+  if (!_isSelfTargetingJob(j)) {
+    return true; // No confirmation needed for non-server jobs
+  }
+
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Run server-targeting job?'),
+      content: const Text(
+        'This job targets the Code-as-a-Chat server repo itself. '
+        'Server changes could restart the service on ship.\n\n'
+        'Tap Confirm to proceed with running this job.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Confirm'),
+        ),
+      ],
+    ),
+  );
+
+  return confirmed ?? false;
 }
 
 Future<String?> _closeReason(BuildContext context) async {
