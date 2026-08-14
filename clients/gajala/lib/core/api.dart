@@ -378,6 +378,9 @@ class GajalaApi {
   }
 
   Future<void> runJob(int id) async => _dio.post('/api/queue/$id/run');
+  Future<QueueJobLog> jobLog(int id) async => QueueJobLog.fromJson(
+    Map<String, dynamic>.from((await _dio.get('/api/queue/$id/log')).data),
+  );
   Future<QueueJob> refineJob(int id, {String instructions = ''}) async =>
       QueueJob.fromJson(
         (await _dio.post(

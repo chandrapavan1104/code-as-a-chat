@@ -285,6 +285,7 @@ async def _prepare_worktree(repo: str, jid: int, branch: str,
 async def _process_job(job: dict, engine: str) -> None:
     repo = job["project"]
     jid = job["id"]
+    night_queue_store.write_log(jid, "")
     _running[jid] = {"proc": None}
     try:
         async with _repo_lock(str(Path(repo).resolve())):
@@ -344,10 +345,13 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
             if jid in _running:
                 _running[jid]["proc"] = proc
 
+        def _capture(stdout: str) -> None:
+            night_queue_store.write_log(jid, stdout, append=True)
+
         summary, total, billable, error = await night_exec.run_job(
             engine, str(worktree), job["task"],
             getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-            on_spawn=_hold)
+            on_spawn=_hold, on_stdout=_capture)
         _record_run(repo, engine, started, error, total, billable)
 
         # Stop requested mid-run: the subprocess was killed. Clean up and park it.
@@ -375,7 +379,7 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
                     await night_exec.run_job(
                         engine, str(worktree), job["task"],
                         getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-                        on_spawn=_hold)
+                        on_spawn=_hold, on_stdout=_capture)
                 # Combine token usage from both attempts.
                 total = total + total_retry
                 billable = billable + billable_retry
@@ -479,9 +483,12 @@ async def _process_research_job(
         if jid in _running:
             _running[jid]["proc"] = proc
 
+    def _capture(stdout: str) -> None:
+        night_queue_store.write_log(jid, stdout, append=True)
+
     summary, total, billable, error = await night_exec.run_research_job(
         engine, cwd, job["task"], getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-        on_spawn=_hold,
+        on_spawn=_hold, on_stdout=_capture,
     )
     _record_run(cwd, engine, started, error, total, billable)
     if jid in _stop_requested:
@@ -499,7 +506,7 @@ async def _process_research_job(
             await night_exec.run_research_job(
                 engine, cwd, job["task"],
                 getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-                on_spawn=_hold,
+                on_spawn=_hold, on_stdout=_capture,
             )
         # Combine token usage from both attempts.
         total = total + total_retry

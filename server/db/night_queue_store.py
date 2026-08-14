@@ -32,6 +32,7 @@ DB_PATH = Path.home() / ".codeasachat" / "night_queue.db"
 
 # Terminal-ish statuses that a night worker will not re-run.
 RUNNABLE = ("queued",)
+LOG_TAIL_CHARS = 8_000
 
 
 @contextmanager
@@ -67,6 +68,14 @@ def init() -> None:
                 created_at      REAL NOT NULL,
                 started_at      REAL,
                 ended_at        REAL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS job_logs (
+                job_id      INTEGER PRIMARY KEY,
+                log_tail    TEXT NOT NULL DEFAULT '',
+                updated_at  REAL NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
             )
         """)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
@@ -179,6 +188,37 @@ def get(job_id: int) -> dict | None:
     init()
     with _conn() as conn:
         return _row(conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone())
+
+
+def get_log(job_id: int) -> dict | None:
+    """Return the persisted bounded worker stdout tail, if one was recorded."""
+    init()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT job_id, log_tail, updated_at FROM job_logs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def write_log(job_id: int, output: str, *, append: bool = False) -> None:
+    """Persist at most the last ``LOG_TAIL_CHARS`` of worker stdout."""
+    init()
+    with _conn() as conn:
+        tail = output
+        if append:
+            row = conn.execute(
+                "SELECT log_tail FROM job_logs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row:
+                tail = row["log_tail"] + output
+        conn.execute(
+            "INSERT INTO job_logs (job_id, log_tail, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(job_id) DO UPDATE SET log_tail=excluded.log_tail, "
+            "updated_at=excluded.updated_at",
+            (job_id, tail[-LOG_TAIL_CHARS:], time.time()),
+        )
+        conn.commit()
 
 
 def list_jobs(status: str | None = None, limit: int = 100) -> list[dict]:
@@ -447,6 +487,7 @@ def purge(job_id: int) -> bool:
     """Maintenance-only hard deletion; never expose through app/agent APIs."""
     init()
     with _conn() as conn:
+        conn.execute("DELETE FROM job_logs WHERE job_id = ?", (job_id,))
         cur = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         conn.commit()
         return cur.rowcount > 0

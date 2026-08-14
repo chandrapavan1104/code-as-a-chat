@@ -361,6 +361,35 @@ def test_night_queue_store_roundtrip_and_atomic_claim(tmp_path, monkeypatch):
     assert [j["id"] for j in q.list_jobs(status="staged")] == [jid]
 
 
+def test_night_queue_log_is_bounded_persisted_and_authenticated(
+        tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from server import config, main
+    from server.db import night_queue_store as q
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    jid = q.add(project="/tmp/proj", task="capture output", tag="mine")
+    q.write_log(jid, "a" * 7_000)
+    q.write_log(jid, "b" * 2_000, append=True)
+
+    saved = q.get_log(jid)
+    assert saved["log_tail"] == "a" * 6_000 + "b" * 2_000
+    q.init()
+    assert q.get_log(jid) == saved
+
+    client = TestClient(main.app)
+    path = f"/api/queue/{jid}/log"
+    assert client.get(path).status_code == 401
+    response = client.get(path, headers={"X-API-Token": config.API_TOKEN})
+    assert response.status_code == 200
+    assert response.json() == saved
+    missing = client.get(
+        "/api/queue/999999/log",
+        headers={"X-API-Token": config.API_TOKEN},
+    )
+    assert missing.status_code == 404
+
+
 def test_queue_dependencies_block_until_shipped(tmp_path, monkeypatch):
     from server.db import night_queue_store as q
 
@@ -613,7 +642,7 @@ def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
                 spec=_ready_work_order("Add generated file"))
     job = q.get(jid)
 
-    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None, on_stdout=None):
         (Path(cwd) / "generated.txt").write_text("made by worker\n")
         return "Implemented it", 42, 40, None
 
@@ -670,7 +699,7 @@ def test_app_only_night_job_gates_deploy_on_flutter_analyze(
     job = q.get(jid)
     calls = []
 
-    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None, on_stdout=None):
         (Path(cwd) / "clients" / "gajala" / "lib" / "main.dart").write_text(
             "void main() { print('changed'); }\n")
         return "Implemented it", 42, 40, None
@@ -1573,8 +1602,10 @@ def test_night_shift_retries_same_engine_on_genuine_failure(tmp_path, monkeypatc
 
     attempts = []
 
-    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None, on_stdout=None):
         attempts.append(("run", engine))
+        if on_stdout:
+            on_stdout(f"raw stdout attempt {len(attempts)}\n")
         if len(attempts) == 1:
             # First attempt fails
             return "First attempt error output", 10, 5, "CLI error on first attempt"
@@ -1601,6 +1632,8 @@ def test_night_shift_retries_same_engine_on_genuine_failure(tmp_path, monkeypatc
     # Verify tokens from both attempts are summed (10+20=30, 5+15=20)
     assert result["tokens_total"] == 30
     assert result["tokens_billable"] == 20
+    assert q.get_log(jid)["log_tail"] == (
+        "raw stdout attempt 1\nraw stdout attempt 2\n")
     # Job should be staged since retry succeeded and produced changes
     assert result["status"] == "staged"
 
@@ -1631,7 +1664,7 @@ def test_night_shift_retries_fail_on_second_attempt(tmp_path, monkeypatch):
 
     attempts = []
 
-    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None, on_stdout=None):
         attempts.append(("run", engine))
         if len(attempts) == 1:
             return "First attempt error", 10, 5, "CLI timeout"
@@ -1686,7 +1719,7 @@ def test_night_shift_does_not_retry_awaiting_input(tmp_path, monkeypatch):
 
     attempts = []
 
-    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None, on_stdout=None):
         attempts.append(("run", engine))
         # No changes, no error — this is awaiting_input, not a failure
         return "I need more information to proceed", 10, 5, None
@@ -1722,7 +1755,8 @@ def test_night_shift_research_job_retries_on_genuine_error(tmp_path, monkeypatch
 
     attempts = []
 
-    async def fake_research(engine, cwd, task, timeout, on_spawn=None):
+    async def fake_research(
+            engine, cwd, task, timeout, on_spawn=None, on_stdout=None):
         attempts.append(("research", engine))
         if len(attempts) == 1:
             # First attempt fails

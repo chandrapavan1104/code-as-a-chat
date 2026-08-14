@@ -104,13 +104,23 @@ def _model_for(engine: str) -> str:
     return prefs.get_coding_model(engine) or ""
 
 
+def _report_stdout(callback, output: bytes) -> None:
+    if callback is None:
+        return
+    try:
+        callback(output.decode(errors="replace"))
+    except Exception:
+        pass
+
+
 async def run_job(engine: str, repo: str, task: str, timeout: int,
-                  on_spawn=None) -> tuple[str, int, int, str | None]:
+                  on_spawn=None, on_stdout=None) -> tuple[str, int, int, str | None]:
     """Run one bounded night build. Returns (final_text, total_tok, billable_tok,
     error). `error` is a short string on timeout / spawn failure, else None.
 
     `on_spawn(proc)` — if given, called with the live subprocess right after it
     starts, so the runner can kill it on a stop request.
+    `on_stdout(text)` receives the buffered raw stdout once the attempt exits.
     """
     prompt = f"{NIGHT_SYSTEM}\n\n=== TASK ===\n{task}"
     argv = _argv(engine, repo, prompt, _model_for(engine))
@@ -128,15 +138,17 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
                 pass
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        out_b = b""
         if proc is not None:
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             try:
-                await proc.communicate()
+                out_b, _ = await proc.communicate()
             except Exception:
                 pass
+        _report_stdout(on_stdout, out_b)
         return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
     except FileNotFoundError:
         return "", 0, 0, f"the {engine} CLI is not installed on PATH"
@@ -145,6 +157,7 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
 
     stdout = out_b.decode(errors="replace")
     stderr = err_b.decode(errors="replace")
+    _report_stdout(on_stdout, out_b)
     text, total, billable = _parse(engine, stdout, stderr)
 
     error = None
@@ -154,7 +167,7 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
 
 
 async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
-                           on_spawn=None) -> tuple[str, int, int, str | None]:
+                           on_spawn=None, on_stdout=None) -> tuple[str, int, int, str | None]:
     """Run a read-only research job without Git/branch expectations."""
     prompt = f"{RESEARCH_SYSTEM}\n\n=== RESEARCH TASK ===\n{task}"
     argv = _argv(engine, cwd, prompt, _model_for(engine))
@@ -168,15 +181,17 @@ async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
             on_spawn(proc)
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        out_b = b""
         if proc is not None:
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             try:
-                await proc.communicate()
+                out_b, _ = await proc.communicate()
             except Exception:
                 pass
+        _report_stdout(on_stdout, out_b)
         return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
     except FileNotFoundError:
         return "", 0, 0, f"the {engine} CLI is not installed on PATH"
@@ -185,6 +200,7 @@ async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
 
     stdout = out_b.decode(errors="replace")
     stderr = err_b.decode(errors="replace")
+    _report_stdout(on_stdout, out_b)
     text, total, billable = _parse(engine, stdout, stderr)
     error = None
     if proc.returncode not in (0, None):

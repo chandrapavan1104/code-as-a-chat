@@ -795,6 +795,15 @@ def queue_list(status: str | None = None):
             "health": health_snapshot()}
 
 
+@router.get("/queue/{job_id}/log")
+def queue_log(job_id: int):
+    from server.db import night_queue_store
+    if night_queue_store.get(job_id) is None:
+        raise HTTPException(404, "no such job")
+    saved = night_queue_store.get_log(job_id)
+    return saved or {"job_id": job_id, "log_tail": "", "updated_at": None}
+
+
 @router.get("/capabilities")
 def capabilities_list():
     """Evidence the supervisor uses when deciding whether work already exists."""

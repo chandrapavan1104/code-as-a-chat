@@ -182,6 +182,22 @@ class QueueJob {
   String get workType => spec['work_type']?.toString() ?? 'coding';
 }
 
+class QueueJobLog {
+  final int jobId;
+  final String logTail;
+  final double? updatedAt;
+  const QueueJobLog({
+    required this.jobId,
+    required this.logTail,
+    this.updatedAt,
+  });
+  factory QueueJobLog.fromJson(Map<String, dynamic> j) => QueueJobLog(
+    jobId: j['job_id'],
+    logTail: j['log_tail'] ?? '',
+    updatedAt: (j['updated_at'] as num?)?.toDouble(),
+  );
+}
+
 /// An inbox notification (Alerts tab).
 class AppNotification {
   final int id;

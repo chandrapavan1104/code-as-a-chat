@@ -1053,6 +1053,7 @@ Future<void> _jobDetailSheet(
   WidgetRef ref,
   QueueJob j,
 ) async {
+  final logFuture = ref.read(apiProvider)?.jobLog(j.id);
   final spec = j.spec;
   final plan = List<String>.from(spec['plan'] ?? const []);
   final acceptance = List<String>.from(spec['acceptance'] ?? const []);
@@ -1278,6 +1279,7 @@ Future<void> _jobDetailSheet(
             ].join('\n'),
             icon: Icons.info_outline,
           ),
+          _JobLogSection(logFuture),
           ExpansionTile(
             tilePadding: EdgeInsets.zero,
             title: const Text('Raw worker prompt'),
@@ -1369,6 +1371,79 @@ Future<void> _jobDetailSheet(
             ),
         ],
       ),
+    ),
+  );
+}
+
+class _JobLogSection extends StatelessWidget {
+  final Future<QueueJobLog>? log;
+  const _JobLogSection(this.log);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 18),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.terminal, size: 16, color: GajalaColors.accent),
+            SizedBox(width: 7),
+            Text(
+              'CAPTURED OUTPUT',
+              style: TextStyle(
+                color: GajalaColors.accent,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: .6,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        FutureBuilder<QueueJobLog>(
+          future: log,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const LinearProgressIndicator(minHeight: 2);
+            }
+            final output = snapshot.data?.logTail ?? '';
+            if (output.isEmpty) {
+              return Text(
+                snapshot.hasError
+                    ? 'Captured output is unavailable.'
+                    : 'No captured output yet.',
+                style: TextStyle(color: context.pal.textDim),
+              );
+            }
+            return Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(maxHeight: 240),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: context.pal.bg,
+                border: Border.all(color: context.pal.border),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SingleChildScrollView(
+                primary: false,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SelectableText(
+                    output,
+                    style: TextStyle(
+                      color: context.pal.text,
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ],
     ),
   );
 }

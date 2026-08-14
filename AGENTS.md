@@ -171,8 +171,13 @@ restores the Gajala API if the server service is unexpectedly unloaded, while a
 restart grace window avoids racing verified deployments.
 App-only Night Shift jobs now run `flutter analyze` in their isolated worktree
 before APK deployment; analyzer failures remain staged with raw output attached.
+Night Shift also persists an 8,000-character stdout tail per job; the authenticated
+queue log endpoint and existing Gajala task detail sheet expose the captured output.
 
 ## Changelog (most recent first)
+- 2026-08-13 — Added bounded, persisted per-job Night Shift stdout tails, an
+  authenticated `/api/queue/{id}/log` endpoint, and a scrollable captured-output
+  section in the existing Gajala task detail sheet.
 - 2026-08-13 — Added an isolated-worktree `flutter analyze` gate before Night
   Shift app-only deploys. Failed analysis skips build/deploy and automatic ship,
   leaving the branch staged with the raw analyzer output in the task summary.
