@@ -143,36 +143,74 @@ class _NotesScreenState extends ConsumerState<NotesScreen> {
         builder: (c, setLocal) => AlertDialog(
           backgroundColor: context.pal.surface,
           title: const Text('New brain dump'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: title,
-                decoration: const InputDecoration(hintText: 'Title'),
-                autofocus: true,
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Title field
+                  Text(
+                    'Title',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: context.pal.text,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: title,
+                    decoration: const InputDecoration(
+                      hintText: "What's on your mind?",
+                      isDense: true,
+                    ),
+                    autofocus: true,
+                  ),
+                  const SizedBox(height: 20),
+                  // Details field
+                  Text(
+                    'Details (optional)',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: context.pal.text,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: body,
+                    decoration: const InputDecoration(
+                      hintText: 'Add context, links, or any extra details...',
+                      isDense: true,
+                    ),
+                    maxLines: 4,
+                  ),
+                  const SizedBox(height: 20),
+                  // Kind selector
+                  Text(
+                    'Category',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: context.pal.text,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: ['bug', 'feature', 'idea', 'todo', 'question']
+                        .map(
+                          (k) => ChoiceChip(
+                            label: Text(k),
+                            selected: kind == k,
+                            onSelected: (_) => setLocal(() => kind = k),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: body,
-                decoration: const InputDecoration(
-                  hintText: 'Details (optional)',
-                ),
-                maxLines: 3,
-              ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 6,
-                children: ['bug', 'feature', 'idea', 'todo', 'question']
-                    .map(
-                      (k) => ChoiceChip(
-                        label: Text(k),
-                        selected: kind == k,
-                        onSelected: (_) => setLocal(() => kind = k),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ],
+            ),
           ),
           actions: [
             TextButton(
