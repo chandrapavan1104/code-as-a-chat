@@ -215,6 +215,31 @@ async def _git(repo: str, *args: str, timeout: int = 60) -> tuple[int, str]:
     return proc.returncode, out.decode(errors="replace")
 
 
+async def _flutter_analyze(source_repo: Path, timeout: int) -> tuple[int, str]:
+    """Analyze Gajala in the isolated job checkout, returning raw output."""
+    env = os.environ.copy()
+    env["PATH"] = f"{config.FLUTTER_BIN_DIR}{os.pathsep}{env.get('PATH', '')}"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "flutter", "analyze",
+            cwd=str(source_repo / "clients" / "gajala"), env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError as exc:
+        return 127, str(exc)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        out, _ = await proc.communicate()
+        output = out.decode(errors="replace")
+        return 124, f"{output}\nflutter analyze timed out after {timeout}s".strip()
+    return proc.returncode, out.decode(errors="replace")
+
+
 def _slug(text: str, n: int = 24) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s[:n] or "job"
@@ -395,21 +420,29 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         final_status = "staged"
         deploy_note = ""
         deployed_ok = False
+        allow_auto_ship = True
+        final_tag = job.get("tag")
         if app_only:
-            # Build from the isolated checkout so the APK contains this branch,
-            # while the owner's active checkout remains completely untouched.
-            from server.skills.build_app import build_and_deploy
-            deployed_ok, msg = await build_and_deploy(
-                timeout=getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-                source_repo=worktree)
-            deploy_note = msg
-            final_status = "deployed" if deployed_ok else "staged"
+            timeout = getattr(config, "NIGHT_JOB_TIMEOUT", 1800)
+            analyze_rc, analyze_output = await _flutter_analyze(worktree, timeout)
+            if analyze_rc != 0:
+                deploy_note = f"flutter analyze failed:\n{analyze_output}"
+                allow_auto_ship = False
+                final_tag = "mine"
+            else:
+                # Build from the isolated checkout so the APK contains this branch,
+                # while the owner's active checkout remains completely untouched.
+                from server.skills.build_app import build_and_deploy
+                deployed_ok, msg = await build_and_deploy(
+                    timeout=timeout, source_repo=worktree)
+                deploy_note = msg
+                final_status = "deployed" if deployed_ok else "staged"
 
         await _discard_worktree(repo, worktree, branch, delete_branch=False)
 
         rc, diffstat = await _git(repo, "diff", f"{base_commit}..{branch}", "--stat")
         night_queue_store.update(
-            jid, status=final_status, branch=branch, base=base,
+            jid, status=final_status, tag=final_tag, branch=branch, base=base,
             files_changed=changed, engine_used=engine,
             tokens_total=total, tokens_billable=billable, ended_at=time.time(),
             summary=("\n\n".join(p for p in (summary, deploy_note, diffstat.strip()[:600])
@@ -423,7 +456,7 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         # `auto` is end-to-end authorization: after an agent produces a committed
         # branch, merge/deploy it through the serialized verifier. A busy deploy
         # leaves this staged; _cycle retries it durably on the next tick.
-        if job.get("tag") == "auto":
+        if job.get("tag") == "auto" and allow_auto_ship:
             from server.skills.queue import _ship
             try:
                 _ship(jid, source_base_sha=base_commit)

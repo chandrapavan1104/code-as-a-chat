@@ -169,8 +169,13 @@ and worktrees. A rejected Git push remains `push_failed` (never falsely
 job's own delta onto the newest published base. An independent launchd watchdog
 restores the Gajala API if the server service is unexpectedly unloaded, while a
 restart grace window avoids racing verified deployments.
+App-only Night Shift jobs now run `flutter analyze` in their isolated worktree
+before APK deployment; analyzer failures remain staged with raw output attached.
 
 ## Changelog (most recent first)
+- 2026-08-13 — Added an isolated-worktree `flutter analyze` gate before Night
+  Shift app-only deploys. Failed analysis skips build/deploy and automatic ship,
+  leaving the branch staged with the raw analyzer output in the task summary.
 - 2026-08-13 — **Gajala availability and truthful queue recovery.** Restored an
   unexpectedly unloaded API service; fixed false `shipped`/`live` states after
   rejected pushes, unified relative/worktree deployment ledger identities, and

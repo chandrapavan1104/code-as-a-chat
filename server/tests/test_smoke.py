@@ -639,6 +639,74 @@ def test_coding_job_uses_isolated_worktree_when_live_repo_is_dirty(
     assert branch_file == "made by worker\n"
 
 
+@pytest.mark.parametrize("analyze_rc, expected_status", [(0, "deployed"), (1, "staged")])
+def test_app_only_night_job_gates_deploy_on_flutter_analyze(
+        tmp_path, monkeypatch, analyze_rc, expected_status):
+    from pathlib import Path
+    from server import config, night_shift
+    from server.db import deployment_store as ds, night_queue_store as q
+    from server.skills import build_app, queue
+
+    repo = tmp_path / "repo"
+    app_lib = repo / "clients" / "gajala" / "lib"
+    app_lib.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.email", "night@test.invalid"],
+                   cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Night Test"], cwd=repo,
+                   check=True)
+    (app_lib / "main.dart").write_text("void main() {}\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True,
+                   capture_output=True)
+
+    monkeypatch.setattr(q, "DB_PATH", tmp_path / "night_queue.db")
+    monkeypatch.setattr(ds, "DB_PATH", tmp_path / "deployments.db")
+    monkeypatch.setattr(night_shift, "_WORKTREE_DIR", tmp_path / "worktrees")
+    monkeypatch.setattr(config, "REPO_DIR", repo)
+    jid = q.add(project=str(repo), task="change app", tag="auto",
+                spec=_ready_work_order("Change app"))
+    job = q.get(jid)
+    calls = []
+
+    async def fake_run(engine, cwd, task, timeout, on_spawn=None):
+        (Path(cwd) / "clients" / "gajala" / "lib" / "main.dart").write_text(
+            "void main() { print('changed'); }\n")
+        return "Implemented it", 42, 40, None
+
+    async def fake_analyze(worktree, timeout):
+        calls.append(("analyze", worktree))
+        return analyze_rc, "literal analyzer output"
+
+    async def fake_build(**kwargs):
+        calls.append(("build", kwargs["source_repo"]))
+        return True, "Built + deployed"
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    def fake_ship(job_id, source_base_sha=None):
+        calls.append(("ship", job_id))
+
+    monkeypatch.setattr(night_shift.night_exec, "run_job", fake_run)
+    monkeypatch.setattr(night_shift, "_flutter_analyze", fake_analyze)
+    monkeypatch.setattr(night_shift, "_notify_status", no_notify)
+    monkeypatch.setattr(build_app, "build_and_deploy", fake_build)
+    monkeypatch.setattr(queue, "_ship", fake_ship)
+    asyncio.run(night_shift._process_job_locked(job, "codex", str(repo), jid))
+
+    result = q.get(jid)
+    assert result["status"] == expected_status
+    assert calls[0][0] == "analyze"
+    if analyze_rc == 0:
+        assert [call[0] for call in calls] == ["analyze", "build", "ship"]
+    else:
+        assert [call[0] for call in calls] == ["analyze"]
+        assert result["tag"] == "mine"
+        assert "literal analyzer output" in result["summary"]
+
+
 def _deployment_repo(path):
     remote = path.parent / f"{path.name}-remote.git"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True,
