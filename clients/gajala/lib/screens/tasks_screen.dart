@@ -102,24 +102,60 @@ class _JobList extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
       children: [
         if (header != null) ...[header!, const SizedBox(height: 8)],
-        if (jobs.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 60),
-            child: Center(
-              child: Text(
-                closed
-                    ? 'Nothing closed.\nClosed work can always be reopened.'
-                    : 'No active work.\nCreate a work order for Night Shift.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: context.pal.textDim),
-              ),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 280),
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, .025),
+                end: Offset.zero,
+              ).animate(animation),
+              child: child,
             ),
-          )
-        else
-          for (final j in jobs) _JobCard(j),
+          ),
+          child: jobs.isEmpty
+              ? Padding(
+                  key: ValueKey('empty-$closed'),
+                  padding: const EdgeInsets.only(top: 60),
+                  child: Center(
+                    child: Text(
+                      closed
+                          ? 'Nothing closed.\nClosed work can always be reopened.'
+                          : 'No active work.\nCreate a work order for Night Shift.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: context.pal.textDim),
+                    ),
+                  ),
+                )
+              : Column(
+                  key: ValueKey(
+                    'jobs-$closed-${jobs.map((j) => j.id).join('-')}',
+                  ),
+                  children: [
+                    for (final j in jobs) _JobCard(j, key: ValueKey(j.id)),
+                  ],
+                ),
+        ),
       ],
     ),
   );
+}
+
+final _jobBusyProvider = StateProvider.family<bool, int>((ref, id) => false);
+
+Future<void> _withJobBusy(
+  WidgetRef ref,
+  int id,
+  Future<void> Function() action,
+) async {
+  if (ref.read(_jobBusyProvider(id))) return;
+  ref.read(_jobBusyProvider(id).notifier).state = true;
+  try {
+    await action();
+  } finally {
+    ref.read(_jobBusyProvider(id).notifier).state = false;
+  }
 }
 
 // ── status styling ──────────────────────────────────────────────────────────
@@ -246,7 +282,7 @@ class _JobList extends ConsumerWidget {
 
 class _JobCard extends ConsumerWidget {
   final QueueJob j;
-  const _JobCard(this.j);
+  const _JobCard(this.j, {super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -471,6 +507,7 @@ class _JobMenu extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final api = ref.read(apiProvider);
+    final busy = ref.watch(_jobBusyProvider(j.id));
     final canRun =
         !j.isDraft &&
         j.status != 'running' &&
@@ -479,7 +516,23 @@ class _JobMenu extends ConsumerWidget {
     final canStop = j.status == 'running';
     final canShip = j.status == 'staged' || j.status == 'deployed';
     return PopupMenuButton<String>(
-      icon: Icon(Icons.more_vert, size: 18, color: context.pal.textDim),
+      enabled: !busy,
+      icon: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 160),
+        child: busy
+            ? const SizedBox(
+                key: ValueKey('busy'),
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(
+                Icons.more_vert,
+                key: const ValueKey('menu'),
+                size: 18,
+                color: context.pal.textDim,
+              ),
+      ),
       color: context.pal.surface,
       onSelected: (v) async {
         try {
@@ -490,7 +543,11 @@ class _JobMenu extends ConsumerWidget {
             case 'engine':
               final engine = await _enginePicker(context, j.engine);
               if (engine == null) return;
-              await api?.setJobEngine(j.id, engine);
+              await _withJobBusy(
+                ref,
+                j.id,
+                () async => api?.setJobEngine(j.id, engine),
+              );
               break;
             case 'refine':
               final instructions = await _refineInstructions(context);
@@ -499,7 +556,11 @@ class _JobMenu extends ConsumerWidget {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Refining the rough task…')),
               );
-              await api?.refineJob(j.id, instructions: instructions);
+              await _withJobBusy(
+                ref,
+                j.id,
+                () async => api?.refineJob(j.id, instructions: instructions),
+              );
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -512,13 +573,16 @@ class _JobMenu extends ConsumerWidget {
               if (!context.mounted) return;
               final confirmed = await _confirmRunIfServerJob(context, j);
               if (!confirmed) return;
-              await api?.runJob(j.id);
+              await _withJobBusy(ref, j.id, () async => api?.runJob(j.id));
               break;
             case 'stop':
-              await api?.stopJob(j.id);
+              await _withJobBusy(ref, j.id, () async => api?.stopJob(j.id));
               break;
             case 'ship':
-              final msg = await api?.shipJob(j.id) ?? '';
+              var msg = '';
+              await _withJobBusy(ref, j.id, () async {
+                msg = await api?.shipJob(j.id) ?? '';
+              });
               if (context.mounted) {
                 ScaffoldMessenger.of(
                   context,
@@ -527,15 +591,19 @@ class _JobMenu extends ConsumerWidget {
               break;
             case 'auto':
             case 'mine':
-              await api?.tagJob(j.id, v);
+              await _withJobBusy(ref, j.id, () async => api?.tagJob(j.id, v));
               break;
             case 'close':
               final reason = await _closeReason(context);
               if (reason == null) return;
-              await api?.closeJob(j.id, reason);
+              await _withJobBusy(
+                ref,
+                j.id,
+                () async => api?.closeJob(j.id, reason),
+              );
               break;
             case 'reopen':
-              await api?.reopenJob(j.id);
+              await _withJobBusy(ref, j.id, () async => api?.reopenJob(j.id));
               break;
           }
           ref.invalidate(queueProvider);
@@ -1329,45 +1397,101 @@ Future<void> _jobDetailSheet(
             ),
           const SizedBox(height: 24),
           if (j.status != 'running' && j.status != 'closed')
-            FilledButton.icon(
-              onPressed: () async {
-                try {
-                  final instructions = await _refineInstructions(ctx);
-                  if (instructions == null) return;
-                  if (!ctx.mounted) return;
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(content: Text('Refining the rough task…')),
-                  );
-                  await ref
-                      .read(apiProvider)
-                      ?.refineJob(j.id, instructions: instructions);
-                  ref.invalidate(queueProvider);
-                  if (ctx.mounted) Navigator.pop(ctx);
-                } catch (e) {
-                  if (ctx.mounted) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(
-                      SnackBar(
-                        content: Text(friendlyError(e)),
-                        backgroundColor: GajalaColors.danger,
-                      ),
-                    );
-                  }
-                }
+            Consumer(
+              builder: (context, buttonRef, _) {
+                final busy = buttonRef.watch(_jobBusyProvider(j.id));
+                return FilledButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          try {
+                            final instructions = await _refineInstructions(ctx);
+                            if (instructions == null) return;
+                            if (!ctx.mounted) return;
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              const SnackBar(
+                                content: Text('Refining the rough task…'),
+                              ),
+                            );
+                            await _withJobBusy(buttonRef, j.id, () async {
+                              await buttonRef
+                                  .read(apiProvider)
+                                  ?.refineJob(j.id, instructions: instructions);
+                            });
+                            buttonRef.invalidate(queueProvider);
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          } catch (e) {
+                            if (ctx.mounted) {
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                SnackBar(
+                                  content: Text(friendlyError(e)),
+                                  backgroundColor: GajalaColors.danger,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  icon: busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.auto_fix_high_outlined),
+                  label: Text(
+                    busy
+                        ? 'Refining…'
+                        : j.isDraft
+                        ? 'Refine with Claude'
+                        : 'Re-refine with Claude',
+                  ),
+                );
               },
-              icon: const Icon(Icons.auto_fix_high_outlined),
-              label: Text(
-                j.isDraft ? 'Refine with Claude' : 'Re-refine with Claude',
-              ),
             ),
           if (j.status == 'closed')
-            FilledButton.icon(
-              onPressed: () async {
-                await ref.read(apiProvider)?.reopenJob(j.id);
-                ref.invalidate(queueProvider);
-                if (ctx.mounted) Navigator.pop(ctx);
+            Consumer(
+              builder: (context, buttonRef, _) {
+                final busy = buttonRef.watch(_jobBusyProvider(j.id));
+                return FilledButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          try {
+                            await _withJobBusy(
+                              buttonRef,
+                              j.id,
+                              () async =>
+                                  buttonRef.read(apiProvider)?.reopenJob(j.id),
+                            );
+                            buttonRef.invalidate(queueProvider);
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          } catch (e) {
+                            if (ctx.mounted) {
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                SnackBar(
+                                  content: Text(friendlyError(e)),
+                                  backgroundColor: GajalaColors.danger,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  icon: busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.unarchive_outlined),
+                  label: Text(busy ? 'Reopening…' : 'Reopen as held'),
+                );
               },
-              icon: const Icon(Icons.unarchive_outlined),
-              label: const Text('Reopen as held'),
             ),
         ],
       ),

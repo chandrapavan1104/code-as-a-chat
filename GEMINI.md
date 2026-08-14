@@ -155,7 +155,9 @@ a per-repo lock keeps parallel same-repo jobs from colliding.
 Gajala drives it from a **bottom-nav shell (Home / Tasks / Alerts)**: the **Tasks**
 tab splits Active/Closed work, opens the complete work order, and provides
 run-now / stop / ship / close / reopen / retag actions, plus an in-app Night
-Shift toggle + window/max-jobs. When a job needs
+Shift toggle + window/max-jobs. Task actions show per-job busy feedback, and
+status-driven list reordering animates without replaying on unchanged refreshes.
+When a job needs
 a decision it pushes a **question** to the phone (status `awaiting_input`); you
 answer inline in the **Alerts** inbox and the job re-runs with your answer appended.
 Every inbox-worthy event (needs-input, job deployed/failed, night report, "new
@@ -171,6 +173,9 @@ restores the Gajala API if the server service is unexpectedly unloaded, while a
 restart grace window avoids racing verified deployments.
 
 ## Changelog (most recent first)
+- 2026-08-13 — Added per-job loading feedback for every Tasks action, including
+  refinement, and built-in keyed fade/slide transitions when Active or Closed
+  queue ordering changes.
 - 2026-08-13 — **Gajala availability and truthful queue recovery.** Restored an
   unexpectedly unloaded API service; fixed false `shipped`/`live` states after
   rejected pushes, unified relative/worktree deployment ledger identities, and
