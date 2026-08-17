@@ -76,6 +76,14 @@ def _step_label(tool: str, args: str) -> str:
     return f"{verb}…"
 
 
+def _free_step_frame(n: int, tool: str, args: str, summary: str,
+                     ok: bool = True) -> dict:
+    """A step that ran but is not charged to the budget. Streamed so the live
+    view matches the trace you can reopen later."""
+    return {"type": "step_result", "n": n, "tool": tool, "args": args[:200],
+            "ok": ok, "charged": False, "duration_ms": 0, "summary": summary}
+
+
 async def _emit(on_event, event: dict) -> None:
     """Push a progress event to the streaming client, if one is listening.
     Best-effort — a slow/broken consumer must never stall the agent."""
@@ -848,6 +856,9 @@ class ShellSkill(Skill):
                     })
                     _run_step(run_id, len(scratchpad), tool_name, tool_args,
                               "(duplicate — replayed earlier result)", charged=False)
+                    await _emit(on_event, _free_step_frame(
+                        len(scratchpad), tool_name, tool_args,
+                        "duplicate call — reused the earlier result"))
                     continue
 
                 if tool_name not in self.DELEGATE_SKILLS:
@@ -859,6 +870,9 @@ class ShellSkill(Skill):
                     })
                     _run_step(run_id, len(scratchpad), tool_name, tool_args,
                               unknown, charged=False)
+                    await _emit(on_event, _free_step_frame(
+                        len(scratchpad), tool_name, tool_args,
+                        "unknown tool", ok=False))
                     continue
 
                 skill = get_skill(tool_name)
@@ -870,6 +884,9 @@ class ShellSkill(Skill):
                     })
                     _run_step(run_id, len(scratchpad), tool_name, tool_args,
                               missing, charged=False)
+                    await _emit(on_event, _free_step_frame(
+                        len(scratchpad), tool_name, tool_args,
+                        "skill not registered", ok=False))
                     continue
 
                 step_no = len(scratchpad) + 1

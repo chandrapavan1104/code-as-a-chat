@@ -34,6 +34,13 @@ user already uses talk to the outside.
   from a manifest (`claude_code.py`, `codex.py`, `antigravity.py` wrap the three
   CLIs via `cli_base.py`). `shell.py` is the LLM agent loop (routing + tool
   chaining), with an optional `on_event` callback for live progress.
+- `server/workspace.py` — **the single authority on which project a turn runs
+  in.** A ContextVar, so concurrent turns never share one mutable global. Use
+  `workspace.active()`; reading `config.WORKSPACE_DIR` inside a skill is a bug
+  (it is only the default for new threads). See `docs/flows/project-switching.md`.
+- `server/db/agent_runs_store.py` — durable trace of every agent turn: each tool
+  call, where it ran, how long it took, whether it was charged, and why the turn
+  stopped. `GET /api/runs/{id}`.
 - `server/scheduler.py` — background reminders + (optional) battery alerts.
 - `server/notify.py` (Telegram push) / `server/fcm.py` (FCM push to the app).
 - `server/db/` — SQLite stores. `server/config.py` — all env config.
@@ -170,7 +177,38 @@ job's own delta onto the newest published base. An independent launchd watchdog
 restores the Gajala API if the server service is unexpectedly unloaded, while a
 restart grace window avoids racing verified deployments.
 
+**The thread owns the project.** A turn resolves its project once (explicit
+`project` field → the session id's `::<slug>` suffix → the persisted default) and
+may change it **at most once, irreversibly**, via `projects switch` — which
+rebinds only that turn and emits `[[switch:<name>]]` so the app moves the thread.
+Only an explicit user switch moves the default for new threads. A turn gets 10
+**productive** steps: repaired args, unknown tools, no-op switches and exact
+duplicates are executed or corrected but not charged. Every turn writes a trace
+that Gajala shows under each reply as an expandable
+`4 steps · 38s · <project>` strip — the same widget that renders the live
+progress, so what you watch is what you can reopen. Projects lists show real
+paths, git branch and remote, and a failed switch fails loudly.
+
 ## Changelog (most recent first)
+- 2026-08-17 — **Project switching made unambiguous, and every turn made
+  legible.** "Switch to the deaf terminal project and check the status" spent all
+  7 steps switching back and forth and answered none of it. Four defects:
+  `shell.py` built its routing hints once before the loop, so after a mid-turn
+  switch every later iteration still read "CURRENT DIRECTORY: general" and
+  switched back; `_decision_text` json.dumps'd a dict arg so `{"switch":"x"}`
+  reached the skill verbatim; the duplicate guard only fired for calls that had
+  *timed out*, so an identical failing call was re-issued; and the system
+  prompt's attachment example contained a literal `/path/img.jpg` that the local
+  router copied into a real call. New `server/workspace.py` binds each turn to
+  one project via a ContextVar and allows a single irreversible rebind, making
+  the thrash structurally impossible. New `agent_runs_store` +
+  `GET /api/runs/{id}` + `widgets/run_trace.dart` keep a reviewable record of
+  what each turn did — previously the live step bubble was destroyed when the
+  reply landed and nothing was persisted. `/api/projects` now reports real paths
+  and git state; `/api/projects/switch` 404s with suggestions instead of
+  returning 200 with the OLD name; `_resolve_project_path` no longer silently
+  falls back to the active workspace (which could run a queued job against the
+  wrong repo). Docs: `docs/flows/project-switching.md`.
 - 2026-08-13 — **Gajala availability and truthful queue recovery.** Restored an
   unexpectedly unloaded API service; fixed false `shipped`/`live` states after
   rejected pushes, unified relative/worktree deployment ledger identities, and

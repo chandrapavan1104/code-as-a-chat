@@ -179,14 +179,20 @@ defaults; an empty `.env` boots fine.
 ```
 server/          FastAPI orchestrator, skills, scheduler, data stores
   ├─ skills/     one file per skill (self-registering)
+  ├─ workspace.py which project a turn runs in (start here)
   ├─ api_v2.py   structured /api/* backend for the app
   ├─ fcm.py      FCM push · notify.py  Telegram push
   └─ db/         SQLite stores
 clients/
   ├─ gajala/     Flutter Android app
   └─ telegram_bot.py
+docs/flows/      how the tricky paths actually work
 scripts/codechat launchd service manager
 ```
+
+**New here?** [`docs/flows/project-switching.md`](docs/flows/project-switching.md)
+explains how a turn decides which project it runs in, what a step costs, and how
+to debug a turn that went wrong by reading its trace.
 
 ## Roadmap
 

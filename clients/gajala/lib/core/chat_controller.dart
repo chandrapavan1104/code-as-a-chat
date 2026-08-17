@@ -237,7 +237,15 @@ class ChatController extends StateNotifier<ChatState> {
             project = ev['project']?.toString() ?? project;
             break;
           case 'step':
-            final n = (ev['n'] as num?)?.toInt() ?? live.length + 1;
+            // The stream opens with a bare {"type":"step","label":"Thinking…"}
+            // to push bytes before the proxy's idle timeout. It has no step
+            // number because it is not a tool call — show it as plain text.
+            final n = (ev['n'] as num?)?.toInt();
+            if (n == null) {
+              final label = ev['label']?.toString() ?? '';
+              if (label.isNotEmpty && live.isEmpty) setLive(label);
+              break;
+            }
             project = ev['project']?.toString() ?? project;
             live[n] = RunStep(
               idx: n,
