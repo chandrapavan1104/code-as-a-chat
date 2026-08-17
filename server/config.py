@@ -2,7 +2,38 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+
+def _load_env() -> str | None:
+    """Find `.env` even when the server runs from a managed deployment worktree.
+
+    Deployments run the server out of ~/.codeasachat/deploy_worktrees/deploy-N,
+    which is a git worktree — and `.env` is gitignored, so it simply is not
+    there. A bare `load_dotenv()` searches upward from this file, finds nothing,
+    and the process comes up with NO configuration at all: this is exactly how
+    production ended up without an OPENAI_API_KEY, silently losing the backup
+    brain and leaving the local 3B model as the only alternative to Claude.
+
+    Order: an explicit override, then the checkout we are running from, then the
+    canonical copy in ~/.codeasachat/ which every worktree can reach.
+    """
+    candidates: list[Path] = []
+    explicit = os.getenv("CODEASACHAT_ENV_FILE", "").strip()
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.append(Path(__file__).resolve().parent.parent / ".env")
+    candidates.append(Path.home() / ".codeasachat" / ".env")
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                load_dotenv(candidate)
+                return str(candidate)
+        except OSError:
+            continue
+    load_dotenv()   # last resort: dotenv's own upward search
+    return None
+
+
+ENV_FILE: str | None = _load_env()
 
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")

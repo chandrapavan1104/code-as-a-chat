@@ -18,6 +18,7 @@ and assert the four independent defects behind it stay fixed.
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -305,6 +306,39 @@ def test_a_turn_leaves_a_readable_trace(projects_dir, monkeypatch):
     from server.db import store as memory
     turns = memory.get_recent("s1", n=5)
     assert turns[-1]["run_id"] == trace["id"]
+
+
+# ── configuration reaches the deployed runtime ────────────────────────────────
+
+def test_env_is_found_from_a_deployment_worktree(tmp_path, monkeypatch):
+    """The server runs from ~/.codeasachat/deploy_worktrees/deploy-N, a git
+    worktree — and .env is gitignored, so it is not there. A bare load_dotenv()
+    found nothing and the process came up with NO configuration: that is how
+    production lost its OPENAI_API_KEY, silently killing the backup brain and
+    leaving a 3B local model as the only alternative to Claude.
+    """
+    import importlib
+    from server import config as config_module
+
+    canonical = tmp_path / "dot-codeasachat" / ".env"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("OPENAI_API_KEY=sk-from-canonical\n")
+
+    worktree = tmp_path / "deploy_worktrees" / "deploy-99"
+    (worktree / "server").mkdir(parents=True)
+    assert not (worktree / ".env").exists()
+
+    monkeypatch.setattr(config_module.Path, "home",
+                        staticmethod(lambda: tmp_path / "dot-codeasachat" / ".."),
+                        raising=False)
+    monkeypatch.setenv("CODEASACHAT_ENV_FILE", str(canonical))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    found = config_module._load_env()
+    assert found == str(canonical)
+    assert os.environ.get("OPENAI_API_KEY") == "sk-from-canonical"
+
+    importlib.reload(config_module)   # leave the module as the rest of the suite expects
 
 
 # ── the routing brain ─────────────────────────────────────────────────────────
