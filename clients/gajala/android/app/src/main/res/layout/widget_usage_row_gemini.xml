@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="31dp"
-    android:layout_marginBottom="3dp" android:paddingHorizontal="8dp"
+    android:layout_marginBottom="2dp" android:paddingHorizontal="8dp"
     android:background="@drawable/widget_provider_row_bg"
     android:orientation="horizontal" android:gravity="center_vertical">
     <ImageView

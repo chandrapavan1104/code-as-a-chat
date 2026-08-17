@@ -1,15 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="widget_surface">#FF080C17</color>
-    <color name="widget_surface_alt">#FF11182A</color>
-    <color name="widget_text">#FFF4F7FF</color>
-    <color name="widget_text_dim">#FF8D9AB5</color>
-    <color name="widget_border">#FF25314B</color>
-    <color name="widget_accent">#FF55E6C1</color>
-    <color name="widget_codex">#FF55E6C1</color>
-    <color name="widget_claude">#FFFFB86B</color>
-    <color name="widget_gemini">#FFB895FF</color>
-    <color name="widget_qwen">#FF5CCBFF</color>
-    <color name="widget_ok">#FF2FA66F</color>
-    <color name="widget_warn">#FFF0A741</color>
+    <!-- Light theme: readable text/icons on light background -->
+    <color name="widget_surface">#FFF5F7FF</color>
+    <color name="widget_surface_alt">#FFE8ECFF</color>
+    <color name="widget_text">#FF1A1A2E</color>
+    <color name="widget_text_dim">#FF6B7280</color>
+    <color name="widget_border">#FFD1D5DB</color>
+    <color name="widget_accent">#FF0EA79D</color>
+    <color name="widget_codex">#FF0EA79D</color>
+    <color name="widget_claude">#FFD97706</color>
+    <color name="widget_gemini">#FF7C3AED</color>
+    <color name="widget_qwen">#FF0369A1</color>
+    <color name="widget_ok">#FF059669</color>
+    <color name="widget_warn">#FFD97706</color>
 </resources>
