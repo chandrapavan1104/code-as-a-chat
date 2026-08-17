@@ -9,6 +9,7 @@ import '../core/models.dart';
 import '../core/push.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import '../widgets/run_trace.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String command;   // 'shell' = Gajala agent; else a specific skill
@@ -397,7 +398,14 @@ class _Bubble extends StatelessWidget {
   const _Bubble(this.m, this.imgHeaders, {this.onMove});
   @override
   Widget build(BuildContext context) {
-    if (m.role == 'status') return _StatusBubble(m.text);
+    if (m.role == 'status') {
+      // Once steps start arriving, the live bubble IS the trace widget — so the
+      // thing you watch is the thing that stays under the reply afterwards.
+      if (m.steps.isNotEmpty) {
+        return RunTraceStrip(steps: m.steps, project: m.project, live: true);
+      }
+      return _StatusBubble(m.text);
+    }
     // Typed while a turn was running — waiting its turn, sent automatically.
     if (m.role == 'queued') {
       return Align(
@@ -448,7 +456,7 @@ class _Bubble extends StatelessWidget {
       bottomLeft: Radius.circular(isUser ? 16 : 4),
       bottomRight: Radius.circular(isUser ? 4 : 16),
     );
-    return Align(
+    final bubble = Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
@@ -517,6 +525,80 @@ class _Bubble extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+
+    // What the agent did to produce this reply, collapsed under it. Steps we
+    // already have (the turn just ran) render immediately; a reply restored from
+    // history carries only its run id and fetches on demand.
+    if (isUser) return bubble;
+    if (m.steps.isNotEmpty) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        bubble,
+        RunTraceStrip(
+            steps: m.steps,
+            project: m.project,
+            stopLabel: m.stopLabel,
+            hitStepLimit: m.hitStepLimit),
+      ]);
+    }
+    if (m.runId != null && m.runId!.isNotEmpty) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        bubble,
+        _LazyTrace(m.runId!),
+      ]);
+    }
+    return bubble;
+  }
+}
+
+/// A reply restored from chat history knows its run id but not its steps.
+/// Fetches the trace the first time you open it, so scrolling old history stays
+/// cheap.
+class _LazyTrace extends ConsumerStatefulWidget {
+  final String runId;
+  const _LazyTrace(this.runId);
+  @override
+  ConsumerState<_LazyTrace> createState() => _LazyTraceState();
+}
+
+class _LazyTraceState extends ConsumerState<_LazyTrace> {
+  RunTrace? _trace;
+  bool _loading = false;
+  bool _failed = false;
+
+  Future<void> _load() async {
+    if (_loading || _trace != null) return;
+    setState(() => _loading = true);
+    try {
+      final api = ref.read(apiProvider);
+      final t = await api?.runTrace(widget.runId);
+      if (mounted) setState(() => _trace = t);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_trace != null) return RunTraceStrip.fromTrace(_trace!);
+    if (_failed) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        onPressed: _load,
+        icon: _loading
+            ? const SizedBox(
+                width: 12, height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.chevron_right, size: 16),
+        label: const Text('What it did'),
+        style: TextButton.styleFrom(
+            foregroundColor: context.pal.textDim,
+            visualDensity: VisualDensity.compact,
+            textStyle: const TextStyle(fontSize: 12.5)),
       ),
     );
   }

@@ -21,6 +21,139 @@ class Skill {
   );
 }
 
+/// A project directory the agent can work in. Carries the facts needed to tell
+/// thirty similarly-named folders apart — a bare name never was enough.
+class Project {
+  final String name, path, displayPath;
+  final bool active, isGit, hasContext;
+  final String? branch, remote;
+  final double? lastModified;
+  Project({
+    required this.name,
+    required this.path,
+    required this.displayPath,
+    required this.active,
+    required this.isGit,
+    required this.hasContext,
+    this.branch,
+    this.remote,
+    this.lastModified,
+  });
+  factory Project.fromJson(Map<String, dynamic> j) => Project(
+    name: j['name'] ?? '',
+    path: j['path'] ?? '',
+    displayPath: j['display_path'] ?? j['path'] ?? '',
+    active: j['active'] == true,
+    isGit: j['is_git'] == true,
+    hasContext: j['has_context'] == true,
+    branch: j['branch'],
+    remote: j['remote'],
+    lastModified: (j['last_modified'] as num?)?.toDouble(),
+  );
+
+  /// "git main · owner/repo" — or an honest "not a git repo".
+  String get gitLine {
+    if (!isGit) return 'not a git repo';
+    final parts = <String>['git ${branch ?? '?'}'];
+    if (remote != null && remote!.isNotEmpty) parts.add(remote!);
+    return parts.join(' · ');
+  }
+}
+
+/// Raised when a project switch could not be resolved server-side.
+class ProjectSwitchError implements Exception {
+  final String message;
+  final List<String> suggestions;
+  ProjectSwitchError(this.message, this.suggestions);
+  @override
+  String toString() => suggestions.isEmpty
+      ? message
+      : '$message Did you mean: ${suggestions.join(', ')}';
+}
+
+/// One tool call inside an agent turn.
+class RunStep {
+  final int idx, durationMs;
+  final String tool, args, result, workspace;
+  final bool ok, charged;
+  RunStep({
+    required this.idx,
+    required this.tool,
+    required this.args,
+    required this.result,
+    required this.workspace,
+    required this.ok,
+    required this.charged,
+    required this.durationMs,
+  });
+  factory RunStep.fromJson(Map<String, dynamic> j) => RunStep(
+    idx: j['idx'] ?? 0,
+    tool: j['tool'] ?? '',
+    args: j['args'] ?? '',
+    result: j['result'] ?? '',
+    workspace: j['workspace'] ?? '',
+    ok: (j['ok'] ?? 1) == 1 || j['ok'] == true,
+    charged: (j['charged'] ?? 1) == 1 || j['charged'] == true,
+    durationMs: j['duration_ms'] ?? 0,
+  );
+
+  /// Just the folder name — the full path is noise in a step list.
+  String get projectName =>
+      workspace.isEmpty ? '' : workspace.split('/').last;
+  String get firstResultLine {
+    final lines = result.split('\n').where((l) => l.trim().isNotEmpty);
+    return lines.isEmpty ? '' : lines.first;
+  }
+}
+
+/// What an agent turn actually did — the record that used to vanish the moment
+/// the reply landed.
+class RunTrace {
+  final String id, workspace, prompt, stopReason, reply;
+  final int durationMs, chargedSteps;
+  final List<RunStep> steps;
+  RunTrace({
+    required this.id,
+    required this.workspace,
+    required this.prompt,
+    required this.stopReason,
+    required this.reply,
+    required this.durationMs,
+    required this.chargedSteps,
+    required this.steps,
+  });
+  factory RunTrace.fromJson(Map<String, dynamic> j) => RunTrace(
+    id: j['id'] ?? '',
+    workspace: j['workspace'] ?? '',
+    prompt: j['prompt'] ?? '',
+    stopReason: j['stop_reason'] ?? '',
+    reply: j['reply'] ?? '',
+    durationMs: j['duration_ms'] ?? 0,
+    chargedSteps: j['charged_steps'] ?? 0,
+    steps: ((j['steps'] as List?) ?? const [])
+        .map((e) => RunStep.fromJson(Map<String, dynamic>.from(e)))
+        .toList(),
+  );
+
+  String get projectName =>
+      workspace.isEmpty ? '' : workspace.split('/').last;
+
+  /// Plain-English reason the turn ended, for the trace footer.
+  String get stopLabel => switch (stopReason) {
+    'done' => 'Finished',
+    'passthrough' => 'Answered directly',
+    'final_output' => 'Returned the tool output',
+    'step_limit' => 'Ran out of steps',
+    'llm_error' => 'The routing model was unreachable',
+    'no_action' => 'No action to take',
+    'duplicate_stop' => 'Stopped repeating a call that had timed out',
+    'error' => 'Failed',
+    _ => stopReason,
+  };
+
+  bool get hitStepLimit => stopReason == 'step_limit';
+}
+
 class Note {
   final int id;
   final String? project;
@@ -223,11 +356,24 @@ class ChatMessage {
   remoteImages; // full /api/file URLs (images the agent sent back)
   final String?
   moveTo; // dir to offer moving this question to (confirm-to-move)
+  // What the agent did to produce this reply. Kept on the message so the trace
+  // survives the live bubble being replaced — it used to be discarded there.
+  final String? runId;
+  final List<RunStep> steps;
+  final String? project; // where the turn ran
+  final String? stopLabel; // why it stopped
+  final bool hitStepLimit;
   ChatMessage(
     this.role,
     this.text, {
     this.localImage,
     List<String>? remoteImages,
     this.moveTo,
-  }) : remoteImages = remoteImages ?? const [];
+    this.runId,
+    List<RunStep>? steps,
+    this.project,
+    this.stopLabel,
+    this.hitStepLimit = false,
+  }) : remoteImages = remoteImages ?? const [],
+       steps = steps ?? const [];
 }

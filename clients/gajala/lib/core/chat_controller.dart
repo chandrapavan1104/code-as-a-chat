@@ -36,6 +36,20 @@ final _moveMarker = RegExp(r'\[\[move:\s*([a-z0-9\-]+)\s*\]\]', caseSensitive: f
   return (clean, target);
 }
 
+/// Pulls a "[[switch:name]]" marker out of a reply → (clean, project). The
+/// agent emits it when it changed project mid-turn, so the app can move the
+/// conversation to that project's thread.
+final _switchMarker =
+    RegExp(r'\[\[switch:\s*([^\]]+?)\s*\]\]', caseSensitive: false);
+(String, String?) splitSwitch(String raw) {
+  String? target;
+  final clean = raw.replaceAllMapped(_switchMarker, (m) {
+    target = m.group(1);
+    return '';
+  }).trim();
+  return (clean, target);
+}
+
 /// Identifies one conversation: a skill tab, or a per-directory Gajala thread.
 @immutable
 class ChatKey {
@@ -167,6 +181,17 @@ class ChatController extends StateNotifier<ChatState> {
       }
     }
 
+    /// The live bubble now renders the SAME trace widget the finished reply
+    /// keeps, so what you watch is what you can reopen afterwards.
+    void setLiveSteps(List<RunStep> steps, String? project) {
+      final m = [...state.messages];
+      if (liveIdx < m.length && m[liveIdx].role == 'status') {
+        m[liveIdx] = ChatMessage('status', 'Gajala typing…',
+            steps: steps, project: project);
+        state = state.copyWith(messages: m);
+      }
+    }
+
     var replaced = false;
     void finish(ChatMessage msg) {
       final m = [...state.messages];
@@ -180,7 +205,18 @@ class ChatController extends StateNotifier<ChatState> {
     }
 
     var prompt = text;
-    final steps = <String>[];
+    // Steps arrive as two frames each: `step` when the tool starts, then
+    // `step_result` with its outcome. Keyed by step number so the second frame
+    // updates the row already on screen instead of appending a duplicate.
+    final live = <int, RunStep>{};
+    String? runId;
+    String? project;
+
+    void showSteps() {
+      final ordered = live.keys.toList()..sort();
+      setLiveSteps([for (final n in ordered) live[n]!], project);
+    }
+
     try {
       if (imagePath != null) {
         setLive('Uploading image…');
@@ -191,40 +227,85 @@ class ChatController extends StateNotifier<ChatState> {
         prompt = prompt.isEmpty ? marker : '$marker\n$prompt';
       }
 
-      await for (final ev in api.runStream(key.command, prompt, key.sid, notify: true)) {
+      await for (final ev in api.runStream(key.command, prompt, key.sid,
+          notify: true, project: state.workspace)) {
         switch (ev['type']) {
+          // Sent before any work starts, so a dropped stream can still fetch
+          // the trace instead of leaving the user with nothing.
+          case 'run':
+            runId = ev['run_id']?.toString();
+            project = ev['project']?.toString() ?? project;
+            break;
           case 'step':
-            final label = ev['label']?.toString() ?? '';
-            if (label.isNotEmpty) steps.add(label);
-            setLive(steps.join('\n'));
+            final n = (ev['n'] as num?)?.toInt() ?? live.length + 1;
+            project = ev['project']?.toString() ?? project;
+            live[n] = RunStep(
+              idx: n,
+              tool: ev['tool']?.toString() ?? ev['label']?.toString() ?? '',
+              args: ev['args']?.toString() ?? '',
+              result: '',
+              workspace: project ?? '',
+              ok: true,
+              charged: true,
+              durationMs: 0,
+            );
+            showSteps();
+            break;
+          case 'step_result':
+            final n = (ev['n'] as num?)?.toInt() ?? live.length;
+            final prev = live[n];
+            live[n] = RunStep(
+              idx: n,
+              tool: ev['tool']?.toString() ?? prev?.tool ?? '',
+              args: prev?.args ?? '',
+              result: ev['summary']?.toString() ?? '',
+              workspace: ev['project']?.toString() ?? prev?.workspace ?? '',
+              ok: ev['ok'] != false,
+              charged: ev['charged'] != false,
+              durationMs: (ev['duration_ms'] as num?)?.toInt() ?? 0,
+            );
+            showSteps();
             break;
           case 'final':
             final ws = ev['workspace']?.toString();
             final (imgClean, urls) = splitImages(ev['result']?.toString() ?? '', api);
-            final (clean, moveTo) = splitMove(imgClean);
+            final (moveClean, moveTo) = splitMove(imgClean);
+            final (clean, switchedTo) = splitSwitch(moveClean);
+            final ordered = live.keys.toList()..sort();
             finish(ChatMessage(
                 'bot',
                 clean.isEmpty && urls.isNotEmpty ? '' : (clean.isEmpty ? '(no result)' : clean),
                 remoteImages: urls,
-                moveTo: moveTo));
-            if (ws != null && ws.isNotEmpty) state = state.copyWith(workspace: ws);
+                moveTo: moveTo,
+                runId: runId,
+                steps: [for (final n in ordered) live[n]!],
+                project: ws ?? project));
+            // The agent may have switched project mid-turn; follow it so the
+            // header and thread key land on the project the turn ended in.
+            final landed = switchedTo ?? ws;
+            if (landed != null && landed.isNotEmpty) {
+              state = state.copyWith(workspace: landed);
+            }
             break;
           case 'error':
-            finish(ChatMessage('error', ev['message']?.toString() ?? 'Server error'));
+            finish(ChatMessage('error', ev['message']?.toString() ?? 'Server error',
+                runId: runId));
             break;
         }
       }
       if (!replaced) {
         setLive('Connection interrupted · still working…');
-        finish(await _recoverReply(text) ??
+        finish(await _recoverReply(text, runId) ??
             ChatMessage('system',
                 'Connection dropped mid-reply — it\'s still being written on the '
-                'Mac. Reopen this chat in a moment to see it.'));
+                'Mac. Reopen this chat in a moment to see it.',
+                runId: runId));
       }
     } catch (e) {
       if (!replaced) {
         setLive('Connection interrupted · still working…');
-        finish(await _recoverReply(text) ?? ChatMessage('error', friendlyError(e)));
+        finish(await _recoverReply(text, runId) ??
+            ChatMessage('error', friendlyError(e), runId: runId));
       }
     } finally {
       if (mounted) state = state.copyWith(sending: false);
@@ -233,7 +314,7 @@ class ChatController extends StateNotifier<ChatState> {
 
   /// The live stream dropped before the final frame. The server still finishes
   /// the turn and persists the reply, so poll history until it lands.
-  Future<ChatMessage?> _recoverReply(String userText) async {
+  Future<ChatMessage?> _recoverReply(String userText, [String? runId]) async {
     final api = _api;
     final want = userText.trim();
     if (api == null || want.isEmpty) return null;
@@ -246,7 +327,7 @@ class ChatController extends StateNotifier<ChatState> {
               h[j - 1].text.trim() == want) {
             final (clean, urls) = splitImages(h[j].text, api);
             return ChatMessage('bot', clean.isEmpty ? h[j].text : clean,
-                remoteImages: urls);
+                remoteImages: urls, runId: runId ?? h[j].runId);
           }
         }
       } catch (_) {/* keep polling */}
