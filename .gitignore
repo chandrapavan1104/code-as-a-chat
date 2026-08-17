@@ -39,3 +39,4 @@ venv/
 # Claude Code local project settings
 .claude/settings.local.json
 .claude/
+.env.bak.*
