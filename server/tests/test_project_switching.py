@@ -263,12 +263,11 @@ def test_run_endpoints_bind_the_turn_and_report_where_it_ended(projects_dir, mon
     assert config.WORKSPACE_DIR.name == "general"
 
 
-def test_a_turn_leaves_a_readable_trace(projects_dir, monkeypatch, tmp_path):
+def test_a_turn_leaves_a_readable_trace(projects_dir, monkeypatch):
     """The whole point of the trace: after the fact, you can see which tools ran,
     in which project, which ones were wasted, and why the turn stopped."""
     from server.db import agent_runs_store
 
-    monkeypatch.setattr(agent_runs_store, "DB_PATH", tmp_path / "agent_runs.db")
     monkeypatch.setitem(registry, "probe", _Probe())
     _replay(monkeypatch, [
         '{"action":"call","tool":"projects","args":"switch deaf-communication-terminal"}',
