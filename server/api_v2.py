@@ -47,7 +47,28 @@ _CODAUR_STALE_FALLBACK_SECONDS = 120
 
 @router.get("/chat")
 def chat_history(session_id: str, limit: int = 50):
+    # Each assistant turn carries its run_id, so the app can pull up the trace
+    # of what the agent actually did — even after a dropped stream or a restart.
     return {"turns": memory.get_recent(session_id, n=limit)}
+
+
+# ── agent run traces (what the agent actually did, and why it stopped) ────────
+
+@router.get("/runs")
+def list_runs(session_id: str | None = None, limit: int = 25):
+    from server.db import agent_runs_store
+    agent_runs_store.init()
+    return {"runs": agent_runs_store.list_runs(session_id=session_id, limit=limit)}
+
+
+@router.get("/runs/{run_id}")
+def get_run(run_id: str):
+    from server.db import agent_runs_store
+    agent_runs_store.init()
+    run = agent_runs_store.get(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    return run
 
 
 # ── system ────────────────────────────────────────────────────────────────────

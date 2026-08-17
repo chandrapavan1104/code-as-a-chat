@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import shutil
+import time
 import httpx
 from server.skills.base import Skill
 from server.skills import register, get_skill
@@ -608,6 +609,45 @@ def _coerce_args(value, tool: str = "") -> tuple[str, bool]:
     return str(value).strip(), True
 
 
+# ── run trace ─────────────────────────────────────────────────────────────────
+# Recording is strictly best-effort: a turn must never fail because its audit
+# trail could not be written.
+
+def _run_start(session_id: str | None, prompt: str) -> str | None:
+    try:
+        from server.db import agent_runs_store
+        agent_runs_store.init()
+        return agent_runs_store.start(
+            session_id=session_id, workspace=str(workspace.active()), prompt=prompt)
+    except Exception:
+        return None
+
+
+def _run_step(run_id: str | None, idx: int, tool: str, args: str, result: str,
+              *, charged: bool, duration_ms: int = 0) -> None:
+    if not run_id:
+        return
+    try:
+        from server.db import agent_runs_store
+        agent_runs_store.add_step(
+            run_id, idx=idx, tool=tool, args=args, result=result,
+            ok=not result.startswith("ERROR"), charged=charged,
+            workspace=str(workspace.active()), duration_ms=duration_ms)
+    except Exception:
+        pass
+
+
+def _run_finish(run_id: str | None, reason: str, reply: str) -> None:
+    if not run_id:
+        return
+    try:
+        from server.db import agent_runs_store
+        agent_runs_store.finish(run_id, stop_reason=reason, reply=reply,
+                                workspace=str(workspace.active()))
+    except Exception:
+        pass
+
+
 def _charged_steps(scratchpad: list[dict]) -> int:
     """Steps that count against the user's budget. Entries default to charged,
     so a step is only free when something explicitly marked it so."""
@@ -691,6 +731,21 @@ class ShellSkill(Skill):
         scratchpad: list[dict] = []
         images: list[str] = []   # [image: …] markers gathered from tool outputs
 
+        # Open a durable trace for this turn. Every exit below goes through
+        # `finish`, so a reply can always be traced back to the steps that
+        # produced it — including the ones that went wrong.
+        run_id = _run_start(session_id, prompt)
+        # Announce the trace id up front, not at the end: if the stream drops
+        # mid-turn the app can still fetch /api/runs/<id> and show what happened
+        # instead of a bare "Reconnecting…".
+        await _emit(on_event, {"type": "run", "run_id": run_id,
+                               "project": workspace.name()})
+
+        def finish(text: str, reason: str) -> str:
+            _run_finish(run_id, reason, text)
+            self._remember(session_id, prompt, text, run_id)
+            return text
+
         for iteration in range(MAX_ROUNDS):
             if _charged_steps(scratchpad) >= STEP_BUDGET:
                 break
@@ -727,8 +782,7 @@ class ShellSkill(Skill):
                         scratchpad, note=f"(couldn't compose a final reply: {last_exc})")
                 else:
                     final = f"[shell] agent LLM error after {iteration} step(s): {last_exc}"
-                self._remember(session_id, prompt, final)
-                return final
+                return finish(final, "llm_error")
 
             decision = _parse_json_decision(raw)
             if not decision:
@@ -736,8 +790,7 @@ class ShellSkill(Skill):
                 final = (_salvage_reply(raw)
                          or raw.strip()
                          or "[shell] no response")
-                self._remember(session_id, prompt, final)
-                return final
+                return finish(final, "no_action")
 
             forced = self._project_intent_action(prompt, scratchpad)
             if forced is not None:
@@ -759,8 +812,7 @@ class ShellSkill(Skill):
             if action == "done":
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
                 final = self._attach_images(final, images)
-                self._remember(session_id, prompt, final)
-                return final
+                return finish(final, "done")
 
             if action == "call":
                 tool_name = _decision_text(decision.get("tool"))
@@ -785,41 +837,53 @@ class ShellSkill(Skill):
                                  + "\n\nThe identical request was not retried "
                                    "automatically. Narrow the task or ask me to "
                                    "retry it explicitly.")
-                        self._remember(session_id, prompt, final)
-                        return final
+                        return finish(final, "duplicate_stop")
+                    replay = (duplicate["result"]
+                              + "\n\nNOTE: identical call already made this "
+                                "turn — reusing the result above. Do NOT "
+                                "repeat it; take the next different step.")
                     scratchpad.append({
                         "tool": tool_name, "args": tool_args, "charged": False,
-                        "result": (duplicate["result"]
-                                   + "\n\nNOTE: identical call already made this "
-                                     "turn — reusing the result above. Do NOT "
-                                     "repeat it; take the next different step."),
+                        "result": replay,
                     })
+                    _run_step(run_id, len(scratchpad), tool_name, tool_args,
+                              "(duplicate — replayed earlier result)", charged=False)
                     continue
 
                 if tool_name not in self.DELEGATE_SKILLS:
                     available = ", ".join(sorted(self.DELEGATE_SKILLS))
+                    unknown = f"ERROR: unknown tool. Available: {available}"
                     scratchpad.append({
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "charged": False,
-                        "result": f"ERROR: unknown tool. Available: {available}",
+                        "tool": tool_name, "args": tool_args,
+                        "charged": False, "result": unknown,
                     })
+                    _run_step(run_id, len(scratchpad), tool_name, tool_args,
+                              unknown, charged=False)
                     continue
 
                 skill = get_skill(tool_name)
                 if skill is None:
+                    missing = f"ERROR: skill {tool_name!r} not registered"
                     scratchpad.append({
-                        "tool": tool_name, "args": tool_args, "charged": False,
-                        "result": f"ERROR: skill {tool_name!r} not registered",
+                        "tool": tool_name, "args": tool_args,
+                        "charged": False, "result": missing,
                     })
+                    _run_step(run_id, len(scratchpad), tool_name, tool_args,
+                              missing, charged=False)
                     continue
 
-                await _emit(on_event, {"type": "step",
-                                       "label": _step_label(tool_name, tool_args)})
+                step_no = len(scratchpad) + 1
+                await _emit(on_event, {
+                    "type": "step", "n": step_no, "tool": tool_name,
+                    "args": tool_args[:200], "project": workspace.name(),
+                    # `label` stays for older app builds that only read it.
+                    "label": _step_label(tool_name, tool_args)})
+                started = time.monotonic()
                 try:
                     result = await skill.run(tool_args, session_id=session_id)
                 except Exception as exc:
                     result = f"ERROR running {tool_name}: {exc}"
+                elapsed_ms = int((time.monotonic() - started) * 1000)
 
                 if not isinstance(result, str):
                     result = str(result)
@@ -830,8 +894,9 @@ class ShellSkill(Skill):
                 # Different-persona skills (e.g. diary/Anna) reply to the user
                 # directly — their voice must never be rewritten by this agent.
                 if tool_name in self.PASSTHROUGH_SKILLS and not result.startswith("ERROR"):
-                    self._remember(session_id, prompt, result)
-                    return result
+                    _run_step(run_id, step_no, tool_name, tool_args, result,
+                              charged=True, duration_ms=elapsed_ms)
+                    return finish(result, "passthrough")
 
                 # LLM-call saver: when the agent flags "final" AND the skill's
                 # output is presentation-ready (final_output), return it directly
@@ -841,8 +906,9 @@ class ShellSkill(Skill):
                 if (decision.get("final")
                         and getattr(skill, "final_output", False)
                         and not result.startswith("ERROR")):
-                    self._remember(session_id, prompt, result)
-                    return result
+                    _run_step(run_id, step_no, tool_name, tool_args, result,
+                              charged=True, duration_ms=elapsed_ms)
+                    return finish(result, "final_output")
 
                 if len(result) > RESULT_TRUNCATE:
                     result = (result[:RESULT_TRUNCATE]
@@ -863,6 +929,13 @@ class ShellSkill(Skill):
                     "result": result,
                     "charged": charged,
                 })
+                _run_step(run_id, step_no, tool_name, tool_args, result,
+                          charged=charged, duration_ms=elapsed_ms)
+                await _emit(on_event, {
+                    "type": "step_result", "n": step_no, "tool": tool_name,
+                    "ok": not result.startswith("ERROR"), "charged": charged,
+                    "duration_ms": elapsed_ms, "project": workspace.name(),
+                    "summary": (result.splitlines() or [""])[0][:120]})
                 continue
 
             # No recognizable action and nothing to infer. Return a readable reply
@@ -873,16 +946,14 @@ class ShellSkill(Skill):
                      or "I didn't quite catch that. Try rephrasing, or tell me which "
                         "tool to use — e.g. \"use codex to save this text to a file\".")
             final = self._attach_images(final, images)
-            self._remember(session_id, prompt, final)
-            return final
+            return finish(final, "no_action")
 
         # Budget spent without a "done". Ask the model for one honest wrap-up —
         # what landed and what is still outstanding — instead of dumping a raw
         # list of steps that reads like a crash.
         final = await self._exhaustion_summary(prompt, scratchpad, context_block)
         final = self._attach_images(final, images)
-        self._remember(session_id, prompt, final)
-        return final
+        return finish(final, "step_limit")
 
     async def _exhaustion_summary(self, prompt: str, scratchpad: list[dict],
                                   context_block: str) -> str:
@@ -1121,11 +1192,14 @@ class ShellSkill(Skill):
         return "\n".join(lines)
 
     @staticmethod
-    def _remember(session_id: str | None, user_msg: str, assistant_msg: str) -> None:
+    def _remember(session_id: str | None, user_msg: str, assistant_msg: str,
+                  run_id: str | None = None) -> None:
         if not session_id or not assistant_msg:
             return
         memory.append_turn(session_id, "user", user_msg)
-        memory.append_turn(session_id, "assistant", assistant_msg)
+        # The assistant turn carries its run id, so the app can pull up the trace
+        # behind any reply — including after a dropped stream or an app restart.
+        memory.append_turn(session_id, "assistant", assistant_msg, run_id=run_id)
 
 
 register(ShellSkill())

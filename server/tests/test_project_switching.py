@@ -263,6 +263,51 @@ def test_run_endpoints_bind_the_turn_and_report_where_it_ended(projects_dir, mon
     assert config.WORKSPACE_DIR.name == "general"
 
 
+def test_a_turn_leaves_a_readable_trace(projects_dir, monkeypatch, tmp_path):
+    """The whole point of the trace: after the fact, you can see which tools ran,
+    in which project, which ones were wasted, and why the turn stopped."""
+    from server.db import agent_runs_store
+
+    monkeypatch.setattr(agent_runs_store, "DB_PATH", tmp_path / "agent_runs.db")
+    monkeypatch.setitem(registry, "probe", _Probe())
+    _replay(monkeypatch, [
+        '{"action":"call","tool":"projects","args":"switch deaf-communication-terminal"}',
+        '{"action":"call","tool":"projects","args":"switch general"}',
+        '{"action":"call","tool":"probe","args":"check the status"}',
+        '{"action":"done","reply":"Status checked."}',
+    ])
+
+    async def turn():
+        with workspace.bound(projects_dir / "general"):
+            return await shell.ShellSkill().run("check status", session_id="s1")
+
+    asyncio.run(turn())
+
+    runs = agent_runs_store.list_runs(session_id="s1")
+    assert len(runs) == 1
+    trace = agent_runs_store.get(runs[0]["id"])
+
+    assert trace["stop_reason"] == "done"
+    assert trace["reply"] == "Status checked."
+    tools = [s["tool"] for s in trace["steps"]]
+    assert tools == ["projects", "projects", "probe"]
+
+    # The refused switch-back is recorded but not charged; the real work is.
+    by_tool = {(s["tool"], s["idx"]): s for s in trace["steps"]}
+    assert by_tool[("projects", 1)]["charged"] == 1      # the switch that worked
+    assert by_tool[("projects", 2)]["charged"] == 0      # the refused switch-back
+    assert by_tool[("probe", 3)]["charged"] == 1
+    assert trace["charged_steps"] == 2
+
+    # And it records WHERE each step ran — the question the incident came down to.
+    assert by_tool[("probe", 3)]["workspace"].endswith("deaf-communication-terminal")
+
+    # The reply is linked to the trace, so the app can find it from chat history.
+    from server.db import store as memory
+    turns = memory.get_recent("s1", n=5)
+    assert turns[-1]["run_id"] == trace["id"]
+
+
 def test_charged_steps_ignores_free_ones():
     assert shell._charged_steps([]) == 0
     assert shell._charged_steps([
