@@ -1,5 +1,6 @@
 import json
 from server import config
+from server import workspace
 from server.skills.cli_base import CLISubprocessSkill
 from server.skills import register
 
@@ -46,7 +47,7 @@ class CodexSkill(CLISubprocessSkill):
             return ["codex", "exec", "resume", resume_id, *self._FLAGS,
                     *model_flags, prompt]
         return ["codex", "exec", *self._FLAGS, *model_flags,
-                "-C", str(config.WORKSPACE_DIR), prompt]
+                "-C", str(workspace.active()), prompt]
 
     def extract_session_id(self, stdout: str) -> str | None:
         for line in stdout.splitlines():

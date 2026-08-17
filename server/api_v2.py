@@ -21,12 +21,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from server import config as cfg
-from server import fcm
+from server import fcm, workspace
 from server.db import notes_store, diary_store, reminders_store
 from server.db import devices_store
 from server.db import store as memory
 from server.media import ensure_uploads_dir, is_served_path
-from server.skills.projects import _candidates as _project_candidates, _switch_view as _switch_workspace
 from server.work_orders import WorkOrderSpec
 
 router = APIRouter(prefix="/api", tags=["app"])
@@ -357,10 +356,16 @@ async def push_test():
 
 @router.get("/projects")
 def list_projects():
-    cur = str(cfg.WORKSPACE_DIR)
+    """Every candidate project with the facts needed to tell them apart: where it
+    actually lives, whether it is a repo, which branch, and how stale it is. A
+    bare name is not enough when ~/Projects holds thirty directories."""
+    current = workspace.active()
     return {
-        "current_name": cfg.WORKSPACE_DIR.name,
-        "projects": [{"name": p.name, "active": str(p) == cur} for p in _project_candidates()],
+        "current_name": current.name,
+        "current_path": str(current),
+        "current_display_path": workspace.prettify(current),
+        "parent_dir": workspace.prettify(workspace.parent_dir()),
+        "projects": workspace.describe_all(),
     }
 
 
@@ -370,8 +375,30 @@ class ProjectSwitch(BaseModel):
 
 @router.post("/projects/switch")
 def switch_project(p: ProjectSwitch):
-    _switch_workspace(p.name)   # sets cfg.WORKSPACE_DIR + persists state.json
-    return {"current_name": cfg.WORKSPACE_DIR.name}
+    """Move the default project for new threads. Fails LOUDLY: this used to
+    discard the resolver's answer and return 200 with the *old* name, so the app
+    reported "Switched to …" for a switch that never happened."""
+    target = workspace.resolve(p.name)
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": f"No project matches '{p.name}'.",
+                "suggestions": workspace.suggestions(p.name),
+            },
+        )
+    previous = workspace.active()
+    workspace.persist_default(target)
+    try:
+        from server.skills.context import ensure_context
+        ensure_context(target)
+    except Exception:
+        pass
+    return {
+        "current_name": target.name,
+        "previous_name": previous.name,
+        "project": workspace.describe(target, is_active=True),
+    }
 
 
 # ── active CLI sessions (continuity + "continue on Mac" handoff) ──────────────
@@ -390,7 +417,7 @@ def active_cli_sessions():
     supports reuse — plus a ready-to-paste 'continue on the Mac' command. Lets
     the app show which thread it's continuing and hand it off to the terminal."""
     from server.db import cli_sessions_store, native_sessions
-    ws = str(cfg.WORKSPACE_DIR)
+    ws = str(workspace.active())
     sessions = cli_sessions_store.all_for(ws)
     # Reconcile before displaying: a terminal-started native thread should be
     # visible immediately, not only after Gajala has completed another turn.
@@ -404,7 +431,7 @@ def active_cli_sessions():
         tmpl = _RESUME_CMD.get(engine)
         out.append({"engine": engine, "session_id": sid,
                     "resume_cmd": tmpl.format(sid=sid) if tmpl else None})
-    return {"workspace": cfg.WORKSPACE_DIR.name, "workspace_path": ws, "sessions": out}
+    return {"workspace": workspace.active().name, "workspace_path": ws, "sessions": out}
 
 
 # ── coding engine (pinned model for the chat) ─────────────────────────────────
@@ -999,12 +1026,25 @@ def queue_settings_set(body: QueueSettingsIn):
 
 
 def _resolve_project_path(name: str | None) -> str:
-    """A project name/substring or path → absolute path (default: active workspace)."""
+    """A project name/substring or path → absolute path.
+
+    An omitted name means "the active workspace". A name that does NOT resolve
+    is an error, not a shrug: this used to fall back to the active workspace,
+    which quietly ran queued coding jobs against whatever repo happened to be
+    current.
+    """
     if not name or not name.strip():
-        return str(cfg.WORKSPACE_DIR)
-    from server.skills.projects import _resolve
-    p = _resolve(name)
-    return str(p) if p else str(cfg.WORKSPACE_DIR)
+        return str(workspace.active())
+    p = workspace.resolve(name)
+    if p is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"No project matches '{name}'.",
+                "suggestions": workspace.suggestions(name),
+            },
+        )
+    return str(p)
 
 
 # ── Notifications inbox (Alerts tab) ──────────────────────────────────────────

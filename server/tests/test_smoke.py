@@ -101,7 +101,23 @@ def test_shell_coerces_structured_tool_args(monkeypatch):
 
     result = asyncio.run(shell.ShellSkill().run("check status"))
 
-    assert result == 'probe ran: {"path":"notes.md","mode":"read"}'
+    # Readable "k: v" lines, NOT a JSON dump. Skills are natural-language tools;
+    # handing one `{"switch":"deaf-communication-terminal"}` verbatim is how a
+    # real turn burned two steps on "No project matches '{...}'".
+    assert result == "probe ran: path: notes.md\nmode: read"
+
+
+def test_shell_unwraps_a_wrapped_tool_arg(monkeypatch):
+    """A router that wraps its argument in an object still reaches the skill with
+    the plain string the skill expects."""
+    from server.skills.shell import _coerce_args
+
+    assert _coerce_args({"switch": "deaf-communication-terminal"}, "projects") == (
+        "switch deaf-communication-terminal", True)
+    assert _coerce_args({"command": "list pending tasks"}, "codex") == (
+        "list pending tasks", True)
+    assert _coerce_args("switch general", "projects") == ("switch general", False)
+    assert _coerce_args(None, "projects") == ("", False)
 
 
 def test_usage_ignores_expired_rate_limits(monkeypatch):

@@ -24,7 +24,7 @@ import shutil
 import time
 from pathlib import Path
 
-from server import config
+from server import workspace
 from server.skills.base import Skill
 from server.skills import register
 
@@ -45,7 +45,7 @@ async def _run_firebase(args: list[str], timeout: int = DEFAULT_TIMEOUT
     if shutil.which("firebase") is None:
         return (127, "", "firebase CLI not installed. Install: npm i -g firebase-tools")
 
-    cwd = str(config.WORKSPACE_DIR)
+    cwd = str(workspace.active())
     cmd = ["firebase"] + args
 
     proc = None
@@ -75,12 +75,12 @@ async def _run_firebase(args: list[str], timeout: int = DEFAULT_TIMEOUT
 # ── shared helpers ────────────────────────────────────────────────────────────
 
 def _has_firebase_json() -> bool:
-    return (config.WORKSPACE_DIR / "firebase.json").exists()
+    return (workspace.active() / "firebase.json").exists()
 
 
 def _short_workspace() -> str:
     home = str(Path.home())
-    s = str(config.WORKSPACE_DIR)
+    s = str(workspace.active())
     return "~" + s[len(home):] if s.startswith(home) else s
 
 
@@ -95,7 +95,7 @@ def _no_firebase_json_msg() -> str:
 
 def _read_targets() -> list[str]:
     """Inspect firebase.json to list which products are configured."""
-    fb_json = config.WORKSPACE_DIR / "firebase.json"
+    fb_json = workspace.active() / "firebase.json"
     try:
         data = json.loads(fb_json.read_text())
     except (OSError, json.JSONDecodeError):

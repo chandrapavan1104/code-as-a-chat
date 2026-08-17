@@ -81,8 +81,9 @@ def _save(state: dict) -> None:
 def _workspace_key(workspace: str | Path | None = None) -> str:
     if workspace is None:
         try:
-            from server import config
-            workspace = config.WORKSPACE_DIR
+            # Imported lazily and aliased: the parameter above shadows the module.
+            from server import workspace as ws_mod
+            workspace = ws_mod.active()
         except Exception:
             return ""
     try:

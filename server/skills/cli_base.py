@@ -3,6 +3,7 @@ import shutil
 import time
 from server.skills.base import Skill
 from server import config
+from server import workspace
 from server.db import cli_runs_store, cli_sessions_store, native_sessions
 
 
@@ -118,7 +119,7 @@ class CLISubprocessSkill(Skill):
             return
         try:
             from server.skills.context import sync_context_files
-            sync_context_files(config.WORKSPACE_DIR)
+            sync_context_files(workspace.active())
         except Exception:
             pass
 
@@ -213,7 +214,7 @@ class CLISubprocessSkill(Skill):
         if shutil.which(self.cli_name) is None:
             return f"[{self.name}] CLI '{self.cli_name}' not installed.\n{self.install_hint}"
 
-        cwd = str(config.WORKSPACE_DIR)
+        cwd = str(workspace.active())
 
         # Read-side guard: converge the shared context BEFORE this engine acts, so
         # a model taking over from a different one reads the latest notes — not a

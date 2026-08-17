@@ -14,7 +14,7 @@ whole filesystem. is_served_path() is the allow-list the file endpoint enforces.
 
 from pathlib import Path
 
-from server import config
+from server import workspace
 
 UPLOADS_DIR = Path.home() / ".codeasachat" / "uploads"
 
@@ -36,7 +36,7 @@ def is_served_path(p: Path) -> bool:
         return False
     roots = [UPLOADS_DIR.resolve()]
     try:
-        roots.append(Path(config.WORKSPACE_DIR).resolve())
+        roots.append(Path(workspace.active()).resolve())
     except OSError:
         pass
     return any(rp == root or root in rp.parents for root in roots)

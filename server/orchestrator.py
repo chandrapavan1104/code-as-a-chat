@@ -23,4 +23,9 @@ async def route(command: str, prompt: str = "", **kwargs) -> str:
     # Check if the skill is enabled
     if not prefs.is_skill_enabled(skill_name):
         return f"Skill '{skill_name}' is currently disabled."
+    # A directly-typed /projects switch is the user choosing, so it also moves
+    # the default for new threads. The agent calling the same skill mid-turn
+    # only rebinds that turn (see server/skills/projects.py).
+    if skill_name == "projects":
+        kwargs.setdefault("persist", True)
     return await skill.run(prompt, **kwargs)

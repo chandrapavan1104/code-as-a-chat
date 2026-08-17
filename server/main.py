@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
-from server import config, fcm, orchestrator
+from server import config, fcm, orchestrator, workspace
 from server.db import store as memory
 from server.db import (capability_store, cli_runs_store, deployment_store, errors_store,
                        night_queue_store, notifications_store)
@@ -75,6 +75,11 @@ class RunRequest(BaseModel):
     prompt: str = ""
     # Optional conversation key. Clients namespace it, e.g. "tg:<chat_id>".
     session_id: str | None = None
+    # The project this turn runs in. The thread owns its project, so the client
+    # states it rather than relying on a mutable server-side global. Omitted by
+    # older clients — the server then recovers it from the session id's "::<slug>"
+    # suffix, and only falls back to the persisted default if that fails too.
+    project: str | None = None
     # When true, push an FCM "reply is ready" notification once the run
     # completes. The app sets this so a request kicked off then backgrounded
     # still pings the user like a chat message. The app suppresses the
@@ -175,9 +180,12 @@ async def toggle_skill(skill_name: str, request: SkillToggleRequest):
 @app.post("/run", dependencies=[Depends(require_token)])
 async def run(body: RunRequest, background_tasks: BackgroundTasks):
     try:
-        result = await orchestrator.route(
-            body.command, body.prompt, session_id=body.session_id
-        )
+        with workspace.bound(workspace.for_turn(body.project, body.session_id)):
+            result = await orchestrator.route(
+                body.command, body.prompt, session_id=body.session_id
+            )
+            # Read inside the binding: the agent may have rebound the turn.
+            ws_name = workspace.name()
         _persist_skill_turn(body.command, body.session_id, body.prompt, result)
         # Ping the phone once the (possibly long) run finishes, if asked and we
         # have a session to deep-link back into. Runs after the response is sent.
@@ -188,7 +196,7 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
         # `workspace` lets the app follow project switches made *during* the turn
         # (e.g. the agent used the projects tool) so its header + thread stay synced.
         return {"command": body.command, "result": result,
-                "workspace": config.WORKSPACE_DIR.name}
+                "workspace": ws_name}
     except Exception as exc:
         errors_store.add("server", "run", f"{type(exc).__name__}: {exc}",
                          detail=traceback.format_exc(),
@@ -216,16 +224,18 @@ async def run_stream(body: RunRequest):
 
     async def worker() -> None:
         try:
-            result = await orchestrator.route(
-                body.command, body.prompt,
-                session_id=body.session_id, on_event=on_event,
-            )
+            with workspace.bound(workspace.for_turn(body.project, body.session_id)):
+                result = await orchestrator.route(
+                    body.command, body.prompt,
+                    session_id=body.session_id, on_event=on_event,
+                )
+                ws_name = workspace.name()
             _persist_skill_turn(body.command, body.session_id, body.prompt, result)
-            # `workspace` = the active project *after* the turn, so the app can
-            # follow a switch the agent made mid-turn (projects tool) and keep its
-            # header + conversation thread in sync.
+            # `workspace` = the project the turn ENDED in, so the app can follow a
+            # switch the agent made mid-turn (projects tool) and keep its header +
+            # conversation thread in sync.
             await queue.put({"type": "final", "result": result,
-                             "workspace": config.WORKSPACE_DIR.name})
+                             "workspace": ws_name})
             if body.notify and body.session_id:
                 await _push_reply(body.session_id, body.command, result)
         except Exception as exc:
