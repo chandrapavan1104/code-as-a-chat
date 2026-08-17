@@ -110,6 +110,9 @@ class RunStep {
 /// the reply landed.
 class RunTrace {
   final String id, workspace, prompt, stopReason, reply;
+  /// Which model(s) routed the turn, e.g. "claude" or "qwen:rejected -> claude".
+  /// When a turn misbehaves, this is the first thing worth knowing.
+  final String brains;
   final int durationMs, chargedSteps;
   final List<RunStep> steps;
   RunTrace({
@@ -118,6 +121,7 @@ class RunTrace {
     required this.prompt,
     required this.stopReason,
     required this.reply,
+    required this.brains,
     required this.durationMs,
     required this.chargedSteps,
     required this.steps,
@@ -128,6 +132,7 @@ class RunTrace {
     prompt: j['prompt'] ?? '',
     stopReason: j['stop_reason'] ?? '',
     reply: j['reply'] ?? '',
+    brains: j['brains'] ?? '',
     durationMs: j['duration_ms'] ?? 0,
     chargedSteps: j['charged_steps'] ?? 0,
     steps: ((j['steps'] as List?) ?? const [])

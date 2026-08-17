@@ -119,9 +119,19 @@ OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
 QWEN_MODEL: str = os.getenv("QWEN_MODEL", "qwen2.5:3b")
 QWEN_KEEP_ALIVE: str = os.getenv("QWEN_KEEP_ALIVE", "30m")
 # Tasks that run on Qwen as PRIMARY (local first, Claude/OpenAI as fallback).
-# Every other task uses Qwen only as the LAST fallback. Comma list of:
-# shell, notes, diary, reminders. Default keeps reminders on Claude (time math).
-QWEN_TASKS: str = os.getenv("QWEN_TASKS", "shell,notes,diary")
+# Every other task uses Qwen only as the LAST fallback — so an empty list means
+# "Qwen is a backup brain, never the first choice".
+#
+# Default is EMPTY, deliberately. Running a 3B model as the primary agent router
+# cost more than it saved: it emitted off-schema decisions ({"switch":"x"} as a
+# tool argument), copied a placeholder path out of its own system prompt into a
+# real tool call, omitted "action" entirely, and produced garbled persona
+# replies. Each of those burned real steps and, worse, reached the user. Qwen
+# still earns its place as the LAST fallback: when Claude and OpenAI are both
+# exhausted, a degraded local answer beats no answer at all.
+#
+# Set e.g. QWEN_TASKS=notes,diary to put simpler formatting work back on it.
+QWEN_TASKS: str = os.getenv("QWEN_TASKS", "")
 
 # ── self-healing / fix agent ──────────────────────────────────────────────────
 # This repo (the app the fix agent edits). Derived from this file's location so

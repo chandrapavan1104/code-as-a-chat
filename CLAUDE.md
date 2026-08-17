@@ -177,6 +177,18 @@ job's own delta onto the newest published base. An independent launchd watchdog
 restores the Gajala API if the server service is unexpectedly unloaded, while a
 restart grace window avoids racing verified deployments.
 
+**Qwen is a backup brain, not the primary.** `QWEN_TASKS` now defaults to empty,
+so routing runs `claude → openai → qwen`. A 3B local model as the primary router
+cost more than it saved: off-schema decisions, a placeholder path copied out of
+its own system prompt into a real tool call, omitted `action`, garbled replies.
+It stays LAST so nothing dies when Claude and OpenAI are exhausted. Escalation
+is enforced by `_is_usable_decision`, which accepts only a real decision
+(`done`, `call`+tool, a bare tool, or a registered tool name as the action) —
+accepting "any non-empty action" was what let bad output reach the user. Levers:
+`SHELL_LLM_PROVIDER=openai` to conserve Claude, `QWEN_TASKS=notes,diary` to put
+simpler work back on it. The run trace names the brains used
+(`qwen:rejected -> claude`).
+
 **The thread owns the project.** A turn resolves its project once (explicit
 `project` field → the session id's `::<slug>` suffix → the persisted default) and
 may change it **at most once, irreversibly**, via `projects switch` — which
@@ -208,7 +220,10 @@ paths, git branch and remote, and a failed switch fails loudly.
   and git state; `/api/projects/switch` 404s with suggestions instead of
   returning 200 with the OLD name; `_resolve_project_path` no longer silently
   falls back to the active workspace (which could run a queued job against the
-  wrong repo). Docs: `docs/flows/project-switching.md`.
+  wrong repo). **Qwen demoted to backup-only** (`QWEN_TASKS` defaults to empty):
+  it was the common cause behind all four defects, and the decision validator was
+  tightened so its off-schema output escalates instead of surfacing. The trace
+  records which brains ran. Docs: `docs/flows/project-switching.md`.
 - 2026-08-13 — **Gajala availability and truthful queue recovery.** Restored an
   unexpectedly unloaded API service; fixed false `shipped`/`live` states after
   rejected pushes, unified relative/worktree deployment ledger identities, and

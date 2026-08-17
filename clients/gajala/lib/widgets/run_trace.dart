@@ -16,6 +16,7 @@ class RunTraceStrip extends StatefulWidget {
   final String? project;
   final int? durationMs;
   final String? stopLabel;
+  final String? brains;
   final bool live;
   final bool hitStepLimit;
   final VoidCallback? onContinue;
@@ -26,6 +27,7 @@ class RunTraceStrip extends StatefulWidget {
     this.project,
     this.durationMs,
     this.stopLabel,
+    this.brains,
     this.live = false,
     this.hitStepLimit = false,
     this.onContinue,
@@ -38,6 +40,7 @@ class RunTraceStrip extends StatefulWidget {
         project: t.projectName,
         durationMs: t.durationMs,
         stopLabel: t.stopLabel,
+        brains: t.brains,
         hitStepLimit: t.hitStepLimit,
         onContinue: onContinue,
       );
@@ -134,17 +137,33 @@ class _RunTraceStripState extends State<RunTraceStrip> {
 
   Widget _footer(Pal pal) => Padding(
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 9),
-        child: Row(children: [
-          Icon(widget.hitStepLimit ? Icons.timer_off_outlined : Icons.flag_outlined,
-              size: 13,
-              color: widget.hitStepLimit ? GajalaColors.warn : pal.textDim),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(widget.stopLabel!,
-                style: TextStyle(
-                    color: widget.hitStepLimit ? GajalaColors.warn : pal.textDim,
-                    fontSize: 11.5)),
-          ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(widget.hitStepLimit ? Icons.timer_off_outlined : Icons.flag_outlined,
+                size: 13,
+                color: widget.hitStepLimit ? GajalaColors.warn : pal.textDim),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(widget.stopLabel!,
+                  style: TextStyle(
+                      color: widget.hitStepLimit ? GajalaColors.warn : pal.textDim,
+                      fontSize: 11.5)),
+            ),
+          ]),
+          // Which brain routed this turn. A "->" means one was rejected and the
+          // next took over — the single most useful clue for a weird reply.
+          if (widget.brains != null && widget.brains!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(children: [
+                Icon(Icons.psychology_outlined, size: 13, color: pal.textDim),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(widget.brains!,
+                      style: TextStyle(color: pal.textDim, fontSize: 11.5)),
+                ),
+              ]),
+            ),
         ]),
       );
 

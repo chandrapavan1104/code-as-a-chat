@@ -58,6 +58,7 @@ def init() -> None:
                 prompt      TEXT,
                 stop_reason TEXT,
                 reply       TEXT,
+                brains      TEXT,
                 started_at  REAL NOT NULL,
                 ended_at    REAL
             )
@@ -76,6 +77,11 @@ def init() -> None:
                 duration_ms INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Which brain(s) routed the turn, e.g. "claude" or "qwen:rejected -> claude".
+        # Added after the table existed, hence the guarded ALTER.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
+        if "brains" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN brains TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_session "
             "ON runs (session_id, started_at DESC)"
@@ -133,18 +139,19 @@ def add_step(run_id: str, *, idx: int, tool: str, args: str, result: str,
 
 
 def finish(run_id: str, *, stop_reason: str, reply: str = "",
-           workspace: str = "") -> None:
+           workspace: str = "", brains: str = "") -> None:
     with _conn() as conn:
         if workspace:
             conn.execute(
                 "UPDATE runs SET stop_reason = ?, reply = ?, ended_at = ?, "
-                "workspace = ? WHERE id = ?",
-                (stop_reason, reply[:4000], time.time(), workspace, run_id),
+                "workspace = ?, brains = ? WHERE id = ?",
+                (stop_reason, reply[:4000], time.time(), workspace, brains, run_id),
             )
         else:
             conn.execute(
-                "UPDATE runs SET stop_reason = ?, reply = ?, ended_at = ? WHERE id = ?",
-                (stop_reason, reply[:4000], time.time(), run_id),
+                "UPDATE runs SET stop_reason = ?, reply = ?, ended_at = ?, "
+                "brains = ? WHERE id = ?",
+                (stop_reason, reply[:4000], time.time(), brains, run_id),
             )
         conn.commit()
 

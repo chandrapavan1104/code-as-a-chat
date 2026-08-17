@@ -18,6 +18,8 @@ import logging
 import re
 import shutil
 import time
+from contextvars import ContextVar
+
 import httpx
 from server.skills.base import Skill
 from server.skills import register, get_skill
@@ -299,6 +301,33 @@ def _provider_chain(task: str) -> list[str]:
     return chain
 
 
+# Which brain answered each routing call this turn, in order. A ContextVar so
+# concurrent turns keep their own list. Surfaced in the run trace: when a turn
+# goes wrong, "which model routed it" is the first thing worth knowing.
+_brains_var: ContextVar[list[str] | None] = ContextVar("shell_brains", default=None)
+
+
+class _BrainLog:
+    """Append-only view over the current turn's brain list; a no-op outside a turn."""
+
+    def append(self, name: str) -> None:
+        current = _brains_var.get()
+        if current is not None:
+            current.append(name)
+
+    def summary(self) -> str:
+        """e.g. "claude" or "qwen:rejected -> claude" — deduped, order kept."""
+        current = _brains_var.get() or []
+        seen: list[str] = []
+        for b in current:
+            if b not in seen:
+                seen.append(b)
+        return " -> ".join(seen)
+
+
+_brains = _BrainLog()
+
+
 async def _call_llm(provider: str, system_prompt: str, user_message: str,
                     timeout: int, model: str | None,
                     json_mode: bool = False) -> str:
@@ -327,21 +356,29 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
     chain = _provider_chain(task)
     last_exc: Exception | None = None
     last_out: str | None = None
+    last_provider: str | None = None
     for provider in chain:
         try:
             out = await _call_llm(provider, system_prompt, user_message, timeout,
                                   model, json_mode=validate is not None)
         except Exception as exc:
             last_exc = exc
+            _brains.append(f"{provider}:error")
             _log.warning("shell LLM provider %r failed for task %r (%s)", provider, task, exc)
             continue
         if validate is not None and not validate(out):
             last_out = out
+            last_provider = provider
+            _brains.append(f"{provider}:rejected")
             _log.warning("provider %r output failed validation for task %r — trying next",
                          provider, task)
             continue
+        _brains.append(provider)
         return out
     if last_out is not None:
+        # Every provider was rejected. Return the last one's output anyway so the
+        # caller's salvage logic can try, but record that nothing validated.
+        _brains.append(f"{last_provider}:unvalidated")
         return last_out
     raise last_exc or RuntimeError("no LLM provider available")
 
@@ -531,20 +568,46 @@ def _parse_json_decision(raw: str) -> dict | None:
 
 def _is_usable_decision(raw: str) -> bool:
     """Did the model return a decision we can actually act on? Parseable JSON is
-    not enough: a small model (Qwen) may emit a valid but off-schema blob (e.g.
+    not enough: a small model may emit a valid but off-schema blob (e.g.
     {"project_name":…,"description":…}). Such output must FAIL validation so the
-    provider chain escalates it to Claude instead of it reaching the user as raw
-    JSON. Usable = a done/call action, a bare tool to call, a reply/final to
-    return, or any non-empty string action (a bare tool name the loop normalizes)."""
+    provider chain escalates to the next brain instead of it reaching the user as
+    raw JSON.
+
+    Usable means one of:
+      • action "done" (or a reply/final to return)
+      • action "call" with a tool
+      • a bare {"tool": …} the loop normalizes into a call
+      • an action that IS a registered tool name (the shorthand the loop accepts)
+
+    Note what is NOT accepted: any non-empty string action. That earlier rule
+    passed {"action":"switch"} and similar invented verbs straight through, which
+    is precisely how off-schema output stopped escalating and started surfacing
+    to the user.
+    """
     d = _parse_json_decision(raw)
     if not d:
         return False
-    action = d.get("action")
-    if isinstance(action, str) and action.strip():
-        return True
+
     if (d.get("tool") or "").strip():
         return True
-    return d.get("reply") is not None or bool(d.get("final"))
+    if d.get("reply") is not None or bool(d.get("final")):
+        return True
+
+    action = d.get("action")
+    if not isinstance(action, str) or not action.strip():
+        return False
+    action = action.strip().lower()
+    if action == "done":
+        return True
+    if action == "call":
+        return bool((d.get("tool") or "").strip())
+    # A bare tool name as the action is valid shorthand — but only if such a
+    # tool actually exists.
+    try:
+        from server.skills import registry
+        return action in registry
+    except Exception:
+        return False
 
 
 def _human_text(decision: dict) -> str:
@@ -645,13 +708,14 @@ def _run_step(run_id: str | None, idx: int, tool: str, args: str, result: str,
         pass
 
 
-def _run_finish(run_id: str | None, reason: str, reply: str) -> None:
+def _run_finish(run_id: str | None, reason: str, reply: str,
+                brains: str = "") -> None:
     if not run_id:
         return
     try:
         from server.db import agent_runs_store
         agent_runs_store.finish(run_id, stop_reason=reason, reply=reply,
-                                workspace=str(workspace.active()))
+                                workspace=str(workspace.active()), brains=brains)
     except Exception:
         pass
 
@@ -742,6 +806,7 @@ class ShellSkill(Skill):
         # Open a durable trace for this turn. Every exit below goes through
         # `finish`, so a reply can always be traced back to the steps that
         # produced it — including the ones that went wrong.
+        _brains_var.set([])   # fresh per turn; see _BrainLog
         run_id = _run_start(session_id, prompt)
         # Announce the trace id up front, not at the end: if the stream drops
         # mid-turn the app can still fetch /api/runs/<id> and show what happened
@@ -750,7 +815,7 @@ class ShellSkill(Skill):
                                "project": workspace.name()})
 
         def finish(text: str, reason: str) -> str:
-            _run_finish(run_id, reason, text)
+            _run_finish(run_id, reason, text, brains=_brains.summary())
             self._remember(session_id, prompt, text, run_id)
             return text
 

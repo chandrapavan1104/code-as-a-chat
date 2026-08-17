@@ -307,6 +307,83 @@ def test_a_turn_leaves_a_readable_trace(projects_dir, monkeypatch):
     assert turns[-1]["run_id"] == trace["id"]
 
 
+# ── the routing brain ─────────────────────────────────────────────────────────
+
+def test_qwen_is_a_backup_never_the_primary(monkeypatch):
+    """A 3B local model as the PRIMARY router produced off-schema decisions,
+    fabricated paths and garbled replies. It stays in the chain as a last resort
+    — when Claude and OpenAI are both gone, a degraded answer beats none."""
+    monkeypatch.setattr(config, "QWEN_TASKS", "")
+    monkeypatch.setattr(config, "SHELL_LLM_PROVIDER", "auto")
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+
+    for task in ("shell", "notes", "diary", "reminders"):
+        chain = shell._provider_chain(task)
+        assert chain[-1] == "qwen", f"{task}: qwen must be the last resort"
+        assert chain[0] != "qwen", f"{task}: qwen must never lead"
+
+    # Still explicitly opt-in-able for the simpler formatting tasks.
+    monkeypatch.setattr(config, "QWEN_TASKS", "notes,diary")
+    assert shell._provider_chain("notes")[0] == "qwen"
+    assert shell._provider_chain("shell")[0] != "qwen"
+
+    # And a one-line override still conserves Claude entirely.
+    monkeypatch.setattr(config, "QWEN_TASKS", "")
+    monkeypatch.setattr(config, "SHELL_LLM_PROVIDER", "openai")
+    assert shell._provider_chain("shell")[0] == "openai"
+
+
+def test_off_schema_decisions_are_rejected_so_they_escalate():
+    """The validator is what makes a weak brain fall through to a stronger one.
+    It used to accept ANY non-empty string action, so invented verbs sailed
+    through and surfaced to the user as raw JSON."""
+    ok = shell._is_usable_decision
+    # Valid shapes.
+    assert ok('{"action":"done","reply":"hi"}')
+    assert ok('{"action":"call","tool":"projects","args":"current"}')
+    assert ok('{"tool":"projects","args":"current"}')          # bare tool
+    assert ok('{"action":"projects","args":"current"}')        # tool-as-action
+    # Invalid: an invented verb, which the old rule let through.
+    assert not ok('{"action":"switch","project":"deaf-communication-terminal"}')
+    assert not ok('{"action":"call"}')                          # call with no tool
+    assert not ok('{"project_name":"x","description":"y"}')     # off-schema blob
+    assert not ok("not json at all")
+
+
+def test_a_weak_brain_escalates_and_the_trace_says_so(projects_dir, monkeypatch):
+    """The real escalation path, end to end: a local model emits an off-schema
+    decision, it is rejected, the next brain answers — and the trace records
+    exactly that, because "which model produced this" is the first useful
+    question when a reply looks wrong."""
+    from server.db import agent_runs_store
+
+    # Exercise the REAL _haiku (the provider chain lives there); stub only the
+    # per-provider transport.
+    monkeypatch.setattr(shell, "_provider_chain", lambda task: ["qwen", "claude"])
+    seen: list[str] = []
+
+    async def fake_call(provider, system_prompt, user_message, timeout, model,
+                        json_mode=False):
+        seen.append(provider)
+        if provider == "qwen":
+            # Exactly the shape that used to sail through validation.
+            return '{"action":"switch","project":"deaf-communication-terminal"}'
+        return '{"action":"done","reply":"On deaf-communication-terminal."}'
+
+    monkeypatch.setattr(shell, "_call_llm", fake_call)
+
+    async def turn():
+        with workspace.bound(projects_dir / "general"):
+            return await shell.ShellSkill().run("where am I", session_id="s-brain")
+
+    reply = asyncio.run(turn())
+
+    assert seen == ["qwen", "claude"], "qwen's bad output must escalate, not stand"
+    assert reply == "On deaf-communication-terminal."
+    runs = agent_runs_store.list_runs(session_id="s-brain")
+    assert runs[0]["brains"] == "qwen:rejected -> claude"
+
+
 def test_charged_steps_ignores_free_ones():
     assert shell._charged_steps([]) == 0
     assert shell._charged_steps([

@@ -79,7 +79,39 @@ So a router that flails does not spend your budget. When the budget genuinely
 runs out, the turn ends with a summary of what landed and what is outstanding,
 and `stop_reason = step_limit`.
 
-## 4. Debugging a bad turn
+## 4. Which brain routes a turn
+
+Routing decisions go through `_provider_chain(task)` in `shell.py`:
+
+| Task | Order |
+|------|-------|
+| everything, by default | `claude` → `openai` → **`qwen` (last resort)** |
+| anything listed in `QWEN_TASKS` | `qwen` → `claude` → `openai` |
+
+`QWEN_TASKS` defaults to **empty**, on purpose. Running `qwen2.5:3b` as the
+primary router cost more than the tokens it saved — it emitted off-schema
+decisions, copied a placeholder path out of its own system prompt into a real
+tool call, and produced garbled replies. Qwen keeps its place at the *end* of
+the chain: when Claude and OpenAI are both exhausted, a degraded local answer
+beats no answer.
+
+What makes the chain work is `_is_usable_decision`. Each provider's output is
+validated, and a provider that fails is **skipped in favour of the next**. It
+accepts only a real decision — `done`, `call` with a tool, a bare tool, or an
+action that is a registered tool name. It deliberately rejects any other
+invented verb; accepting "any non-empty action" is what let bad output stop
+escalating and start reaching the user.
+
+Two levers:
+
+```bash
+SHELL_LLM_PROVIDER=openai   # conserve Claude — route on gpt-4o-mini instead
+QWEN_TASKS=notes,diary      # put simpler formatting work back on the local model
+```
+
+The trace records which brains were consulted, e.g. `qwen:rejected -> claude`.
+
+## 5. Debugging a bad turn
 
 Every turn writes a trace to `~/.codeasachat/agent_runs.db`. **Start here** — do
 not read `conversations.db` by hand.
@@ -110,7 +142,7 @@ Read, in order:
 Each assistant turn in `conversations` also carries its `run_id`, so any reply
 in history can be traced back.
 
-## 5. The failure this was built from
+## 6. The failure this was built from
 
 Real turn, `conversations.db` #803 — *"switch to the deaf terminal project and
 check the status"*:
