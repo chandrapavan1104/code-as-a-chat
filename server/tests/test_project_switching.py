@@ -423,3 +423,73 @@ def test_charged_steps_ignores_free_ones():
     assert shell._charged_steps([
         {"charged": True}, {"charged": False}, {},   # {} defaults to charged
     ]) == 2
+
+
+# ── LLM call hygiene ──────────────────────────────────────────────────────────
+
+def test_one_shot_llm_calls_carry_no_ambient_context(monkeypatch, tmp_path):
+    """A one-shot LLM call must receive the caller's prompt and nothing else.
+
+    Two leaks, both real and both found in production. The Claude CLI loads the
+    CLAUDE.md of whatever directory it starts in, and the server's cwd is inside
+    THIS repo — so every routing and refinement call was handed Code-as-a-Chat's
+    project memory. And the subprocess inherited the parent's stdin, so whatever
+    sat on it was appended to the prompt. Together they refined a work order for
+    another project entirely against this repo's context.
+    """
+    import asyncio as _asyncio
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return (b'{"result": "ok"}', b"")
+
+    async def fake_exec(*cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(shell.shutil, "which", lambda _: "/usr/bin/claude")
+    monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec)
+
+    asyncio.run(shell._claude_cli("sys", "hello", timeout=5))
+
+    # No project's CLAUDE.md: the call starts from an empty scratch directory.
+    cwd = captured["kwargs"].get("cwd")
+    assert cwd, "the CLI must be given an explicit cwd, not inherit the server's"
+    assert "Projects" not in str(cwd), f"cwd must not sit inside a project: {cwd}"
+
+    # Nothing on stdin can reach the prompt.
+    assert captured["kwargs"].get("stdin") is _asyncio.subprocess.DEVNULL
+
+
+def test_refiner_tells_the_model_which_project_the_job_targets(monkeypatch, tmp_path):
+    """Job #21 targeted TFI-banisa and came back a complete work order for
+    Code-as-a-Chat, because the refiner never said which repo the job was for."""
+    import server.work_order_refiner as wor
+    from server.db import night_queue_store
+
+    monkeypatch.setattr(
+        night_queue_store, "get",
+        lambda _id: {"id": 21, "status": "held",
+                     "project": "/Users/someone/Projects/TFI-banisa",
+                     "task": "Create GitHub repository and push local code",
+                     "spec_json": {"source_text": "Create GitHub repository and push local code"}},
+    )
+    monkeypatch.setattr(wor, "assess", lambda *a, **k: {}, raising=False)
+
+    seen = {}
+
+    async def fake_cli(system, prompt, timeout=90, model=None):
+        seen["prompt"] = prompt
+        raise RuntimeError("stop after capturing the prompt")
+
+    monkeypatch.setattr(wor, "_claude_cli", fake_cli)
+    with pytest.raises(RuntimeError):
+        asyncio.run(wor.refine_job(21, allow_cloud=True))
+
+    assert "TFI-banisa" in seen["prompt"], "the target project must be stated"
+    # Still no repo contents or absolute paths in the cloud call.
+    assert "/Users/" not in seen["prompt"]

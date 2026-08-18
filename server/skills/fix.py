@@ -54,6 +54,7 @@ async def _sh(*args: str, cwd: str | None = None, timeout: int = 60) -> tuple[in
     """Run a command, return (rc, combined output)."""
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=cwd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     try:
@@ -120,7 +121,8 @@ async def _run_codex(repo: str, task: str, timeout: int) -> tuple[str, str | Non
            "--dangerously-bypass-approvals-and-sandbox", "-C", repo,
            "--model", model, prompt]
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        *cmd, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     try:
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)

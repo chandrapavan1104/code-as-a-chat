@@ -33,7 +33,8 @@ _LOGIN_LOG = "/tmp/codeasachat_codex_login.log"
 
 async def _sh(*args: str, timeout: int = 20) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        *args, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:

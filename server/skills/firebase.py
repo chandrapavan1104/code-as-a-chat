@@ -52,6 +52,7 @@ async def _run_firebase(args: list[str], timeout: int = DEFAULT_TIMEOUT
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,

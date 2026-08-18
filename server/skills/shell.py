@@ -19,6 +19,7 @@ import re
 import shutil
 import time
 from contextvars import ContextVar
+from pathlib import Path
 
 import httpx
 from server.skills.base import Skill
@@ -444,10 +445,35 @@ async def _openai_chat(system_prompt: str, user_message: str,
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 
+def _neutral_cwd() -> str:
+    """An empty directory to run one-shot LLM calls from.
+
+    The Claude CLI loads the CLAUDE.md of whatever directory it starts in. These
+    calls inherit the server's cwd, which sits inside THIS repo — so every
+    routing/refinement call was silently handed Code-as-a-Chat's project memory.
+    That is both an egress the callers did not ask for and, worse, the wrong
+    context: a work order for another project got refined against this one's
+    CLAUDE.md and came back describing the wrong repo entirely.
+
+    Verified: `claude -p "name the project whose context you were given"` answers
+    "Code-as-a-chat" from the repo and "NONE" from an empty directory.
+    """
+    scratch = Path.home() / ".codeasachat" / "llm_scratch"
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return str(Path.home())
+    return str(scratch)
+
+
 async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIKU_TIMEOUT,
                       model: str | None = None) -> str:
     """One-shot LLM call via the Claude CLI. Tools disabled — pure text in/out.
-    Defaults to the fast shell model; pass `model=` for quality-sensitive skills."""
+    Defaults to the fast shell model; pass `model=` for quality-sensitive skills.
+
+    Runs from a neutral directory so no project's CLAUDE.md is auto-loaded; the
+    caller's prompt is the only context. See _neutral_cwd.
+    """
     if shutil.which("claude") is None:
         raise RuntimeError("claude CLI not installed")
 
@@ -465,8 +491,10 @@ async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIK
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=_neutral_cwd(),
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
