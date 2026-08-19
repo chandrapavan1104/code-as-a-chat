@@ -493,3 +493,29 @@ def test_refiner_tells_the_model_which_project_the_job_targets(monkeypatch, tmp_
     assert "TFI-banisa" in seen["prompt"], "the target project must be stated"
     # Still no repo contents or absolute paths in the cloud call.
     assert "/Users/" not in seen["prompt"]
+
+
+def test_chat_never_advertises_a_trace_it_cannot_serve(monkeypatch, tmp_path):
+    """Traces prune to the newest MAX_RUNS turns; conversations are kept forever.
+    So old replies outlive their trace, and reporting the dead id gives the app a
+    "What it did" affordance that 404s when tapped."""
+    from server import api_v2
+    from server.db import agent_runs_store, store as memory
+
+    agent_runs_store.init()
+    live = agent_runs_store.start(
+        session_id="s-chat", workspace="/tmp/demo", prompt="hi")
+    agent_runs_store.finish(live, stop_reason="done", reply="ok")
+
+    monkeypatch.setattr(memory, "get_recent", lambda *a, **k: [
+        {"role": "user", "content": "hi", "ts": 1, "run_id": None},
+        {"role": "assistant", "content": "live one", "ts": 2, "run_id": live},
+        {"role": "assistant", "content": "pruned one", "ts": 3,
+         "run_id": "deadbeefdeadbeef"},
+    ])
+
+    turns = api_v2.chat_history("s-chat")["turns"]
+    by_text = {t["content"]: t["run_id"] for t in turns}
+
+    assert by_text["live one"] == live, "a trace that exists must stay linked"
+    assert by_text["pruned one"] is None, "a pruned trace must not be advertised"

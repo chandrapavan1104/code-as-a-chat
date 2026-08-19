@@ -175,6 +175,22 @@ def get(run_id: str) -> dict | None:
     return run
 
 
+def existing(run_ids) -> set[str]:
+    """Which of these run ids still have a stored trace.
+
+    Pruning drops old runs while conversations keep their run_id forever, so the
+    chat endpoint checks before advertising a trace the app cannot fetch.
+    """
+    ids = [r for r in run_ids if r]
+    if not ids:
+        return set()
+    with _conn() as conn:
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT id FROM runs WHERE id IN ({marks})", ids).fetchall()
+    return {r["id"] for r in rows}
+
+
 def list_runs(session_id: str | None = None, limit: int = 25) -> list[dict]:
     """Recent runs, newest first, without their steps."""
     with _conn() as conn:

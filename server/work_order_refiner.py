@@ -27,10 +27,19 @@ Rules:
 - Make a practical, ordered implementation plan with concrete verification.
 - Acceptance criteria must be observable.
 - test_handoff must explain how the owner can verify from their phone. For web
-  work, require a localhost server reachable through the Mac's Tailscale IP and
-  port. For app work, require the APK/build and exact screen interactions.
+  work, require a localhost server on its OWN dedicated port, reached at
+  https://<mac>.<tailnet>.ts.net:<that port>. For app work, require the
+  APK/build and exact screen interactions.
+- NEVER take over the default Tailscale route. `tailscale serve` with no port,
+  or on 443, repoints https://<mac>.<tailnet>.ts.net itself — which is the
+  owner's phone connection to this assistant. A job that grabs it makes every
+  screen in the app return 404. Always pass an explicit non-443 port, and say so
+  in policy.
 - Policy must preserve existing changes, forbid destructive/external actions
-  without approval, and keep secrets out of output.
+  without approval, and keep secrets out of output. It must also forbid changing
+  the default Tailscale route, stopping/restarting the codeasachat services, or
+  binding to port 8000 — those are the owner's live connection to this
+  assistant.
 - Research jobs may gather public information and source URLs, but MUST NOT
   contact people, send email/messages, submit forms, log in, purchase, or claim
   an outreach action succeeded. Those actions belong in out_of_scope.

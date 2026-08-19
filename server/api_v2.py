@@ -47,9 +47,27 @@ _CODAUR_STALE_FALLBACK_SECONDS = 120
 
 @router.get("/chat")
 def chat_history(session_id: str, limit: int = 50):
-    # Each assistant turn carries its run_id, so the app can pull up the trace
-    # of what the agent actually did — even after a dropped stream or a restart.
-    return {"turns": memory.get_recent(session_id, n=limit)}
+    """Chat history, with each assistant turn's run_id so the app can pull up
+    the trace of what the agent actually did.
+
+    A run_id is only reported when its trace still EXISTS. Traces are pruned to
+    the newest MAX_RUNS turns while conversations are kept indefinitely, so old
+    replies inevitably outlive their trace — and handing the app an id it cannot
+    fetch turns into a dead "What it did" affordance that 404s when tapped.
+    """
+    turns = memory.get_recent(session_id, n=limit)
+    wanted = {t["run_id"] for t in turns if t.get("run_id")}
+    if wanted:
+        from server.db import agent_runs_store
+        try:
+            agent_runs_store.init()
+            alive = agent_runs_store.existing(wanted)
+        except Exception:
+            alive = set()
+        for t in turns:
+            if t.get("run_id") and t["run_id"] not in alive:
+                t["run_id"] = None
+    return {"turns": turns}
 
 
 # ── agent run traces (what the agent actually did, and why it stopped) ────────
