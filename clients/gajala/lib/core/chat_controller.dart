@@ -70,7 +70,16 @@ class ChatState {
   final List<String> queued;   // typed while a turn was running
   final String draft;          // half-typed input, kept across navigation
   final bool loaded;
-  final String? workspace;     // project the server reported after a turn
+  /// ONE-SHOT signal: "the last turn ended in this project". The screen follows
+  /// it and then clears it via [ChatController.consumeWorkspace].
+  ///
+  /// It must not persist. Controllers are kept alive per thread for the app's
+  /// lifetime, so a value left here is re-applied every rebuild — and because
+  /// following it swaps which controller the screen watches, two threads each
+  /// holding a stale value point at each other and the screen ping-pongs
+  /// between them forever (visibly: switching to a project fails and the screen
+  /// blinks).
+  final String? workspace;
   const ChatState({
     this.messages = const [],
     this.sending = false,
@@ -87,6 +96,10 @@ class ChatState {
     String? draft,
     bool? loaded,
     String? workspace,
+    // copyWith cannot express "set this back to null", and workspace is a
+    // one-shot that MUST be clearable. An explicit flag keeps the rest of the
+    // call sites unchanged.
+    bool clearWorkspace = false,
   }) =>
       ChatState(
         messages: messages ?? this.messages,
@@ -94,7 +107,7 @@ class ChatState {
         queued: queued ?? this.queued,
         draft: draft ?? this.draft,
         loaded: loaded ?? this.loaded,
-        workspace: workspace ?? this.workspace,
+        workspace: clearWorkspace ? null : (workspace ?? this.workspace),
       );
 }
 
@@ -102,6 +115,13 @@ class ChatController extends StateNotifier<ChatState> {
   final GajalaApi? _api;
   final ChatKey key;
   ChatController(this._api, this.key) : super(const ChatState());
+
+  /// Acknowledge the one-shot workspace signal. The screen calls this once it
+  /// has acted on it (or decided not to), so build() stops re-scheduling.
+  void consumeWorkspace() {
+    if (state.workspace == null) return;
+    state = state.copyWith(clearWorkspace: true);
+  }
 
   /// Load server history once per conversation (keeps an in-flight turn intact).
   Future<void> ensureLoaded({String? welcome}) async {

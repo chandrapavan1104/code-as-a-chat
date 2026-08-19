@@ -30,6 +30,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   String _model = 'auto';     // pinned coding engine
   String? _lastUserText;      // last thing the user typed (to resend on "move")
   int _lastMsgCount = 0;      // to auto-scroll only when something new lands
+  // Re-entrancy guard: following a workspace signal swaps which controller the
+  // screen watches, which rebuilds — this stops that rebuild starting another
+  // follow before the first has finished.
+  bool _followingWorkspace = false;
 
   /// The conversation this screen is showing. State lives in the controller so
   /// it survives navigating away (a running turn keeps running and stays visible).
@@ -105,6 +109,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// thread. [reload] pulls the destination thread's history (used after we've
   /// been away); mid-turn we keep the visible messages and just re-key + note it.
   Future<void> _syncWorkspace(String? name, {bool reload = false}) async {
+    // Acknowledge the signal FIRST, on every path including the early returns.
+    // A skill tab has no directory to follow, so it used to return here without
+    // clearing — and build() then re-scheduled this call on every single frame.
+    _chat?.consumeWorkspace();
     if (widget.command != 'shell' || name == null || name.isEmpty) return;
     if (name == _dir) return;
     final sid = _sidFor(name);
@@ -302,10 +310,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _lastMsgCount = msgs.length;
       _scrollEnd();
     }
-    // Follow a project switch the agent made during a turn.
-    if (chat.workspace != null && chat.workspace != _dir) {
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => _syncWorkspace(chat.workspace));
+    // Follow a project switch the agent made during a turn. `workspace` is a
+    // one-shot that _syncWorkspace consumes, so this cannot re-arm itself; the
+    // guard below is the second line of defence against a rebuild storm.
+    if (chat.workspace != null && !_followingWorkspace) {
+      _followingWorkspace = true;
+      final target = chat.workspace;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        try {
+          await _syncWorkspace(target);
+        } finally {
+          if (mounted) _followingWorkspace = false;
+        }
+      });
     }
 
     return Scaffold(
