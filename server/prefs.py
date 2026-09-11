@@ -28,7 +28,7 @@ MODEL_ENGINES = ("claude", "codex", "gemini", "qwen")
 # read live from its own model cache (see model_presets) so the list is current.
 CLAUDE_MODELS = ("opus", "sonnet", "haiku")
 GEMINI_MODELS = ("gemini-2.5-pro", "gemini-2.5-flash")
-_CODEX_FALLBACK = ("gpt-5.6-sol", "gpt-5.5", "gpt-5.4-mini")
+_CODEX_FALLBACK = ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4-mini")
 _QWEN_FALLBACK = ("qwen2.5:7b",)
 
 
@@ -51,7 +51,9 @@ def _codex_models() -> list[str]:
         data = json.loads((Path.home() / ".codex" / "models_cache.json").read_text())
         slugs = [m["slug"] for m in data.get("models", [])
                  if m.get("visibility") == "list" and m.get("slug")]
-        return slugs or list(_CODEX_FALLBACK)
+        # Keep newly supported first-party models visible even before an older
+        # CLI cache has refreshed. Preserve cached ordering for everything else.
+        return list(dict.fromkeys((*_CODEX_FALLBACK, *slugs)))
     except Exception:
         return list(_CODEX_FALLBACK)
 

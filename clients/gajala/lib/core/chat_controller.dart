@@ -8,6 +8,7 @@
 // half-typed draft — so leaving and coming back shows the exact same state.
 
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api.dart';
@@ -80,6 +81,7 @@ class ChatState {
   /// between them forever (visibly: switching to a project fails and the screen
   /// blinks).
   final String? workspace;
+  final AssistantWork? work;
   const ChatState({
     this.messages = const [],
     this.sending = false,
@@ -87,6 +89,7 @@ class ChatState {
     this.draft = '',
     this.loaded = false,
     this.workspace,
+    this.work,
   });
 
   ChatState copyWith({
@@ -100,6 +103,8 @@ class ChatState {
     // one-shot that MUST be clearable. An explicit flag keeps the rest of the
     // call sites unchanged.
     bool clearWorkspace = false,
+    AssistantWork? work,
+    bool clearWork = false,
   }) =>
       ChatState(
         messages: messages ?? this.messages,
@@ -108,6 +113,7 @@ class ChatState {
         draft: draft ?? this.draft,
         loaded: loaded ?? this.loaded,
         workspace: clearWorkspace ? null : (workspace ?? this.workspace),
+        work: clearWork ? null : (work ?? this.work),
       );
 }
 
@@ -128,6 +134,7 @@ class ChatController extends StateNotifier<ChatState> {
     if (state.loaded || state.sending) return;
     final api = _api;
     List<ChatMessage> loaded = const [];
+    AssistantWork? restoredWork;
     if (api != null) {
       try {
         final history = await api.chatHistory(key.sid);
@@ -138,9 +145,20 @@ class ChatController extends StateNotifier<ChatState> {
           return ChatMessage('bot', clean, remoteImages: urls);
         }).toList();
       } catch (_) {/* fall through to welcome */}
+      if (key.command == 'shell') {
+        try {
+          for (final item in await api.assistantWork(key.sid)) {
+            if (item.isActive) {
+              restoredWork = item;
+              break;
+            }
+          }
+        } catch (_) {/* older servers have no durable-work endpoint */}
+      }
     }
     state = state.copyWith(
       loaded: true,
+      work: restoredWork,
       messages: loaded.isNotEmpty
           ? loaded
           : [if (welcome != null) ChatMessage('bot', welcome)],
@@ -151,6 +169,18 @@ class ChatController extends StateNotifier<ChatState> {
 
   void addSystemNote(String text) =>
       state = state.copyWith(messages: [...state.messages, ChatMessage('system', text)]);
+
+  String _requestId() => '${key.sid}:${DateTime.now().microsecondsSinceEpoch}:'
+      '${Random.secure().nextInt(1 << 32)}';
+
+  Future<void> stopWork() async {
+    final api = _api;
+    final work = state.work;
+    if (api == null || work == null || !work.isActive) return;
+    try {
+      state = state.copyWith(work: await api.stopWork(work.id), sending: false);
+    } catch (_) {/* retain the server-authoritative running state */}
+  }
 
   /// Send a message. If a turn is already running the message is QUEUED and
   /// shown as such, then sent automatically when the current turn finishes.
@@ -163,6 +193,13 @@ class ChatController extends StateNotifier<ChatState> {
         queued: [...state.queued, t],
         messages: [...state.messages, ChatMessage('queued', t)],
       );
+      final work = state.work;
+      final api = _api;
+      if (work != null && work.isActive && api != null) {
+        try {
+          state = state.copyWith(work: await api.steerWork(work.id));
+        } catch (_) {/* the original turn remains authoritative */}
+      }
       return;
     }
     state = state.copyWith(draft: '');
@@ -231,6 +268,8 @@ class ChatController extends StateNotifier<ChatState> {
     final live = <int, RunStep>{};
     String? runId;
     String? project;
+    final requestId = _requestId();
+    final continuing = state.work?.isActive == true ? state.work!.id : null;
 
     void showSteps() {
       final ordered = live.keys.toList()..sort();
@@ -248,8 +287,16 @@ class ChatController extends StateNotifier<ChatState> {
       }
 
       await for (final ev in api.runStream(key.command, prompt, key.sid,
-          notify: true, project: state.workspace)) {
+          notify: true, project: state.workspace, requestId: requestId,
+          continueTaskId: continuing)) {
         switch (ev['type']) {
+          case 'work':
+            final raw = ev['work'];
+            if (raw is Map) {
+              state = state.copyWith(work: AssistantWork.fromJson(
+                  Map<String, dynamic>.from(raw)));
+            }
+            break;
           // Sent before any work starts, so a dropped stream can still fetch
           // the trace instead of leaving the user with nothing.
           case 'run':
@@ -295,6 +342,11 @@ class ChatController extends StateNotifier<ChatState> {
             showSteps();
             break;
           case 'final':
+            final rawWork = ev['work'];
+            if (rawWork is Map) {
+              state = state.copyWith(work: AssistantWork.fromJson(
+                  Map<String, dynamic>.from(rawWork)));
+            }
             final ws = ev['workspace']?.toString();
             final (imgClean, urls) = splitImages(ev['result']?.toString() ?? '', api);
             final (moveClean, moveTo) = splitMove(imgClean);

@@ -132,6 +132,8 @@ class GajalaApi {
     String sessionId, {
     bool notify = false,
     String? project,
+    String? requestId,
+    String? continueTaskId,
   }) async* {
     final resp = await _dio.post<ResponseBody>(
       '/run/stream',
@@ -140,6 +142,9 @@ class GajalaApi {
         'prompt': prompt,
         'session_id': sessionId,
         if (project != null && project.isNotEmpty) 'project': project,
+        if (requestId != null && requestId.isNotEmpty) 'request_id': requestId,
+        if (continueTaskId != null && continueTaskId.isNotEmpty)
+          'continue_task_id': continueTaskId,
         'notify': notify,
       },
       options: Options(responseType: ResponseType.stream),
@@ -166,6 +171,24 @@ class GajalaApi {
         yield jsonDecode(rest) as Map<String, dynamic>;
       } catch (_) {}
     }
+  }
+
+  Future<AssistantWork> stopWork(String id) async => AssistantWork.fromJson(
+    Map<String, dynamic>.from((await _dio.post('/api/work/$id/stop')).data),
+  );
+
+  Future<AssistantWork> steerWork(String id) async => AssistantWork.fromJson(
+    Map<String, dynamic>.from((await _dio.post('/api/work/$id/steer')).data),
+  );
+
+  Future<List<AssistantWork>> assistantWork(String sessionId) async {
+    final r = await _dio.get(
+      '/api/work',
+      queryParameters: {'session_id': sessionId, 'limit': 20},
+    );
+    return (r.data['items'] as List)
+        .map((e) => AssistantWork.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
   }
 
   // ── structured v2 endpoints ─────────────────────────────────────────────────
@@ -323,7 +346,7 @@ class GajalaApi {
   }
 
   /// Pin a specific model for one engine (claude: opus/sonnet/haiku, codex:
-  /// gpt-5.6-sol/…, gemini: gemini-2.5-pro/…). Returns the per-engine model map.
+  /// gpt-6-astra/…, gemini: gemini-2.5-pro/…). Returns the per-engine model map.
   Future<Map<String, dynamic>> setEngineModel(
     String engine,
     String model,

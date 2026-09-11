@@ -132,7 +132,7 @@ def _codex_error_hint(message: str, stderr: str) -> str:
                 "This is a codex CLI/model version skew. Fix on the Mac:\n"
                 "  npm install -g @openai/codex@latest\n"
                 "  rm ~/.codex/models_cache.json   # refetched on next run\n"
-                "Or pick a model your CLI already supports (e.g. gpt-5.5).")
+                "Or pick a model your CLI already supports (e.g. gpt-5.6-sol).")
     return f"[codex] {message}"
 
 

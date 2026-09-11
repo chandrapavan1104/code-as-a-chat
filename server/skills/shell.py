@@ -23,6 +23,7 @@ from pathlib import Path
 
 import httpx
 from server.skills.base import Skill
+from server.skills.base import SkillResult
 from server.skills import register, get_skill
 from server.db import store as memory
 from server import config, workspace
@@ -140,6 +141,15 @@ DECISION RULES:
 - For requests that need real action (read state, modify data, run a command):
   call the right tool. After seeing its result, decide if you need another tool
   or you're ready to finish.
+- A tool invocation is not the user's outcome. Claim completion only when its
+  result contains evidence for the requested result. Help/usage text, an opened
+  search page, a timeout, "Path not found", and `[tool] ... failed` are failures,
+  not success. Never infer a missing permission unless THIS turn tested it.
+- If a requested action is absent from a tool's documented args, do not send an
+  invented command to that tool. State the precise unsupported capability, or
+  use a coding/browser tool that can actually implement or perform it.
+- Once the user has asked for an action, continue through its necessary steps.
+  Do not ask "want me to proceed?" after completing only an intermediate step.
 - For COMPOUND requests like "delete X and create Y", "wipe these and add those",
   "switch project and then list its files": CALL TOOLS IN SEQUENCE. Don't just
   describe steps — execute them.
@@ -359,27 +369,39 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
     last_out: str | None = None
     last_provider: str | None = None
     for provider in chain:
+        if provider == "openai":
+            brain = f"openai:{model or config.OPENAI_SHELL_MODEL}"
+        elif provider == "claude":
+            brain = f"claude:{model or config.SHELL_MODEL}"
+        else:
+            brain = f"qwen:{model or config.QWEN_MODEL}"
         try:
             out = await _call_llm(provider, system_prompt, user_message, timeout,
                                   model, json_mode=validate is not None)
         except Exception as exc:
             last_exc = exc
-            _brains.append(f"{provider}:error")
+            _brains.append(f"{brain}:error")
             _log.warning("shell LLM provider %r failed for task %r (%s)", provider, task, exc)
             continue
         if validate is not None and not validate(out):
             last_out = out
             last_provider = provider
-            _brains.append(f"{provider}:rejected")
+            _brains.append(f"{brain}:rejected")
             _log.warning("provider %r output failed validation for task %r — trying next",
                          provider, task)
             continue
-        _brains.append(provider)
+        _brains.append(brain)
         return out
     if last_out is not None:
         # Every provider was rejected. Return the last one's output anyway so the
         # caller's salvage logic can try, but record that nothing validated.
-        _brains.append(f"{last_provider}:unvalidated")
+        if last_provider == "openai":
+            brain = f"openai:{model or config.OPENAI_SHELL_MODEL}"
+        elif last_provider == "claude":
+            brain = f"claude:{model or config.SHELL_MODEL}"
+        else:
+            brain = f"qwen:{model or config.QWEN_MODEL}"
+        _brains.append(f"{brain}:unvalidated")
         return last_out
     raise last_exc or RuntimeError("no LLM provider available")
 
@@ -722,15 +744,30 @@ def _run_start(session_id: str | None, prompt: str) -> str | None:
         return None
 
 
+def _result_status(result: str) -> str:
+    """Conservative bridge for legacy string-returning skills.
+
+    Unknown prose is not promoted to a verified success. Known failure/help
+    shapes are failures even when they do not begin with the old `ERROR` token.
+    """
+    low = (result or "").strip().lower()
+    if (low.startswith(("error", "[mac]", "mac control:", "path not found", "no project matches",
+                        "usage:", "unknown command", "unknown subcommand"))
+            or "timed out after" in low):
+        return "failed"
+    return "unknown"
+
+
 def _run_step(run_id: str | None, idx: int, tool: str, args: str, result: str,
-              *, charged: bool, duration_ms: int = 0) -> None:
+              *, charged: bool, duration_ms: int = 0, ok: bool | None = None) -> None:
     if not run_id:
         return
     try:
         from server.db import agent_runs_store
         agent_runs_store.add_step(
             run_id, idx=idx, tool=tool, args=args, result=result,
-            ok=not result.startswith("ERROR"), charged=charged,
+            ok=(_result_status(result) != "failed") if ok is None else ok,
+            charged=charged,
             workspace=str(workspace.active()), duration_ms=duration_ms)
     except Exception:
         pass
@@ -911,6 +948,17 @@ class ShellSkill(Skill):
                 action = "call"
 
             if action == "done":
+                decisive = [s for s in scratchpad if s.get("status") != "unknown"]
+                if decisive and decisive[-1].get("status") in {
+                        "failed", "unsupported", "needs_permission", "not_found"}:
+                    failed = decisive[-1]
+                    final = (
+                        "I couldn't complete the requested action.\n\n"
+                        f"LAST OBSERVATION:\n{failed['result']}\n\n"
+                        "The unfinished outcome is preserved; your next message "
+                        "can correct the approach or add the missing detail."
+                    )
+                    return finish(self._attach_images(final, images), "tool_failed")
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
                 final = self._attach_images(final, images)
                 return finish(final, "done")
@@ -990,13 +1038,20 @@ class ShellSkill(Skill):
                     "label": _step_label(tool_name, tool_args)})
                 started = time.monotonic()
                 try:
-                    result = await skill.run(tool_args, session_id=session_id)
+                    raw_result = await skill.run(tool_args, session_id=session_id)
                 except Exception as exc:
-                    result = f"ERROR running {tool_name}: {exc}"
+                    raw_result = SkillResult(
+                        "failed", f"ERROR running {tool_name}: {exc}")
                 elapsed_ms = int((time.monotonic() - started) * 1000)
 
-                if not isinstance(result, str):
-                    result = str(result)
+                structured = (raw_result.as_dict()
+                              if isinstance(raw_result, SkillResult) else None)
+                result = (raw_result.message if isinstance(raw_result, SkillResult)
+                          else str(raw_result))
+                result_status = (raw_result.status if isinstance(raw_result, SkillResult)
+                                 else _result_status(result))
+                result_ok = result_status not in ("failed", "unsupported",
+                                                   "needs_permission", "not_found")
 
                 # Remember any image a tool produced, before truncation can clip it.
                 images.extend(_IMAGE_MARKER_RE.findall(result))
@@ -1005,7 +1060,7 @@ class ShellSkill(Skill):
                 # directly — their voice must never be rewritten by this agent.
                 if tool_name in self.PASSTHROUGH_SKILLS and not result.startswith("ERROR"):
                     _run_step(run_id, step_no, tool_name, tool_args, result,
-                              charged=True, duration_ms=elapsed_ms)
+                              charged=True, duration_ms=elapsed_ms, ok=result_ok)
                     return finish(result, "passthrough")
 
                 # LLM-call saver: when the agent flags "final" AND the skill's
@@ -1017,7 +1072,7 @@ class ShellSkill(Skill):
                         and getattr(skill, "final_output", False)
                         and not result.startswith("ERROR")):
                     _run_step(run_id, step_no, tool_name, tool_args, result,
-                              charged=True, duration_ms=elapsed_ms)
+                              charged=True, duration_ms=elapsed_ms, ok=result_ok)
                     return finish(result, "final_output")
 
                 if len(result) > RESULT_TRUNCATE:
@@ -1037,13 +1092,16 @@ class ShellSkill(Skill):
                     "tool": tool_name,
                     "args": tool_args,
                     "result": result,
+                    "status": result_status,
+                    "structured": structured,
                     "charged": charged,
                 })
                 _run_step(run_id, step_no, tool_name, tool_args, result,
-                          charged=charged, duration_ms=elapsed_ms)
+                          charged=charged, duration_ms=elapsed_ms, ok=result_ok)
                 await _emit(on_event, {
                     "type": "step_result", "n": step_no, "tool": tool_name,
-                    "ok": not result.startswith("ERROR"), "charged": charged,
+                    "ok": result_ok, "status": result_status,
+                    "outcome": structured, "charged": charged,
                     "duration_ms": elapsed_ms, "project": workspace.name(),
                     "summary": (result.splitlines() or [""])[0][:120]})
                 continue
@@ -1100,6 +1158,35 @@ class ShellSkill(Skill):
         repeatedly got wrong: inspect passed context, then run the pinned coding
         agent. Narrow matching avoids hijacking normal planning questions."""
         text = " ".join(prompt.lower().strip(" .!?").split())
+
+        # Clone requests are concrete enough to execute deterministically. The
+        # old general router opened the GitHub page, invented a `git` tool, and
+        # then claimed success. Projects.clone now owns execution + read-back.
+        clone_url = re.search(
+            r"(?P<url>(?:https?|git|ssh)://[^\s]+|git@[^\s:]+:[^\s]+)", prompt)
+        wants_clone = "clone" in text and clone_url is not None
+        if wants_clone:
+            previous = next(
+                (s for s in reversed(scratchpad)
+                 if s.get("tool") == "projects"
+                 and s.get("args", "").lower().startswith("clone ")),
+                None,
+            )
+            if previous is None:
+                wants_active = any(term in text for term in (
+                    "switch", "work on", "open project", "create a session",
+                    "start working", "use project"))
+                args = f"clone {clone_url.group('url').rstrip('.,;')}"
+                if wants_active:
+                    args += " and switch"
+                return {"action": "call", "tool": "projects", "args": args}
+            if previous.get("status") == "succeeded":
+                return {"action": "done", "reply": previous["result"]}
+            return {
+                "action": "done",
+                "reply": ("I could not complete the repository clone.\n\n"
+                          + previous.get("result", "No verified result was returned.")),
+            }
         build_commands = {
             "build it", "build the project", "implement it",
             "implement the project", "continue the build",

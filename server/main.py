@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks, Request
@@ -8,7 +9,8 @@ from pydantic import BaseModel
 from server import config, fcm, orchestrator, workspace
 from server.db import store as memory
 from server.db import (agent_runs_store, capability_store, cli_runs_store, deployment_store,
-                       errors_store, night_queue_store, notifications_store)
+                       errors_store, night_queue_store, notifications_store,
+                       assistant_tasks_store)
 from server.scheduler import scheduler_loop
 from server.night_shift import night_shift_loop
 from server.queue_supervisor import supervisor_loop
@@ -22,6 +24,8 @@ async def lifespan(app: FastAPI):
     notifications_store.init()
     deployment_store.init()
     capability_store.init()
+    assistant_tasks_store.init()
+    assistant_tasks_store.recover_orphans()
     orchestrator.init()
     tasks = [
         asyncio.create_task(scheduler_loop()),
@@ -87,6 +91,11 @@ class RunRequest(BaseModel):
     # notification if it's foregrounded on that same session (see chat_reply
     # handling), so it only ever shows when you're *out* of that chat.
     notify: bool = False
+    # Stable across a client retry, so a lost response never executes the same
+    # user request twice. Older clients may omit it; the server creates one.
+    request_id: str | None = None
+    # A correction/follow-up can explicitly continue the same unfinished work.
+    continue_task_id: str | None = None
 
 
 # Longest reply preview carried in a completion push (Android collapses more).
@@ -95,6 +104,29 @@ _STREAM_HEARTBEAT_SECONDS = 15
 # Keep disconnected stream workers alive until they persist the reply and send
 # the completion push. The event loop otherwise only retains weak references.
 _stream_workers: set[asyncio.Task] = set()
+_assistant_workers: dict[str, asyncio.Task] = {}
+
+
+def _accept_work(body: RunRequest) -> tuple[dict | None, bool]:
+    if body.command != "shell" or not body.session_id:
+        return None, False
+    return assistant_tasks_store.accept(
+        request_id=body.request_id or uuid.uuid4().hex,
+        session_id=body.session_id,
+        command=body.command,
+        prompt=body.prompt,
+        project=body.project,
+        continue_task_id=body.continue_task_id,
+    )
+
+
+def _work_failure(result: str) -> str | None:
+    low = (result or "").strip().lower()
+    failure_starts = ("error", "[mac]", "path not found", "no project matches",
+                      "usage:", "unknown command", "unknown subcommand")
+    if low.startswith(failure_starts) or "timed out after" in low:
+        return (result or "Action failed").splitlines()[0][:500]
+    return None
 
 
 def _preview(text: str, limit: int = _PUSH_PREVIEW_CHARS) -> str:
@@ -180,7 +212,17 @@ async def toggle_skill(skill_name: str, request: SkillToggleRequest):
 
 @app.post("/run", dependencies=[Depends(require_token)])
 async def run(body: RunRequest, background_tasks: BackgroundTasks):
+    work, created = _accept_work(body)
+    if work and not created:
+        return {"command": body.command, "result": work.get("result") or
+                "This request is already being handled.",
+                "workspace": work.get("project") or body.project,
+                "work": work, "deduplicated": True}
     try:
+        if work:
+            assistant_tasks_store.update(
+                work["id"], status="working", event="started",
+                next_action="Understanding the request")
         with workspace.bound(workspace.for_turn(body.project, body.session_id)):
             result = await orchestrator.route(
                 body.command, body.prompt, session_id=body.session_id
@@ -188,6 +230,13 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
             # Read inside the binding: the agent may have rebound the turn.
             ws_name = workspace.name()
         _persist_skill_turn(body.command, body.session_id, body.prompt, result)
+        if work:
+            failure = _work_failure(result)
+            work = assistant_tasks_store.update(
+                work["id"], status="failed" if failure else "completed",
+                result=result, blocker=failure or "", next_action="" if not failure
+                else "Continue this work with a correction or another approach",
+                project=ws_name, event="failed" if failure else "completed")
         # Ping the phone once the (possibly long) run finishes, if asked and we
         # have a session to deep-link back into. Runs after the response is sent.
         if body.notify and body.session_id:
@@ -197,8 +246,12 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
         # `workspace` lets the app follow project switches made *during* the turn
         # (e.g. the agent used the projects tool) so its header + thread stay synced.
         return {"command": body.command, "result": result,
-                "workspace": ws_name}
+                "workspace": ws_name, "work": work}
     except Exception as exc:
+        if work:
+            assistant_tasks_store.update(
+                work["id"], status="failed", blocker=str(exc),
+                next_action="Retry from the preserved work item", event="failed")
         errors_store.add("server", "run", f"{type(exc).__name__}: {exc}",
                          detail=traceback.format_exc(),
                          context={"command": body.command})
@@ -219,12 +272,51 @@ async def run_stream(body: RunRequest):
     if the phone dropped the stream (backgrounded / killed) before `final`.
     """
     queue: asyncio.Queue = asyncio.Queue()
+    work, created = _accept_work(body)
+    if work and not created:
+        async def duplicate_frames():
+            yield json.dumps({"type": "work", "work": work,
+                              "deduplicated": True}) + "\n"
+            yield json.dumps({"type": "final",
+                              "result": work.get("result") or
+                                        "This request is already being handled.",
+                              "workspace": work.get("project"),
+                              "work": work}) + "\n"
+        return StreamingResponse(duplicate_frames(), media_type="application/x-ndjson")
+
+    observed_statuses: list[str] = []
+    run_id: str | None = None
 
     async def on_event(ev: dict) -> None:
+        nonlocal run_id
+        if ev.get("type") == "run":
+            run_id = ev.get("run_id")
+            if work:
+                assistant_tasks_store.update(
+                    work["id"], run_id=run_id, status="working",
+                    next_action="Planning the next action", event="run_started")
+        elif ev.get("type") == "step":
+            if work and ev.get("label"):
+                assistant_tasks_store.update(
+                    work["id"], status="working",
+                    next_action=str(ev["label"]), event="action_started",
+                    payload={"tool": ev.get("tool"), "args": ev.get("args")})
+        elif ev.get("type") == "step_result":
+            observed_statuses.append(str(ev.get("status") or
+                                         ("succeeded" if ev.get("ok") else "failed")))
+            if work:
+                assistant_tasks_store.update(
+                    work["id"], event="action_observed",
+                    payload={"tool": ev.get("tool"), "status": observed_statuses[-1],
+                             "summary": ev.get("summary"), "outcome": ev.get("outcome")})
         await queue.put(ev)
 
     async def worker() -> None:
         try:
+            if work:
+                assistant_tasks_store.update(
+                    work["id"], status="working",
+                    next_action="Understanding the request", event="started")
             with workspace.bound(workspace.for_turn(body.project, body.session_id)):
                 result = await orchestrator.route(
                     body.command, body.prompt,
@@ -232,14 +324,39 @@ async def run_stream(body: RunRequest):
                 )
                 ws_name = workspace.name()
             _persist_skill_turn(body.command, body.session_id, body.prompt, result)
+            decisive = [s for s in observed_statuses if s != "unknown"]
+            failed = bool(decisive and decisive[-1] in
+                          ("failed", "unsupported", "needs_permission", "not_found"))
+            blocker = _work_failure(result)
+            failed = failed or blocker is not None
+            final_work = None
+            if work:
+                final_work = assistant_tasks_store.update(
+                    work["id"], status="failed" if failed else "completed",
+                    result=result, blocker=blocker or ("An action did not succeed" if failed else ""),
+                    next_action=("Continue this work with a correction or another approach"
+                                 if failed else ""), project=ws_name,
+                    run_id=run_id, event="failed" if failed else "completed")
             # `workspace` = the project the turn ENDED in, so the app can follow a
             # switch the agent made mid-turn (projects tool) and keep its header +
             # conversation thread in sync.
             await queue.put({"type": "final", "result": result,
-                             "workspace": ws_name})
+                             "workspace": ws_name, "work": final_work})
             if body.notify and body.session_id:
                 await _push_reply(body.session_id, body.command, result)
+        except asyncio.CancelledError:
+            current = assistant_tasks_store.get(work["id"]) if work else None
+            status = current.get("status") if current else "cancelled"
+            message = ("Changing course with your latest instruction…"
+                       if status == "recovering" else "Stopped.")
+            await queue.put({"type": "final", "result": message,
+                             "workspace": current.get("project") if current else body.project,
+                             "work": current})
         except Exception as exc:
+            if work:
+                assistant_tasks_store.update(
+                    work["id"], status="failed", blocker=str(exc),
+                    next_action="Retry from the preserved work item", event="failed")
             errors_store.add("server", "run_stream", f"{type(exc).__name__}: {exc}",
                              detail=traceback.format_exc(),
                              context={"command": body.command})
@@ -251,12 +368,18 @@ async def run_stream(body: RunRequest):
         task = asyncio.create_task(worker())
         _stream_workers.add(task)
         task.add_done_callback(_stream_workers.discard)
+        if work:
+            _assistant_workers[work["id"]] = task
+            task.add_done_callback(
+                lambda _: _assistant_workers.pop(work["id"], None))
         try:
             # Send body bytes immediately. Qwen's first local inference can be
             # silent for longer than the phone/proxy's 15s connection window;
             # waiting for the first heartbeat made a healthy stream lose that
             # race and surface as HttpException/Reconnecting in Gajala.
             yield json.dumps({"type": "step", "label": "Thinking…"}) + "\n"
+            if work:
+                yield json.dumps({"type": "work", "work": work}) + "\n"
             while True:
                 try:
                     ev = await asyncio.wait_for(
@@ -277,3 +400,43 @@ async def run_stream(body: RunRequest):
             pass
 
     return StreamingResponse(frames(), media_type="application/x-ndjson")
+
+
+@app.get("/api/work", dependencies=[Depends(require_token)])
+def assistant_work(session_id: str, limit: int = 20):
+    return {"items": assistant_tasks_store.list_for_session(session_id, limit=limit)}
+
+
+@app.get("/api/work/{task_id}", dependencies=[Depends(require_token)])
+def assistant_work_detail(task_id: str):
+    task = assistant_tasks_store.get(task_id, include_events=True)
+    if task is None:
+        raise HTTPException(status_code=404, detail="work item not found")
+    return task
+
+
+@app.post("/api/work/{task_id}/stop", dependencies=[Depends(require_token)])
+async def assistant_work_stop(task_id: str):
+    work = assistant_tasks_store.get(task_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work item not found")
+    task = _assistant_workers.get(task_id)
+    if task is not None and not task.done():
+        task.cancel()
+    updated = assistant_tasks_store.update(
+        task_id, status="cancelled", blocker="Stopped by the user",
+        next_action="", event="cancelled")
+    return updated
+
+
+@app.post("/api/work/{task_id}/steer", dependencies=[Depends(require_token)])
+async def assistant_work_steer(task_id: str):
+    work = assistant_tasks_store.get(task_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work item not found")
+    task = _assistant_workers.get(task_id)
+    if task is not None and not task.done():
+        task.cancel()
+    return assistant_tasks_store.update(
+        task_id, status="recovering", blocker="",
+        next_action="Applying your correction", event="steered")

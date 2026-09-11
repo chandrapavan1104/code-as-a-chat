@@ -337,6 +337,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 onMove: sending ? null : _moveAndAsk),
           ),
         ),
+        if (widget.command == 'shell' && chat.work != null)
+          _WorkCard(chat.work!, onStop: chat.work!.isActive && sending
+              ? () => _chat?.stopWork() : null),
         Container(
           decoration: BoxDecoration(
             color: context.pal.bg,
@@ -403,6 +406,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             ]),
           ]),
         ),
+      ]),
+    );
+  }
+}
+
+class _WorkCard extends StatelessWidget {
+  final AssistantWork work;
+  final VoidCallback? onStop;
+  const _WorkCard(this.work, {this.onStop});
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = work.status == 'failed' || work.status == 'recovering';
+    final detail = work.blocker.isNotEmpty ? work.blocker
+        : (work.nextAction.isNotEmpty ? work.nextAction : work.summary);
+    final color = failed ? GajalaColors.danger : GajalaColors.accent;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(10, 4, 10, 4),
+      padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: .35)),
+      ),
+      child: Row(children: [
+        Icon(work.status == 'completed' ? Icons.check_circle_outline
+            : failed ? Icons.error_outline : Icons.pending_outlined,
+            size: 18, color: color),
+        const SizedBox(width: 9),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(work.status.replaceAll('_', ' ').toUpperCase(),
+              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700,
+                  color: color)),
+          if (detail.isNotEmpty)
+            Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: context.pal.textDim)),
+        ])),
+        if (onStop != null) TextButton(onPressed: onStop, child: const Text('Stop')),
       ]),
     );
   }

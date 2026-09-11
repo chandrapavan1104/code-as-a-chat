@@ -22,10 +22,13 @@ app can move the conversation thread to that project — the same mechanism as t
 existing `[[move:general]]` confirm-to-move marker.
 """
 
+import asyncio
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from server import workspace
-from server.skills.base import Skill
+from server.skills.base import Skill, SkillResult
 from server.skills import register
 
 
@@ -33,6 +36,131 @@ from server.skills import register
 # shell agent reads these to keep a redundant switch from consuming a step of
 # the user's budget — see _is_noop_step in server/skills/shell.py.
 NOOP_REPLIES = ("Already on ", "Project already switched to ")
+
+
+async def _git(*args: str, timeout: int = 180) -> tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.communicate()
+        return -1, "", f"timed out after {timeout}s"
+    return (proc.returncode, out.decode(errors="replace").strip(),
+            err.decode(errors="replace").strip())
+
+
+def _clone_args(text: str) -> tuple[str, str | None, bool] | None:
+    """Parse a deliberately small clone grammar; never execute free-form shell."""
+    match = re.match(
+        r"^clone\s+(?P<url>\S+?)(?:\s+as\s+(?P<name>[A-Za-z0-9._-]+))?"
+        r"(?:\s+and\s+(?:switch|open|use))?$", text.strip(), re.IGNORECASE)
+    if not match:
+        return None
+    switch = bool(re.search(r"\s+and\s+(?:switch|open|use)\s*$", text,
+                            re.IGNORECASE))
+    return match.group("url"), match.group("name"), switch
+
+
+def _remote_identity(value: str) -> str:
+    value = value.strip().rstrip("/")
+    scp = re.fullmatch(r"git@(?P<host>[^:]+):(?P<path>.+)", value)
+    if scp:
+        return f"{scp.group('host').lower()}/{scp.group('path').removesuffix('.git')}"
+    parsed = urlparse(value)
+    if parsed.scheme == "file":
+        return f"file:{Path(parsed.path).resolve()}"
+    return f"{parsed.hostname or ''}/{parsed.path.lstrip('/').removesuffix('.git')}".lower()
+
+
+async def _clone_view(text: str, *, persist: bool = False) -> SkillResult:
+    parsed = _clone_args(text)
+    if parsed is None:
+        return SkillResult(
+            "failed", "Usage: /projects clone <git-url> [as <name>] [and switch]")
+    url, requested_name, should_switch = parsed
+    scp_style = re.fullmatch(r"git@[^\s:]+:(?P<path>[^\s]+)", url)
+    parsed_url = urlparse(url)
+    if parsed_url.scheme not in ("https", "ssh", "git", "file") and scp_style is None:
+        return SkillResult("failed", "Clone needs an https, ssh, git, or file URL.")
+    remote_path = scp_style.group("path") if scp_style else parsed_url.path
+    inferred = Path(remote_path.rstrip("/")).name
+    if inferred.endswith(".git"):
+        inferred = inferred[:-4]
+    name = requested_name or inferred
+    if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        return SkillResult("failed", "Could not derive a safe project directory name.")
+
+    parent = workspace.parent_dir().resolve()
+    parent.mkdir(parents=True, exist_ok=True)
+    destination = (parent / name).resolve()
+    if destination.parent != parent:
+        return SkillResult("failed", "Clone destination must be directly inside the projects folder.")
+
+    existed = destination.exists()
+    if existed and not (destination / ".git").is_dir():
+        return SkillResult(
+            "failed", f"Destination already exists and is not a Git repository: {destination}",
+            data={"path": str(destination), "url": url})
+
+    if not existed:
+        rc, out, err = await _git("clone", "--", url, str(destination))
+        if rc != 0:
+            detail = err or out or "Git returned no error details"
+            return SkillResult(
+                "failed", f"Clone failed: {detail}",
+                data={"path": str(destination), "url": url})
+
+    rc, origin, err = await _git("-C", str(destination), "remote", "get-url", "origin")
+    if rc != 0 or not origin:
+        return SkillResult(
+            "failed", f"Repository exists but its origin could not be verified: {err or origin}",
+            data={"path": str(destination), "url": url})
+    if _remote_identity(origin) != _remote_identity(url):
+        return SkillResult(
+            "failed", "Destination exists, but its origin is a different repository.\n"
+                      f"Requested: {url}\nObserved: {origin}",
+            data={"path": str(destination), "url": url, "origin": origin})
+    rc, head, err = await _git("-C", str(destination), "rev-parse", "HEAD")
+    if rc != 0 or not head:
+        return SkillResult(
+            "failed", f"Repository exists but HEAD could not be verified: {err or head}",
+            data={"path": str(destination), "origin": origin})
+
+    switched = False
+    marker = ""
+    if should_switch:
+        switched, reason = workspace.rebind(destination)
+        if not switched and reason not in ("already",):
+            return SkillResult(
+                "failed", f"Repository verified, but project activation failed: {reason}",
+                data={"path": str(destination), "origin": origin, "head": head})
+        if persist:
+            workspace.persist_default(destination)
+        marker = f"\n[[switch:{destination.name}]]"
+
+    action = "Cloned and verified" if not existed else "Found and verified"
+    if should_switch:
+        action += "; project is active"
+    message = (
+        f"{action}: {destination.name}\n"
+        f"Path: {destination}\n"
+        f"Origin: {origin}\n"
+        f"Commit: {head[:12]}{marker}"
+    )
+    return SkillResult(
+        "succeeded", message, changed=(not existed or switched),
+        data={"path": str(destination), "name": destination.name,
+              "origin": origin, "head": head, "active": should_switch},
+        evidence=[str(destination / ".git"), f"origin={origin}", f"HEAD={head}"])
 
 
 # ── back-compat shims ─────────────────────────────────────────────────────────
@@ -186,7 +314,9 @@ class ProjectsSkill(Skill):
     name = "projects"
     description = "Switch active project dir: /projects | /projects switch <name>"
     final_output = True
-    agent_doc = ("Switch the project directory this turn runs in, for all subsequent "
+    agent_doc = ("List, clone, or switch projects. Clone is a real verified Git operation. "
+                 'args: "clone <git-url> [as <name>] [and switch]". '
+                 "Switch the project directory this turn runs in, for all subsequent "
                  "skills. You may switch AT MOST ONCE per turn and cannot switch back. "
                  'args: "" (list) | "current" | "switch <name-or-path>"')
 
@@ -195,6 +325,8 @@ class ProjectsSkill(Skill):
         # also move the default for new threads; an agent's routing decision
         # does not.
         persist = bool(kwargs.get("persist"))
+        if prompt.strip().lower().startswith("clone "):
+            return await _clone_view(prompt.strip(), persist=persist)
         args = prompt.strip().split()
         if not args:
             return _list_view()

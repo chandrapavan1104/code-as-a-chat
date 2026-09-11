@@ -110,6 +110,20 @@ def _claude_profiles() -> dict[str, ModelProfile]:
 def _codex_profiles() -> dict[str, ModelProfile]:
     """Codex models (read from config + live model cache)."""
     return {
+        "codex-gpt-6-astra": ModelProfile(
+            engine="codex", model_name="gpt-6-astra",
+            context_window=1_050_000, max_turn_tokens=128_000,
+            concurrent_capacity=1,
+            success_rate=0.94, rework_rate=0.03, token_efficiency=0.85,
+            latency_estimate_sec=55.0,
+            reasoning_levels={
+                "basic": ReasoningProfile("basic", 100_000, 35.0, 0.92, 1.0),
+                "standard": ReasoningProfile("standard", 250_000, 60.0, 0.95, 1.5),
+                "advanced": ReasoningProfile("advanced", 500_000, 100.0, 0.97, 2.5),
+                "max": ReasoningProfile("max", 1_000_000, 180.0, 0.98, 4.0),
+            },
+            input_cost_per_m=10.0, output_cost_per_m=50.0,
+        ),
         "codex-gpt-5.6-sol": ModelProfile(
             engine="codex", model_name="gpt-5.6-sol",
             context_window=200_000, max_turn_tokens=8_000, concurrent_capacity=2,

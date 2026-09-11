@@ -131,7 +131,7 @@ SHELL_LLM_PROVIDER: str = os.getenv("SHELL_LLM_PROVIDER", "auto")
 OPENAI_SHELL_MODEL: str = os.getenv("OPENAI_SHELL_MODEL", "gpt-4o-mini")
 
 # Model the codex skill passes to `codex exec --model`.
-CODEX_MODEL: str = os.getenv("CODEX_MODEL", "gpt-5")
+CODEX_MODEL: str = os.getenv("CODEX_MODEL", "gpt-6-astra")
 
 # Before resuming, reconcile our stored session id with the CLI's own newest
 # session for that folder (see server/db/native_sessions.py). Keeps ONE session

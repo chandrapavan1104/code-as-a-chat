@@ -9,9 +9,9 @@ model via --model on the next coding run.
 Accepts, via the prompt:
   auto | claude | codex | gemini          → switch engine (keep that engine's model)
   opus | sonnet | haiku                    → engine=claude, that model
-  <a codex slug> (sol / terra / gpt-5.5 …) → engine=codex, that model
+  <a codex slug> (astra / sol / terra …)     → engine=codex, that model
   gemini-2.5-pro | flash | pro             → engine=gemini, that model
-  "<engine> <model>"                       → set both (e.g. "codex gpt-5.6-terra")
+  "<engine> <model>"                       → set both (e.g. "codex gpt-6-astra")
 """
 
 from server import prefs
@@ -95,12 +95,12 @@ def _status() -> str:
 
 class ModelSwitchSkill(Skill):
     name = "model"
-    description = "Switch the coding engine/model (opus, sonnet, codex gpt-5.6-sol, …)"
+    description = "Switch the coding engine/model (opus, sonnet, codex gpt-6-astra, …)"
     final_output = True
     agent_doc = (
         "Switch which engine/model does the coding. args: an engine "
         '("claude"|"codex"|"gemini"|"auto"), a Claude alias ("opus"|"sonnet"|"haiku"), '
-        'a codex model ("sol"|"terra"|"gpt-5.5" …), or "<engine> <model>". '
+        'a codex model ("astra"|"sol"|"terra" …), or "<engine> <model>". '
         'Add the word "backup" to set the fallback model instead of the primary '
         '(used automatically if the primary fails). '
         'Examples: "switch to opus"->"opus", "use sonnet"->"sonnet", '
