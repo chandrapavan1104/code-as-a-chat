@@ -98,8 +98,7 @@ class RunStep {
   );
 
   /// Just the folder name — the full path is noise in a step list.
-  String get projectName =>
-      workspace.isEmpty ? '' : workspace.split('/').last;
+  String get projectName => workspace.isEmpty ? '' : workspace.split('/').last;
   String get firstResultLine {
     final lines = result.split('\n').where((l) => l.trim().isNotEmpty);
     return lines.isEmpty ? '' : lines.first;
@@ -110,6 +109,7 @@ class RunStep {
 /// the reply landed.
 class RunTrace {
   final String id, workspace, prompt, stopReason, reply;
+
   /// Which model(s) routed the turn, e.g. "claude" or "qwen:rejected -> claude".
   /// When a turn misbehaves, this is the first thing worth knowing.
   final String brains;
@@ -140,8 +140,7 @@ class RunTrace {
         .toList(),
   );
 
-  String get projectName =>
-      workspace.isEmpty ? '' : workspace.split('/').last;
+  String get projectName => workspace.isEmpty ? '' : workspace.split('/').last;
 
   /// Plain-English reason the turn ended, for the trace footer.
   String get stopLabel => switch (stopReason) {
@@ -381,4 +380,34 @@ class ChatMessage {
     this.hitStepLimit = false,
   }) : remoteImages = remoteImages ?? const [],
        steps = steps ?? const [];
+}
+
+class AssistantWork {
+  final String id, status, summary, nextAction, blocker;
+  final int revision;
+  const AssistantWork({
+    required this.id,
+    required this.status,
+    required this.summary,
+    required this.nextAction,
+    required this.blocker,
+    required this.revision,
+  });
+
+  bool get isActive => const {
+    'accepted',
+    'working',
+    'recovering',
+    'waiting_for_user',
+    'failed',
+  }.contains(status);
+
+  factory AssistantWork.fromJson(Map<String, dynamic> j) => AssistantWork(
+    id: j['id']?.toString() ?? '',
+    status: j['status']?.toString() ?? 'accepted',
+    summary: j['summary']?.toString() ?? '',
+    nextAction: j['next_action']?.toString() ?? '',
+    blocker: j['blocker']?.toString() ?? '',
+    revision: (j['revision'] as num?)?.toInt() ?? 1,
+  );
 }

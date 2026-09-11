@@ -1492,6 +1492,8 @@ def test_run_stream_sends_a_frame_immediately(monkeypatch):
     frames = [json.loads(line) for line in response.text.splitlines()]
 
     assert frames[0] == {"type": "step", "label": "Thinking…"}
+    assert frames[1]["type"] == "work"
+    assert frames[1]["work"]["status"] == "accepted"
     assert frames[-1]["type"] == "final"
 
 

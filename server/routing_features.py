@@ -25,6 +25,7 @@ class WorkOrderFeatures:
     work_type: Literal["coding", "research"] = "coding"
     is_bugfix: bool = False
     is_refactor: bool = False
+    is_typo: bool = False
 
     # Languages/frameworks detected (lowercased)
     languages: list[str] = field(default_factory=list)
@@ -119,6 +120,10 @@ def extract_features(spec_dict: dict) -> WorkOrderFeatures:
     # Languages and frameworks
     features.languages = _detect_languages(text_lower)
     features.frameworks = _detect_frameworks(text_lower)
+    # Common Flutter-native identifiers are often all a work order contains.
+    if (not features.frameworks and any(token in text_lower for token in
+            ("settingsscreen", "sharedpreferences", "material theme", "widget"))):
+        features.frameworks.append("flutter")
 
     # Estimate change size
     features.estimated_change_size = _estimate_size(text_lower, spec_dict)
@@ -126,6 +131,7 @@ def extract_features(spec_dict: dict) -> WorkOrderFeatures:
 
     # Risk and complexity signals
     features.is_bugfix = any(k in text_lower for k in ("bug", "fix", "error"))
+    features.is_typo = "typo" in text_lower or "misspell" in text_lower
     features.is_refactor = any(k in text_lower for k in ("refactor", "restructure", "rewrite"))
     features.is_architecture_heavy = _has_risk_keywords(text_lower, "architecture")
     features.is_security_sensitive = _has_risk_keywords(text_lower, "security")
@@ -148,6 +154,8 @@ def extract_features(spec_dict: dict) -> WorkOrderFeatures:
     if "unclear" in text_lower or "decide" in text_lower or "question" in text_lower:
         unclear_signals += 1
     if not spec_dict.get("acceptance"):
+        unclear_signals += 1
+    if not (spec_dict.get("outcome") or "").strip():
         unclear_signals += 1
     if len(spec_dict.get("plan", [])) < 2:
         unclear_signals += 1
@@ -263,6 +271,10 @@ def summarize_features(features: WorkOrderFeatures) -> str:
     # Languages
     if features.languages:
         parts.append(f"🗣️  {', '.join(features.languages)}")
+    if features.frameworks:
+        parts.append(f"🧩 {', '.join(features.frameworks)}")
+    if features.is_typo:
+        parts.append("✏️ Typo")
 
     # Risk signals
     if features.is_security_sensitive:

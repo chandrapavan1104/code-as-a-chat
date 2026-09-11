@@ -88,7 +88,7 @@ def route_work_order(
     # Deterministic routing or ambiguous decision
     winner = sorted_scores[0][0]
     winner_score = sorted_scores[0][1]
-    confidence = _compute_confidence(sorted_scores)
+    confidence = _compute_confidence(sorted_scores, features)
     alternatives = sorted_scores[1:]
 
     rationale = _build_rationale(
@@ -166,7 +166,7 @@ def _hard_filter(
     if pinned_engine and pinned_engine in eligible:
         log.debug("job pinned to engine %s", pinned_engine)
 
-    return eligible if eligible else list(configured_engines)[:1]
+    return eligible
 
 
 def _score_candidates(
@@ -232,7 +232,8 @@ def _score_candidates(
     return scores
 
 
-def _compute_confidence(sorted_scores: list[tuple[str, float]]) -> float:
+def _compute_confidence(sorted_scores: list[tuple[str, float]],
+                        features: WorkOrderFeatures) -> float:
     """Confidence in the routing decision (0.0–1.0).
 
     High confidence when:
@@ -255,7 +256,12 @@ def _compute_confidence(sorted_scores: list[tuple[str, float]]) -> float:
     # Perfect gap of 20+ points = 0.8–1.0 confidence
     # Gap of 5 points = 0.5 confidence
     # Gap of 0 = 0.3 confidence (arbitrary choice)
-    confidence = 0.3 + (gap / 20) * 0.7
+    selection_certainty = 0.3 + (gap / 20) * 0.7
+    # A clear mechanical task can be routed confidently even when several
+    # capable engines score similarly. Conversely, a vague request should not
+    # become "high confidence" merely because one profile has a score advantage.
+    task_clarity = 1.0 - features.ambiguity_score
+    confidence = selection_certainty * 0.25 + task_clarity * 0.75
     return min(1.0, max(0.0, confidence))
 
 
@@ -287,6 +293,8 @@ def _build_rationale(
         lines.append(f"Languages: {', '.join(features.languages)}")
     if features.frameworks:
         lines.append(f"Frameworks: {', '.join(features.frameworks)}")
+    if features.is_architecture_heavy:
+        lines.append(f"Reasoning: {features.reasoning_level} · architecture-heavy")
 
     # Why this engine
     winner_profile = registry.get(winner) or registry.by_engine(winner)[0]

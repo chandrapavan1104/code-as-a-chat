@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gajala/core/chat_controller.dart';
+import 'package:gajala/core/models.dart';
 
 /// Regression tests for the "screen blinks and won't switch project" bug.
 ///
@@ -27,8 +28,11 @@ void main() {
       expect(c.state.workspace, 'general');
 
       c.consumeWorkspace();
-      expect(c.state.workspace, isNull,
-          reason: 'an unconsumed signal re-fires on every rebuild');
+      expect(
+        c.state.workspace,
+        isNull,
+        reason: 'an unconsumed signal re-fires on every rebuild',
+      );
 
       c.consumeWorkspace(); // must not throw or resurrect anything
       expect(c.state.workspace, isNull);
@@ -54,8 +58,9 @@ void main() {
 
   group('the [[switch:name]] marker', () {
     test('is stripped from the reply and yields the project', () {
-      final (clean, target) =
-          splitSwitch('Switched to general.\n[[switch:general]]');
+      final (clean, target) = splitSwitch(
+        'Switched to general.\n[[switch:general]]',
+      );
       expect(target, 'general');
       expect(clean, 'Switched to general.');
       expect(clean.contains('[[switch'), isFalse);
@@ -68,8 +73,30 @@ void main() {
     });
 
     test('handles a project name with dots and dashes', () {
-      final (_, target) = splitSwitch('done [[switch:deaf-communication-terminal]]');
+      final (_, target) = splitSwitch(
+        'done [[switch:deaf-communication-terminal]]',
+      );
       expect(target, 'deaf-communication-terminal');
+    });
+  });
+
+  group('durable assistant work', () {
+    test('failed work remains continuable by a correction', () {
+      final work = AssistantWork.fromJson({
+        'id': 'work-1',
+        'status': 'failed',
+        'revision': 2,
+      });
+      expect(work.isActive, isTrue);
+      expect(work.revision, 2);
+    });
+
+    test('completed work does not absorb an unrelated next request', () {
+      final work = AssistantWork.fromJson({
+        'id': 'work-1',
+        'status': 'completed',
+      });
+      expect(work.isActive, isFalse);
     });
   });
 }

@@ -415,7 +415,7 @@ def test_a_weak_brain_escalates_and_the_trace_says_so(projects_dir, monkeypatch)
     assert seen == ["qwen", "claude"], "qwen's bad output must escalate, not stand"
     assert reply == "On deaf-communication-terminal."
     runs = agent_runs_store.list_runs(session_id="s-brain")
-    assert runs[0]["brains"] == "qwen:rejected -> claude"
+    assert runs[0]["brains"] == "qwen:qwen2.5:3b:rejected -> claude:sonnet"
 
 
 def test_charged_steps_ignores_free_ones():

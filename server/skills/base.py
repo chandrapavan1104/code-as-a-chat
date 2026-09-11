@@ -1,4 +1,39 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class SkillResult:
+    """A tool observation whose meaning does not depend on parsing prose.
+
+    Skills can migrate to this result one action at a time. Legacy skills may
+    continue returning strings; the shell treats those as `unknown` unless a
+    known error prefix is present. `message` remains the backwards-compatible
+    text shown by direct slash commands and supplied to the reasoning loop.
+    """
+
+    status: str
+    message: str
+    changed: bool = False
+    data: dict[str, Any] = field(default_factory=dict)
+    evidence: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "succeeded"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "message": self.message,
+            "changed": self.changed,
+            "data": self.data,
+            "evidence": self.evidence,
+        }
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class Skill(ABC):

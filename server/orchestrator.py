@@ -1,5 +1,6 @@
 from server import config
 from server.skills import discover, get_skill, command_map
+from server.skills.base import SkillResult
 
 # Built once at init() from skill manifests: {telegram_command: skill_name}
 COMMAND_MAP: dict[str, str] = {}
@@ -28,4 +29,7 @@ async def route(command: str, prompt: str = "", **kwargs) -> str:
     # only rebinds that turn (see server/skills/projects.py).
     if skill_name == "projects":
         kwargs.setdefault("persist", True)
-    return await skill.run(prompt, **kwargs)
+    result = await skill.run(prompt, **kwargs)
+    # Direct /run callers still receive the long-standing text contract. The
+    # shell consumes SkillResult before this boundary and keeps its semantics.
+    return result.message if isinstance(result, SkillResult) else str(result)

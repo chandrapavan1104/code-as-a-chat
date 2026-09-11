@@ -59,6 +59,18 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+The first **Gajala continuous-assistant** slice is implemented: everyday shell
+requests have durable work/event records and idempotent request IDs; corrections
+steer the same work, Stop cancels it, restarts recover orphaned work visibly, and
+the chat shows a compact status/action card. Tools can return structured outcomes;
+legacy failure text is treated conservatively. Repository cloning is now a real,
+verified Projects action (path + origin + HEAD) with deterministic routing and
+optional activation. Failed actions cannot be rewritten as success. Run traces
+record exact routing model IDs. Claude Sonnet is restored as the primary shell
+brain, with OpenAI and Qwen fallback. The complete design and remaining Mac/
+browser, research-handoff, and writing stages are in
+`docs/gajala-experience-redesign.md`.
+
 Working: full skill set (CLI runners, notes, diary, reminders, projects, ports,
 sessions browser, filemanager, sysmon, usage, Mac control incl. Bluetooth +
 wake/unlock). Shell agent with one-retry resilience + partial-result fallback,
@@ -202,6 +214,23 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-09-11 — **Gajala begins carrying outcomes instead of isolated turns.**
+  Added durable assistant work/events, request deduplication, correction steering,
+  Stop, restart recovery, and a phone-visible work card. Added structured tool
+  outcomes and conservative legacy failure detection so help/error text cannot
+  become a success claim. Projects can now clone Git URLs, verify path/origin/HEAD,
+  and activate the result in one action; the historical false-clone flow is a
+  regression test. Traces name exact models, shell routing uses Claude Sonnet
+  first again, and queue model confidence now accounts for task clarity, quota
+  exhaustion, framework signals, and architecture needs. Full server and Flutter
+  suites pass; real-phone verification remains.
+- 2026-09-11 — **Gajala experience audit and redesign proposal.** Reviewed recent
+  repeated requests and all 35 available app traces. Confirmed false clone
+  claims, unsupported TV commands mistaken for attempts, untested permission
+  explanations, lost research-to-queue scope, and weak writing revisions.
+  Documented a continuous assistant design with durable work, typed outcomes,
+  full context, bounded recovery, Mac/browser execution, and concrete phone
+  acceptance cases. Proposal only; no service or app behavior changed.
 - 2026-09-11 — **Codex upgraded to GPT-6 Astra.** Updated the Mac's Codex CLI
   from 0.144.5 to 0.154.0 and verified a real `gpt-6-astra` turn succeeds.
   Astra is now the default and first Gajala Codex preset, with its 1.05M context,
