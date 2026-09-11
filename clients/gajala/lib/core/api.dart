@@ -323,7 +323,7 @@ class GajalaApi {
   }
 
   /// Pin a specific model for one engine (claude: opus/sonnet/haiku, codex:
-  /// gpt-5.6-sol/…, gemini: gemini-2.5-pro/…). Returns the per-engine model map.
+  /// gpt-6-astra/…, gemini: gemini-2.5-pro/…). Returns the per-engine model map.
   Future<Map<String, dynamic>> setEngineModel(
     String engine,
     String model,

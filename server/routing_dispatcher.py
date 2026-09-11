@@ -196,7 +196,9 @@ def _score_candidates(
         if features.is_refactor:
             score += profile.context_window / 10_000  # larger window bonus
         if features.is_architecture_heavy:
-            score *= 1.1 if profile.model_name in ("opus", "gpt-5.6-sol", "2.5-pro") else 0.95
+            score *= 1.1 if profile.model_name in (
+                "opus", "gpt-6-astra", "gpt-5.6-sol", "2.5-pro"
+            ) else 0.95
 
         # Reasoning level match
         has_reasoning = features.reasoning_level in profile.reasoning_levels

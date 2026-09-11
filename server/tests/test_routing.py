@@ -13,6 +13,14 @@ from server import routing_dispatcher, routing_features, routing_profiles
 from server.work_orders import WorkOrderSpec
 
 
+def test_astra_is_the_primary_codex_profile():
+    profile = routing_profiles.get_registry().get("codex")
+
+    assert profile.model_name == "gpt-6-astra"
+    assert profile.context_window == 1_050_000
+    assert "max" in profile.reasoning_levels
+
+
 # Fixture: mechanical patch task
 def test_routing_mechanical_patch():
     """Small, clear bug fix → high confidence in fast model."""

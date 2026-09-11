@@ -72,7 +72,7 @@ agent/session interactively on the Mac (`SESSION_FOLLOW_NATIVE`); `general` home
 base is the default workspace;
 **per-directory app conversations** whose thread follows the active project
 everywhere (incl. agent-driven switches) with confirm-to-move; pinned coding
-engine **+ per-engine model** (claude opus/sonnet/haiku, codex gpt-5.6-sol/…,
+engine **+ per-engine model** (claude opus/sonnet/haiku, codex gpt-6-astra/…,
 gemini 2.5-pro/flash), switchable from the app or in chat ("switch to opus").
 **Images** send + receive (screenshots to the agent, images back).
 Telegram bot; Flutter app "Gajala" (light/dark) with FCM push end-to-end and
@@ -202,6 +202,12 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-09-11 — **Codex upgraded to GPT-6 Astra.** Updated the Mac's Codex CLI
+  from 0.144.5 to 0.154.0 and verified a real `gpt-6-astra` turn succeeds.
+  Astra is now the default and first Gajala Codex preset, with its 1.05M context,
+  128K output, reasoning tiers, and current token prices represented in the
+  routing registry. GPT-5.6 Sol remains the lower-cost fallback; the lightweight
+  shell router stays on its purpose-fit inexpensive model.
 - 2026-08-17 — **Project switching made unambiguous, and every turn made
   legible.** "Switch to the deaf terminal project and check the status" spent all
   7 steps switching back and forth and answered none of it. Four defects:
