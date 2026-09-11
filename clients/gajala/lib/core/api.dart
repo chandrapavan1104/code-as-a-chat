@@ -90,6 +90,9 @@ class GajalaApi {
           (t) => ChatMessage(
             t['role'] == 'user' ? 'user' : 'bot',
             t['content']?.toString() ?? '',
+            // Restored history keeps its link to the agent's trace, so you can
+            // still see what a reply did after an app restart.
+            runId: t['run_id']?.toString(),
           ),
         )
         .toList();
@@ -100,6 +103,7 @@ class GajalaApi {
     String prompt,
     String sessionId, {
     bool notify = false,
+    String? project,
   }) async {
     final r = await _dio.post(
       '/run',
@@ -107,6 +111,9 @@ class GajalaApi {
         'command': command,
         'prompt': prompt,
         'session_id': sessionId,
+        // The thread owns its project, so state it rather than relying on a
+        // mutable server-side global that another screen could have moved.
+        if (project != null && project.isNotEmpty) 'project': project,
         // Ask the server to push a completion notification; the app suppresses it
         // when we're still foregrounded on this chat.
         'notify': notify,
@@ -124,6 +131,7 @@ class GajalaApi {
     String prompt,
     String sessionId, {
     bool notify = false,
+    String? project,
   }) async* {
     final resp = await _dio.post<ResponseBody>(
       '/run/stream',
@@ -131,6 +139,7 @@ class GajalaApi {
         'command': command,
         'prompt': prompt,
         'session_id': sessionId,
+        if (project != null && project.isNotEmpty) 'project': project,
         'notify': notify,
       },
       options: Options(responseType: ResponseType.stream),
@@ -278,10 +287,31 @@ class GajalaApi {
   Future<Map<String, dynamic>> projects() async =>
       Map<String, dynamic>.from((await _dio.get('/api/projects')).data);
 
+  /// Move the default project for new threads. Throws [ProjectSwitchError] when
+  /// the name does not resolve — the server used to answer 200 with the OLD name
+  /// and the app happily reported "Switched to ...".
   Future<String> switchProject(String name) async {
-    final r = await _dio.post('/api/projects/switch', data: {'name': name});
-    return r.data['current_name']?.toString() ?? name;
+    try {
+      final r = await _dio.post('/api/projects/switch', data: {'name': name});
+      return r.data['current_name']?.toString() ?? name;
+    } on DioException catch (e) {
+      final detail = e.response?.data is Map
+          ? (e.response!.data as Map)['detail']
+          : null;
+      if (detail is Map) {
+        throw ProjectSwitchError(
+          detail['message']?.toString() ?? 'Could not switch to $name',
+          List<String>.from(detail['suggestions'] ?? const []),
+        );
+      }
+      rethrow;
+    }
   }
+
+  /// The full trace of one agent turn: every tool call, where it ran, how long
+  /// it took, and why the turn stopped.
+  Future<RunTrace> runTrace(String runId) async =>
+      RunTrace.fromJson((await _dio.get('/api/runs/$runId')).data);
 
   // ── coding engine (pinned model) ────────────────────────────────────────────
   Future<Map<String, dynamic>> model() async =>

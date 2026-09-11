@@ -23,6 +23,7 @@ Subcommands (passed via prompt):
 from pathlib import Path
 
 from server import config
+from server import workspace
 from server.db import deployment_store, night_queue_store
 from server.skills.base import Skill
 from server.skills import register
@@ -58,7 +59,7 @@ def _parse_add(rest: str) -> tuple[str, str, str, str] | str:
         else:
             break
 
-    project = str(config.WORKSPACE_DIR)
+    project = str(workspace.active())
     if ":" in body:
         proj_part, task = body.split(":", 1)
         proj_part, task = proj_part.strip(), task.strip()
@@ -213,7 +214,7 @@ def _ship(job_id: int, source_base_sha: str | None = None) -> str:
 
 def _backlog_add(rest: str) -> str:
     body = rest.strip()
-    project = str(config.WORKSPACE_DIR)
+    project = str(workspace.active())
     if ":" in body:
         proj_part, task = body.split(":", 1)
         proj_part, task = proj_part.strip(), task.strip()

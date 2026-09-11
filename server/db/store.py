@@ -42,20 +42,27 @@ def _init() -> None:
             "CREATE INDEX IF NOT EXISTS idx_session_ts "
             "ON conversations(session_id, ts)"
         )
+        # Links an assistant turn to its agent_runs trace, so the app can show
+        # what the agent actually did behind any reply. Added after the table
+        # existed, hence the guarded ALTER rather than a schema bump.
+        cols = {r[1] for r in c.execute("PRAGMA table_info(conversations)")}
+        if "run_id" not in cols:
+            c.execute("ALTER TABLE conversations ADD COLUMN run_id TEXT")
         c.commit()
 
 
 _init()
 
 
-def append_turn(session_id: str, role: str, content: str) -> None:
+def append_turn(session_id: str, role: str, content: str,
+                run_id: str | None = None) -> None:
     if not session_id or not role or not content:
         return
     with _conn() as c:
         c.execute(
-            "INSERT INTO conversations (session_id, role, content, ts) "
-            "VALUES (?, ?, ?, ?)",
-            (session_id, role, content, time.time()),
+            "INSERT INTO conversations (session_id, role, content, ts, run_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, content, time.time(), run_id),
         )
         c.commit()
 
@@ -66,13 +73,13 @@ def get_recent(session_id: str, n: int = 5) -> list[dict]:
         return []
     with _conn() as c:
         rows = c.execute(
-            "SELECT role, content, ts FROM conversations "
+            "SELECT role, content, ts, run_id FROM conversations "
             "WHERE session_id = ? "
             "ORDER BY ts DESC LIMIT ?",
             (session_id, n * 2),
         ).fetchall()
     return [
-        {"role": r[0], "content": r[1], "ts": r[2]}
+        {"role": r[0], "content": r[1], "ts": r[2], "run_id": r[3]}
         for r in reversed(rows)
     ]
 

@@ -119,6 +119,7 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=repo,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         if on_spawn is not None:
@@ -162,6 +163,7 @@ async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=cwd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         if on_spawn is not None:

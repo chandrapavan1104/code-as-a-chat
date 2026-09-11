@@ -1,7 +1,7 @@
 """
 The shell skill — an agent loop powered by Haiku.
 
-Each user turn becomes up to MAX_ITERATIONS rounds:
+Each user turn becomes up to STEP_BUDGET productive rounds:
   1. Haiku reads: recent memory + user msg + scratchpad of tool calls so far
   2. Haiku outputs either {"action":"call", ...} or {"action":"done", ...}
   3. If "call": run the skill, append result to scratchpad, loop
@@ -17,14 +17,25 @@ import json
 import logging
 import re
 import shutil
+import time
+from contextvars import ContextVar
+from pathlib import Path
+
 import httpx
 from server.skills.base import Skill
 from server.skills import register, get_skill
 from server.db import store as memory
-from server import config
+from server import config, workspace
 
 
-MAX_ITERATIONS = 7         # cap on tool calls per user turn
+# Budget accounting: the user pays for PRODUCTIVE steps only. A step that the
+# router wasted — a malformed-args call we had to repair, an unknown tool, a
+# switch to the project we are already in, an exact repeat of an earlier call —
+# is executed or corrected but not charged. Before this split, a turn could
+# spend its entire allowance thrashing and return "(stopped at the step limit)"
+# without doing any of what was asked.
+STEP_BUDGET = 10           # productive tool calls per user turn
+MAX_ROUNDS = 20            # hard loop guard, so free steps can't spin forever
 RESULT_TRUNCATE = 2500     # cap each tool result before feeding back to Haiku
 HAIKU_TIMEOUT = 60         # seconds per Haiku call
 
@@ -66,6 +77,14 @@ def _step_label(tool: str, args: str) -> str:
             detail = detail[:59].rstrip() + "…"
         return f"{verb}: {detail}"
     return f"{verb}…"
+
+
+def _free_step_frame(n: int, tool: str, args: str, summary: str,
+                     ok: bool = True) -> dict:
+    """A step that ran but is not charged to the budget. Streamed so the live
+    view matches the trace you can reopen later."""
+    return {"type": "step_result", "n": n, "tool": tool, "args": args[:200],
+            "ok": ok, "charged": False, "duration_ms": 0, "summary": summary}
 
 
 async def _emit(on_event, event: dict) -> None:
@@ -152,14 +171,19 @@ DECISION RULES:
 
 ATTACHMENTS & MEDIA:
 - The user message may include markers like:
-    [User sent an image, saved at: /path/img.jpg]
-    [User sent a file 'report.pdf' (application/pdf), saved at: /path]
+    [User sent an image, saved at: <ABSOLUTE_PATH>]
+    [User sent a file 'report.pdf' (application/pdf), saved at: <ABSOLUTE_PATH>]
     [User sent a sticker — emoji 😂 ...]
     [Replying to earlier message: "<quote>"]
+- NEVER INVENT A FILE PATH. Only ever use a path copied verbatim from such a
+  marker in the NEW USER MESSAGE. If the message contains no attachment marker,
+  there is no attachment: do NOT call a tool to read one, and do not use any
+  path that appears in these instructions — the angle-bracket names above are
+  placeholders, never real files.
 - You cannot see images or files yourself, but the "claude" tool CAN — it reads
   images (screenshots, photos, error dialogs), PDFs, and any text/code file.
-  For any question about an attachment, delegate:
-    {"action":"call","tool":"claude","args":"Read the image at /path/img.jpg and <user's question>. Be concise."}
+  When (and only when) the message carries an attachment marker, delegate:
+    {"action":"call","tool":"claude","args":"Read the image at <ABSOLUTE_PATH copied from the marker> and <user's question>. Be concise."}
 - NEVER say you can't see an image — claude is your eyes. Use it.
 - Screenshots of errors are common: have claude read the image, identify the
   error, and suggest the fix — chain more tools if the fix needs project work.
@@ -171,7 +195,9 @@ ATTACHMENTS & MEDIA:
   ("Here's your screen 📸"); the image attaches on its own.
 
 CONSTRAINTS:
-- Max 7 tool calls per turn. If you hit it, stop with "done" and explain what got finished.
+- Max 10 productive tool calls per turn. If you hit it, stop with "done" and explain what got finished.
+- ONE project change per turn, and it cannot be undone. Never call "projects
+  switch" twice in a turn, and never switch back to where you started.
 - Never invent tool names — only use the ones listed above.
 - "args" must be a single string. Multi-line strings are fine.
 
@@ -276,6 +302,33 @@ def _provider_chain(task: str) -> list[str]:
     return chain
 
 
+# Which brain answered each routing call this turn, in order. A ContextVar so
+# concurrent turns keep their own list. Surfaced in the run trace: when a turn
+# goes wrong, "which model routed it" is the first thing worth knowing.
+_brains_var: ContextVar[list[str] | None] = ContextVar("shell_brains", default=None)
+
+
+class _BrainLog:
+    """Append-only view over the current turn's brain list; a no-op outside a turn."""
+
+    def append(self, name: str) -> None:
+        current = _brains_var.get()
+        if current is not None:
+            current.append(name)
+
+    def summary(self) -> str:
+        """e.g. "claude" or "qwen:rejected -> claude" — deduped, order kept."""
+        current = _brains_var.get() or []
+        seen: list[str] = []
+        for b in current:
+            if b not in seen:
+                seen.append(b)
+        return " -> ".join(seen)
+
+
+_brains = _BrainLog()
+
+
 async def _call_llm(provider: str, system_prompt: str, user_message: str,
                     timeout: int, model: str | None,
                     json_mode: bool = False) -> str:
@@ -304,21 +357,29 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
     chain = _provider_chain(task)
     last_exc: Exception | None = None
     last_out: str | None = None
+    last_provider: str | None = None
     for provider in chain:
         try:
             out = await _call_llm(provider, system_prompt, user_message, timeout,
                                   model, json_mode=validate is not None)
         except Exception as exc:
             last_exc = exc
+            _brains.append(f"{provider}:error")
             _log.warning("shell LLM provider %r failed for task %r (%s)", provider, task, exc)
             continue
         if validate is not None and not validate(out):
             last_out = out
+            last_provider = provider
+            _brains.append(f"{provider}:rejected")
             _log.warning("provider %r output failed validation for task %r — trying next",
                          provider, task)
             continue
+        _brains.append(provider)
         return out
     if last_out is not None:
+        # Every provider was rejected. Return the last one's output anyway so the
+        # caller's salvage logic can try, but record that nothing validated.
+        _brains.append(f"{last_provider}:unvalidated")
         return last_out
     raise last_exc or RuntimeError("no LLM provider available")
 
@@ -351,7 +412,7 @@ async def _qwen_chat(system_prompt: str, user_message: str,
     try:
         from server.db import local_llm_usage_store
         local_llm_usage_store.record(
-            response=data, model=payload["model"], cwd=str(config.WORKSPACE_DIR),
+            response=data, model=payload["model"], cwd=str(workspace.active()),
             source="shell",
         )
     except Exception:
@@ -384,10 +445,35 @@ async def _openai_chat(system_prompt: str, user_message: str,
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 
+def _neutral_cwd() -> str:
+    """An empty directory to run one-shot LLM calls from.
+
+    The Claude CLI loads the CLAUDE.md of whatever directory it starts in. These
+    calls inherit the server's cwd, which sits inside THIS repo — so every
+    routing/refinement call was silently handed Code-as-a-Chat's project memory.
+    That is both an egress the callers did not ask for and, worse, the wrong
+    context: a work order for another project got refined against this one's
+    CLAUDE.md and came back describing the wrong repo entirely.
+
+    Verified: `claude -p "name the project whose context you were given"` answers
+    "Code-as-a-chat" from the repo and "NONE" from an empty directory.
+    """
+    scratch = Path.home() / ".codeasachat" / "llm_scratch"
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return str(Path.home())
+    return str(scratch)
+
+
 async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIKU_TIMEOUT,
                       model: str | None = None) -> str:
     """One-shot LLM call via the Claude CLI. Tools disabled — pure text in/out.
-    Defaults to the fast shell model; pass `model=` for quality-sensitive skills."""
+    Defaults to the fast shell model; pass `model=` for quality-sensitive skills.
+
+    Runs from a neutral directory so no project's CLAUDE.md is auto-loaded; the
+    caller's prompt is the only context. See _neutral_cwd.
+    """
     if shutil.which("claude") is None:
         raise RuntimeError("claude CLI not installed")
 
@@ -405,8 +491,10 @@ async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIK
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=_neutral_cwd(),
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -508,20 +596,46 @@ def _parse_json_decision(raw: str) -> dict | None:
 
 def _is_usable_decision(raw: str) -> bool:
     """Did the model return a decision we can actually act on? Parseable JSON is
-    not enough: a small model (Qwen) may emit a valid but off-schema blob (e.g.
+    not enough: a small model may emit a valid but off-schema blob (e.g.
     {"project_name":…,"description":…}). Such output must FAIL validation so the
-    provider chain escalates it to Claude instead of it reaching the user as raw
-    JSON. Usable = a done/call action, a bare tool to call, a reply/final to
-    return, or any non-empty string action (a bare tool name the loop normalizes)."""
+    provider chain escalates to the next brain instead of it reaching the user as
+    raw JSON.
+
+    Usable means one of:
+      • action "done" (or a reply/final to return)
+      • action "call" with a tool
+      • a bare {"tool": …} the loop normalizes into a call
+      • an action that IS a registered tool name (the shorthand the loop accepts)
+
+    Note what is NOT accepted: any non-empty string action. That earlier rule
+    passed {"action":"switch"} and similar invented verbs straight through, which
+    is precisely how off-schema output stopped escalating and started surfacing
+    to the user.
+    """
     d = _parse_json_decision(raw)
     if not d:
         return False
-    action = d.get("action")
-    if isinstance(action, str) and action.strip():
-        return True
+
     if (d.get("tool") or "").strip():
         return True
-    return d.get("reply") is not None or bool(d.get("final"))
+    if d.get("reply") is not None or bool(d.get("final")):
+        return True
+
+    action = d.get("action")
+    if not isinstance(action, str) or not action.strip():
+        return False
+    action = action.strip().lower()
+    if action == "done":
+        return True
+    if action == "call":
+        return bool((d.get("tool") or "").strip())
+    # A bare tool name as the action is valid shorthand — but only if such a
+    # tool actually exists.
+    try:
+        from server.skills import registry
+        return action in registry
+    except Exception:
+        return False
 
 
 def _human_text(decision: dict) -> str:
@@ -535,12 +649,7 @@ def _human_text(decision: dict) -> str:
 
 
 def _decision_text(value) -> str:
-    """Normalize decision fields into router-safe text.
-
-    The model is supposed to emit strings for tool args, but some responses
-    arrive as structured JSON objects. Coerce those into prompt text instead of
-    letting the router crash on string-only methods like .strip().
-    """
+    """Normalize a decision's scalar field (tool name, action) into text."""
     if value is None:
         return ""
     if isinstance(value, str):
@@ -548,6 +657,111 @@ def _decision_text(value) -> str:
     if isinstance(value, (dict, list, tuple)):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return str(value).strip()
+
+
+# Keys a router reaches for when it wraps its argument in an object instead of
+# emitting the bare string the schema asks for.
+_ARG_VALUE_KEYS = ("args", "arg", "prompt", "command", "text", "query",
+                   "task", "input", "message", "content", "value")
+# Subcommands that are part of the args string itself, e.g. {"switch": "foo"}
+# on the projects tool means the args are "switch foo".
+_SUBCOMMAND_KEYS = ("switch", "use", "set", "cd", "list", "current",
+                    "add", "show", "capture", "wipe")
+
+
+def _coerce_args(value, tool: str = "") -> tuple[str, bool]:
+    """Turn a decision's `args` into the plain string every skill expects.
+
+    Returns (text, repaired). `repaired` is True when the model did not send a
+    string — the call still runs, but the step is not charged to the user's
+    budget and a corrective note goes back into the scratchpad.
+
+    This replaces a `json.dumps` fallback that technically prevented a crash but
+    handed skills an unparseable blob: `{"switch":"deaf-communication-terminal"}`
+    reached the projects skill verbatim and came back "No project matches
+    '{"switch":"deaf-communication-terminal"}'", twice, in one real turn.
+    """
+    if value is None:
+        return "", False
+    if isinstance(value, str):
+        return value.strip(), False
+
+    if isinstance(value, (list, tuple)):
+        parts = [_coerce_args(v, tool)[0] for v in value]
+        return " ".join(p for p in parts if p), True
+
+    if isinstance(value, dict):
+        # {"switch": "x"} → "switch x" — the subcommand belongs in the string.
+        for key in _SUBCOMMAND_KEYS:
+            if key in value:
+                inner = _coerce_args(value[key], tool)[0]
+                return (f"{key} {inner}".strip(), True)
+        # {"args": "x"} / {"command": "x"} → just the value.
+        for key in _ARG_VALUE_KEYS:
+            if key in value:
+                return _coerce_args(value[key], tool)[0], True
+        # Anything else: readable "k: v" lines beat a JSON dump, because the
+        # receiving skill is a natural-language tool.
+        lines = [f"{k}: {_coerce_args(v, tool)[0]}" for k, v in value.items()]
+        return "\n".join(lines), True
+
+    return str(value).strip(), True
+
+
+# ── run trace ─────────────────────────────────────────────────────────────────
+# Recording is strictly best-effort: a turn must never fail because its audit
+# trail could not be written.
+
+def _run_start(session_id: str | None, prompt: str) -> str | None:
+    try:
+        from server.db import agent_runs_store
+        agent_runs_store.init()
+        return agent_runs_store.start(
+            session_id=session_id, workspace=str(workspace.active()), prompt=prompt)
+    except Exception:
+        return None
+
+
+def _run_step(run_id: str | None, idx: int, tool: str, args: str, result: str,
+              *, charged: bool, duration_ms: int = 0) -> None:
+    if not run_id:
+        return
+    try:
+        from server.db import agent_runs_store
+        agent_runs_store.add_step(
+            run_id, idx=idx, tool=tool, args=args, result=result,
+            ok=not result.startswith("ERROR"), charged=charged,
+            workspace=str(workspace.active()), duration_ms=duration_ms)
+    except Exception:
+        pass
+
+
+def _run_finish(run_id: str | None, reason: str, reply: str,
+                brains: str = "") -> None:
+    if not run_id:
+        return
+    try:
+        from server.db import agent_runs_store
+        agent_runs_store.finish(run_id, stop_reason=reason, reply=reply,
+                                workspace=str(workspace.active()), brains=brains)
+    except Exception:
+        pass
+
+
+def _charged_steps(scratchpad: list[dict]) -> int:
+    """Steps that count against the user's budget. Entries default to charged,
+    so a step is only free when something explicitly marked it so."""
+    return sum(1 for s in scratchpad if s.get("charged", True))
+
+
+def _is_noop_step(tool: str, result: str) -> bool:
+    """Did this call change nothing because the precondition already held?
+    Switching to the project we are already in is the common case — it should
+    not cost the user a step."""
+    if tool != "projects":
+        return False
+    from server.skills.projects import NOOP_REPLIES
+    return result.startswith(NOOP_REPLIES)
 
 
 def _salvage_reply(raw: str) -> str | None:
@@ -614,12 +828,34 @@ class ShellSkill(Skill):
             self._remember(session_id, prompt, repeated)
             return repeated
         context_block = self._format_context(recent)
-        # Combined per-turn hints: pinned engine + the narrow wrong-directory check.
-        hints = "\n\n".join(h for h in (self._engine_hint(), self._directory_hint()) if h)
         scratchpad: list[dict] = []
         images: list[str] = []   # [image: …] markers gathered from tool outputs
 
-        for iteration in range(MAX_ITERATIONS):
+        # Open a durable trace for this turn. Every exit below goes through
+        # `finish`, so a reply can always be traced back to the steps that
+        # produced it — including the ones that went wrong.
+        _brains_var.set([])   # fresh per turn; see _BrainLog
+        run_id = _run_start(session_id, prompt)
+        # Announce the trace id up front, not at the end: if the stream drops
+        # mid-turn the app can still fetch /api/runs/<id> and show what happened
+        # instead of a bare "Reconnecting…".
+        await _emit(on_event, {"type": "run", "run_id": run_id,
+                               "project": workspace.name()})
+
+        def finish(text: str, reason: str) -> str:
+            _run_finish(run_id, reason, text, brains=_brains.summary())
+            self._remember(session_id, prompt, text, run_id)
+            return text
+
+        for iteration in range(MAX_ROUNDS):
+            if _charged_steps(scratchpad) >= STEP_BUDGET:
+                break
+            # Rebuilt EVERY iteration, not once per turn. These hints state the
+            # current directory; computing them upfront meant that after a
+            # mid-turn switch the agent still read "you are in <old project>"
+            # and switched straight back — a loop that ate whole turns.
+            hints = "\n\n".join(
+                h for h in (self._engine_hint(), self._directory_hint()) if h)
             agent_input = self._build_agent_input(
                 context_block, prompt, scratchpad, hints)
 
@@ -647,8 +883,7 @@ class ShellSkill(Skill):
                         scratchpad, note=f"(couldn't compose a final reply: {last_exc})")
                 else:
                     final = f"[shell] agent LLM error after {iteration} step(s): {last_exc}"
-                self._remember(session_id, prompt, final)
-                return final
+                return finish(final, "llm_error")
 
             decision = _parse_json_decision(raw)
             if not decision:
@@ -656,8 +891,7 @@ class ShellSkill(Skill):
                 final = (_salvage_reply(raw)
                          or raw.strip()
                          or "[shell] no response")
-                self._remember(session_id, prompt, final)
-                return final
+                return finish(final, "no_action")
 
             forced = self._project_intent_action(prompt, scratchpad)
             if forced is not None:
@@ -679,51 +913,87 @@ class ShellSkill(Skill):
             if action == "done":
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
                 final = self._attach_images(final, images)
-                self._remember(session_id, prompt, final)
-                return final
+                return finish(final, "done")
 
             if action == "call":
                 tool_name = _decision_text(decision.get("tool"))
-                tool_args = _decision_text(decision.get("args"))
+                tool_args, repaired = _coerce_args(decision.get("args"), tool_name)
 
-                # A small router may react to a timeout by launching the exact
-                # same expensive call again. That never adds information and can
-                # silently burn another 10 minutes, so stop mechanically.
-                for previous in reversed(scratchpad):
-                    if (previous["tool"] == tool_name
-                            and previous["args"] == tool_args
-                            and re.search(r"\bTimed out after \d+s\b",
-                                          previous["result"], re.IGNORECASE)):
-                        final = (previous["result"]
+                # An exact repeat of an earlier call adds no information. It used
+                # to be caught only when the first attempt TIMED OUT, so a router
+                # that kept re-issuing a *failing* call burned the whole budget on
+                # it. Any exact repeat now replays the stored result for free.
+                duplicate = next(
+                    (p for p in reversed(scratchpad)
+                     if p["tool"] == tool_name and p["args"] == tool_args),
+                    None,
+                )
+                if duplicate is not None:
+                    timed_out = re.search(r"\bTimed out after \d+s\b",
+                                          duplicate["result"], re.IGNORECASE)
+                    if timed_out:
+                        # Re-running a 10-minute call that already timed out is
+                        # never right — stop the turn rather than replay it.
+                        final = (duplicate["result"]
                                  + "\n\nThe identical request was not retried "
                                    "automatically. Narrow the task or ask me to "
                                    "retry it explicitly.")
-                        self._remember(session_id, prompt, final)
-                        return final
+                        return finish(final, "duplicate_stop")
+                    replay = (duplicate["result"]
+                              + "\n\nNOTE: identical call already made this "
+                                "turn — reusing the result above. Do NOT "
+                                "repeat it; take the next different step.")
+                    scratchpad.append({
+                        "tool": tool_name, "args": tool_args, "charged": False,
+                        "result": replay,
+                    })
+                    _run_step(run_id, len(scratchpad), tool_name, tool_args,
+                              "(duplicate — replayed earlier result)", charged=False)
+                    await _emit(on_event, _free_step_frame(
+                        len(scratchpad), tool_name, tool_args,
+                        "duplicate call — reused the earlier result"))
+                    continue
 
                 if tool_name not in self.DELEGATE_SKILLS:
                     available = ", ".join(sorted(self.DELEGATE_SKILLS))
+                    unknown = f"ERROR: unknown tool. Available: {available}"
                     scratchpad.append({
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result": f"ERROR: unknown tool. Available: {available}",
+                        "tool": tool_name, "args": tool_args,
+                        "charged": False, "result": unknown,
                     })
+                    _run_step(run_id, len(scratchpad), tool_name, tool_args,
+                              unknown, charged=False)
+                    await _emit(on_event, _free_step_frame(
+                        len(scratchpad), tool_name, tool_args,
+                        "unknown tool", ok=False))
                     continue
 
                 skill = get_skill(tool_name)
                 if skill is None:
+                    missing = f"ERROR: skill {tool_name!r} not registered"
                     scratchpad.append({
                         "tool": tool_name, "args": tool_args,
-                        "result": f"ERROR: skill {tool_name!r} not registered",
+                        "charged": False, "result": missing,
                     })
+                    _run_step(run_id, len(scratchpad), tool_name, tool_args,
+                              missing, charged=False)
+                    await _emit(on_event, _free_step_frame(
+                        len(scratchpad), tool_name, tool_args,
+                        "skill not registered", ok=False))
                     continue
 
-                await _emit(on_event, {"type": "step",
-                                       "label": _step_label(tool_name, tool_args)})
+                step_no = len(scratchpad) + 1
+                await _emit(on_event, {
+                    "type": "step", "n": step_no, "tool": tool_name,
+                    "args": tool_args[:200], "project": workspace.name(),
+                    # `label` stays for older app builds that only read it.
+                    "label": _step_label(tool_name, tool_args)})
+                started = time.monotonic()
                 try:
                     result = await skill.run(tool_args, session_id=session_id)
                 except Exception as exc:
                     result = f"ERROR running {tool_name}: {exc}"
+                elapsed_ms = int((time.monotonic() - started) * 1000)
 
                 if not isinstance(result, str):
                     result = str(result)
@@ -734,8 +1004,9 @@ class ShellSkill(Skill):
                 # Different-persona skills (e.g. diary/Anna) reply to the user
                 # directly — their voice must never be rewritten by this agent.
                 if tool_name in self.PASSTHROUGH_SKILLS and not result.startswith("ERROR"):
-                    self._remember(session_id, prompt, result)
-                    return result
+                    _run_step(run_id, step_no, tool_name, tool_args, result,
+                              charged=True, duration_ms=elapsed_ms)
+                    return finish(result, "passthrough")
 
                 # LLM-call saver: when the agent flags "final" AND the skill's
                 # output is presentation-ready (final_output), return it directly
@@ -745,18 +1016,36 @@ class ShellSkill(Skill):
                 if (decision.get("final")
                         and getattr(skill, "final_output", False)
                         and not result.startswith("ERROR")):
-                    self._remember(session_id, prompt, result)
-                    return result
+                    _run_step(run_id, step_no, tool_name, tool_args, result,
+                              charged=True, duration_ms=elapsed_ms)
+                    return finish(result, "final_output")
 
                 if len(result) > RESULT_TRUNCATE:
                     result = (result[:RESULT_TRUNCATE]
                               + f"\n… (truncated, full was {len(result)} chars)")
 
+                # What the user pays for. A call whose args we had to repair, or
+                # one that changed nothing because the precondition already held,
+                # is the router's mistake rather than the user's work.
+                charged = not (repaired or _is_noop_step(tool_name, result))
+                if repaired:
+                    result += ("\n\nNOTE: your \"args\" was an object; it was "
+                               "converted to the string above. Send \"args\" as a "
+                               "plain string next time.")
+
                 scratchpad.append({
                     "tool": tool_name,
                     "args": tool_args,
                     "result": result,
+                    "charged": charged,
                 })
+                _run_step(run_id, step_no, tool_name, tool_args, result,
+                          charged=charged, duration_ms=elapsed_ms)
+                await _emit(on_event, {
+                    "type": "step_result", "n": step_no, "tool": tool_name,
+                    "ok": not result.startswith("ERROR"), "charged": charged,
+                    "duration_ms": elapsed_ms, "project": workspace.name(),
+                    "summary": (result.splitlines() or [""])[0][:120]})
                 continue
 
             # No recognizable action and nothing to infer. Return a readable reply
@@ -767,18 +1056,43 @@ class ShellSkill(Skill):
                      or "I didn't quite catch that. Try rephrasing, or tell me which "
                         "tool to use — e.g. \"use codex to save this text to a file\".")
             final = self._attach_images(final, images)
-            self._remember(session_id, prompt, final)
-            return final
+            return finish(final, "no_action")
 
-        # Hit MAX_ITERATIONS without "done"
-        if scratchpad:
-            final = self._partial_summary(
-                scratchpad, note=f"(stopped at the step limit of {MAX_ITERATIONS})")
-        else:
-            final = (f"Hit step limit ({MAX_ITERATIONS}) with no completed steps. "
-                     "Try a more specific request.")
-        self._remember(session_id, prompt, final)
-        return final
+        # Budget spent without a "done". Ask the model for one honest wrap-up —
+        # what landed and what is still outstanding — instead of dumping a raw
+        # list of steps that reads like a crash.
+        final = await self._exhaustion_summary(prompt, scratchpad, context_block)
+        final = self._attach_images(final, images)
+        return finish(final, "step_limit")
+
+    async def _exhaustion_summary(self, prompt: str, scratchpad: list[dict],
+                                  context_block: str) -> str:
+        """Close out a turn that ran out of budget with something actionable."""
+        if not scratchpad:
+            return (f"Stopped after {STEP_BUDGET} steps without completing anything. "
+                    "Try a more specific request.")
+        try:
+            recap = self._partial_summary(scratchpad)
+            raw = await _haiku(
+                get_agent_system(),
+                f"{context_block}\n\nNEW USER MESSAGE:\n{prompt}\n\n"
+                f"<scratchpad>\n{recap}\n</scratchpad>\n\n"
+                f"You have used your {STEP_BUDGET}-step budget for this turn and "
+                f"cannot call more tools. Finish now with "
+                f'{{"action":"done","reply":"..."}}. The reply must state, in the '
+                f"user's format: what you actually completed, and what is still "
+                f"left to do. Do not apologise at length and do not invent results.",
+                timeout=HAIKU_TIMEOUT, task="shell", validate=_is_usable_decision)
+            decision = _parse_json_decision(raw) or {}
+            text = (decision.get("reply") or "").strip() or _human_text(decision)
+            if text:
+                return (f"{text}\n\n(Used all {STEP_BUDGET} steps — say "
+                        f'"continue" to keep going.)')
+        except Exception:
+            pass
+        return self._partial_summary(
+            scratchpad,
+            note=(f'(used all {STEP_BUDGET} steps — say "continue" to keep going)'))
 
     @staticmethod
     def _project_intent_action(prompt: str, scratchpad: list[dict]) -> dict | None:
@@ -897,24 +1211,39 @@ class ShellSkill(Skill):
         """Narrow safety net: only speak up when the message clearly targets a
         DIFFERENT known project than the current directory. Deliberately does NOT
         ask on vague asks, general questions, or directory-independent tasks —
-        that broad 'does this belong here?' check just nags."""
+        that broad 'does this belong here?' check just nags.
+
+        Recomputed every iteration, so after a mid-turn switch it describes where
+        the agent actually IS."""
         try:
-            from server.skills.projects import _candidates
-            current = config.WORKSPACE_DIR.name
-            names = [p.name for p in _candidates()]
+            from server import workspace
+            current = workspace.name()
+            names = [p.name for p in workspace.candidates()]
+            switched = workspace.rebound_to()
         except Exception:
             return ""
         if not names:
             return ""
+        if switched is not None:
+            # The one allowed switch already happened. Say so plainly — the old
+            # phrasing kept inviting another one.
+            return (
+                f"CURRENT DIRECTORY: {current}\n"
+                f"You ALREADY switched to {switched.name} in this turn. That is the "
+                f"one project change allowed per turn and it cannot be undone here. "
+                f"Do NOT call the 'projects' tool again. Carry out the user's actual "
+                f"request in {current} now."
+            )
         hint = (
             f"CURRENT DIRECTORY: {current}\n"
             f"KNOWN PROJECTS: {', '.join(names)}\n"
             "DIRECTORY CHECK (narrow): If — and ONLY if — this message clearly asks for "
             "coding / file / repo work in a DIFFERENT known project than the CURRENT "
-            "DIRECTORY (it explicitly names that other project by name), do NOT do the work "
-            "here. Instead finish with a short 'done' reply: name the project you think they "
-            "mean and ask whether to switch to it first (once they confirm, use the 'projects' "
-            "tool to switch, then do the work). Do NOT trigger for general questions, "
+            "DIRECTORY (it explicitly names that other project by name), switch ONCE with "
+            "the 'projects' tool ({\"action\":\"call\",\"tool\":\"projects\","
+            "\"args\":\"switch <name>\"}) and then do the work there in the SAME turn. "
+            "You get exactly one switch per turn and you can never switch back, so do not "
+            "switch speculatively. Do NOT trigger for general questions, "
             "notes / reminders / mac / system tasks, follow-ups about the current project, or "
             "when no other known project is explicitly named — in all those cases proceed normally."
         )
@@ -973,11 +1302,14 @@ class ShellSkill(Skill):
         return "\n".join(lines)
 
     @staticmethod
-    def _remember(session_id: str | None, user_msg: str, assistant_msg: str) -> None:
+    def _remember(session_id: str | None, user_msg: str, assistant_msg: str,
+                  run_id: str | None = None) -> None:
         if not session_id or not assistant_msg:
             return
         memory.append_turn(session_id, "user", user_msg)
-        memory.append_turn(session_id, "assistant", assistant_msg)
+        # The assistant turn carries its run id, so the app can pull up the trace
+        # behind any reply — including after a dropped stream or an app restart.
+        memory.append_turn(session_id, "assistant", assistant_msg, run_id=run_id)
 
 
 register(ShellSkill())

@@ -56,11 +56,18 @@ def _sync_remote_base(repo: str, worktree: Path, base: str) -> tuple[bool, str]:
 
 
 def _apply_job_delta(repo: str, worktree: Path, source_base: str,
-                     branch: str) -> tuple[bool, str]:
+                     branch: str, changed_files: list[str]) -> tuple[bool, str]:
     """Replay only a job's own net change, excluding its stale base ancestry."""
     try:
+        # Agents maintain these mirrored context files after meaningful work.
+        # When a job also has real implementation files, the historical context
+        # edit is metadata—not a reason to reject otherwise clean code replay.
+        context_files = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
+        product_files = [path for path in changed_files if path not in context_files]
+        paths = product_files or changed_files
         diff = subprocess.run(
-            ["git", "-C", repo, "diff", "--binary", source_base, branch],
+            ["git", "-C", repo, "diff", "--binary", source_base, branch,
+             "--", *paths],
             capture_output=True, timeout=120)
         if diff.returncode != 0:
             return False, diff.stderr.decode(errors="replace")[-500:]
@@ -114,6 +121,8 @@ def deploy_branch(*, repo: str, branch: str, base: str, changed_files: list[str]
     if deployment is None:
         return f"Deployment queued behind the active release: {busy}. Try again shortly."
     did = deployment["id"]
+    if source_base_sha:
+        deployment_store.update(did, source_base_sha=source_base_sha)
 
     before = deployed_base(repo, base)
     if not before:
@@ -132,7 +141,8 @@ def deploy_branch(*, repo: str, branch: str, base: str, changed_files: list[str]
         _discard_worktree(repo, worktree)
         return _finish_failed(did, f"remote-base merge conflict: {sync_error}", ref_id)
     if source_base_sha:
-        merged, out = _apply_job_delta(repo, worktree, source_base_sha, branch)
+        merged, out = _apply_job_delta(
+            repo, worktree, source_base_sha, branch, changed_files)
     else:
         rc, out = _git(str(worktree), "merge", "--no-ff", "-m",
                        f"deploy {source} {ref_id or ''}".strip(), branch)

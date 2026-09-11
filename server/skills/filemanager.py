@@ -1,7 +1,7 @@
 from pathlib import Path
 from server.skills.base import Skill
 from server.skills import register
-from server import config
+from server import workspace
 
 
 class FileManagerSkill(Skill):
@@ -22,7 +22,7 @@ class FileManagerSkill(Skill):
             action, raw = "read", raw[5:].strip()
 
         if not raw:
-            raw = str(config.WORKSPACE_DIR)
+            raw = str(workspace.active())
 
         path = self._resolve_path(raw)
 
@@ -44,7 +44,7 @@ class FileManagerSkill(Skill):
         if path.is_absolute():
             return path.resolve()
 
-        in_workspace = (config.WORKSPACE_DIR / path).resolve()
+        in_workspace = (workspace.active() / path).resolve()
         if in_workspace.exists():
             return in_workspace
 

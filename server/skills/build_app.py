@@ -57,6 +57,7 @@ cp "{dev}/build/app/outputs/flutter-apk/app-release.apk" "{config.APK_DEST}"
 """
     proc = await asyncio.create_subprocess_exec(
         "bash", "-lc", script,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     try:

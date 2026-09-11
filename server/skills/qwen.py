@@ -12,6 +12,7 @@ under the tab's session, and this skill replays them into the model.
 
 import httpx
 from server import config, prefs
+from server import workspace
 from server.db import local_llm_usage_store
 from server.db import store as memory
 from server.skills.base import Skill
@@ -61,7 +62,7 @@ class QwenSkill(Skill):
                           else "telegram" if session_id and session_id.startswith("tg:")
                           else "server")
                 local_llm_usage_store.record(
-                    response=data, model=model, cwd=str(config.WORKSPACE_DIR), source=source,
+                    response=data, model=model, cwd=str(workspace.active()), source=source,
                     session_id=session_id)
                 reply = (data.get("message") or {}).get("content", "").strip()
                 return reply or "[qwen] (empty response)"

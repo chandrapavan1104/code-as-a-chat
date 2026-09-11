@@ -44,6 +44,7 @@ async def _run(args: list[str], timeout: int = CMD_TIMEOUT) -> tuple[int, str, s
     try:
         proc = await asyncio.create_subprocess_exec(
             CLI_BIN, *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

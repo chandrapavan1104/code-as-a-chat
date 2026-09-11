@@ -38,6 +38,7 @@ async def _run_lsof() -> str:
         return ""
     proc = await asyncio.create_subprocess_exec(
         "lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n",
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

@@ -9,6 +9,7 @@ import '../core/models.dart';
 import '../core/push.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import '../widgets/run_trace.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String command;   // 'shell' = Gajala agent; else a specific skill
@@ -29,6 +30,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   String _model = 'auto';     // pinned coding engine
   String? _lastUserText;      // last thing the user typed (to resend on "move")
   int _lastMsgCount = 0;      // to auto-scroll only when something new lands
+  // Re-entrancy guard: following a workspace signal swaps which controller the
+  // screen watches, which rebuilds — this stops that rebuild starting another
+  // follow before the first has finished.
+  bool _followingWorkspace = false;
 
   /// The conversation this screen is showing. State lives in the controller so
   /// it survives navigating away (a running turn keeps running and stays visible).
@@ -104,6 +109,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// thread. [reload] pulls the destination thread's history (used after we've
   /// been away); mid-turn we keep the visible messages and just re-key + note it.
   Future<void> _syncWorkspace(String? name, {bool reload = false}) async {
+    // Acknowledge the signal FIRST, on every path including the early returns.
+    // A skill tab has no directory to follow, so it used to return here without
+    // clearing — and build() then re-scheduled this call on every single frame.
+    _chat?.consumeWorkspace();
     if (widget.command != 'shell' || name == null || name.isEmpty) return;
     if (name == _dir) return;
     final sid = _sidFor(name);
@@ -301,10 +310,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _lastMsgCount = msgs.length;
       _scrollEnd();
     }
-    // Follow a project switch the agent made during a turn.
-    if (chat.workspace != null && chat.workspace != _dir) {
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => _syncWorkspace(chat.workspace));
+    // Follow a project switch the agent made during a turn. `workspace` is a
+    // one-shot that _syncWorkspace consumes, so this cannot re-arm itself; the
+    // guard below is the second line of defence against a rebuild storm.
+    if (chat.workspace != null && !_followingWorkspace) {
+      _followingWorkspace = true;
+      final target = chat.workspace;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        try {
+          await _syncWorkspace(target);
+        } finally {
+          if (mounted) _followingWorkspace = false;
+        }
+      });
     }
 
     return Scaffold(
@@ -397,7 +415,14 @@ class _Bubble extends StatelessWidget {
   const _Bubble(this.m, this.imgHeaders, {this.onMove});
   @override
   Widget build(BuildContext context) {
-    if (m.role == 'status') return _StatusBubble(m.text);
+    if (m.role == 'status') {
+      // Once steps start arriving, the live bubble IS the trace widget — so the
+      // thing you watch is the thing that stays under the reply afterwards.
+      if (m.steps.isNotEmpty) {
+        return RunTraceStrip(steps: m.steps, project: m.project, live: true);
+      }
+      return _StatusBubble(m.text);
+    }
     // Typed while a turn was running — waiting its turn, sent automatically.
     if (m.role == 'queued') {
       return Align(
@@ -448,7 +473,7 @@ class _Bubble extends StatelessWidget {
       bottomLeft: Radius.circular(isUser ? 16 : 4),
       bottomRight: Radius.circular(isUser ? 4 : 16),
     );
-    return Align(
+    final bubble = Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
@@ -517,6 +542,80 @@ class _Bubble extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+
+    // What the agent did to produce this reply, collapsed under it. Steps we
+    // already have (the turn just ran) render immediately; a reply restored from
+    // history carries only its run id and fetches on demand.
+    if (isUser) return bubble;
+    if (m.steps.isNotEmpty) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        bubble,
+        RunTraceStrip(
+            steps: m.steps,
+            project: m.project,
+            stopLabel: m.stopLabel,
+            hitStepLimit: m.hitStepLimit),
+      ]);
+    }
+    if (m.runId != null && m.runId!.isNotEmpty) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        bubble,
+        _LazyTrace(m.runId!),
+      ]);
+    }
+    return bubble;
+  }
+}
+
+/// A reply restored from chat history knows its run id but not its steps.
+/// Fetches the trace the first time you open it, so scrolling old history stays
+/// cheap.
+class _LazyTrace extends ConsumerStatefulWidget {
+  final String runId;
+  const _LazyTrace(this.runId);
+  @override
+  ConsumerState<_LazyTrace> createState() => _LazyTraceState();
+}
+
+class _LazyTraceState extends ConsumerState<_LazyTrace> {
+  RunTrace? _trace;
+  bool _loading = false;
+  bool _failed = false;
+
+  Future<void> _load() async {
+    if (_loading || _trace != null) return;
+    setState(() => _loading = true);
+    try {
+      final api = ref.read(apiProvider);
+      final t = await api?.runTrace(widget.runId);
+      if (mounted) setState(() => _trace = t);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_trace != null) return RunTraceStrip.fromTrace(_trace!);
+    if (_failed) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        onPressed: _load,
+        icon: _loading
+            ? const SizedBox(
+                width: 12, height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.chevron_right, size: 16),
+        label: const Text('What it did'),
+        style: TextButton.styleFrom(
+            foregroundColor: context.pal.textDim,
+            visualDensity: VisualDensity.compact,
+            textStyle: const TextStyle(fontSize: 12.5)),
       ),
     );
   }

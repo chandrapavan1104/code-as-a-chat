@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from server.db import night_queue_store
 from server.skills.shell import _claude_cli, _parse_json_decision
 from server.work_orders import WorkOrderSpec, mark_refined
+
+
+REFINE_TIMEOUT = 180   # seconds per Claude Sonnet refinement attempt
 
 
 _SYSTEM = """\
@@ -22,13 +27,32 @@ Rules:
 - Make a practical, ordered implementation plan with concrete verification.
 - Acceptance criteria must be observable.
 - test_handoff must explain how the owner can verify from their phone. For web
-  work, require a localhost server reachable through the Mac's Tailscale IP and
-  port. For app work, require the APK/build and exact screen interactions.
+  work, require a localhost server on its OWN dedicated port, reached at
+  https://<mac>.<tailnet>.ts.net:<that port>. For app work, require the
+  APK/build and exact screen interactions.
+- NEVER take over the default Tailscale route. `tailscale serve` with no port,
+  or on 443, repoints https://<mac>.<tailnet>.ts.net itself — which is the
+  owner's phone connection to this assistant. A job that grabs it makes every
+  screen in the app return 404. Always pass an explicit non-443 port, and say so
+  in policy.
 - Policy must preserve existing changes, forbid destructive/external actions
-  without approval, and keep secrets out of output.
+  without approval, and keep secrets out of output. It must also forbid changing
+  the default Tailscale route, stopping/restarting the codeasachat services, or
+  binding to port 8000 — those are the owner's live connection to this
+  assistant.
 - Research jobs may gather public information and source URLs, but MUST NOT
   contact people, send email/messages, submit forms, log in, purchase, or claim
   an outreach action succeeded. Those actions belong in out_of_scope.
+- The TARGET PROJECT names the repository this work runs in. Every reference to
+  "this project", "the repo", "the codebase" means THAT project and nothing
+  else. Never substitute a different project, and never assume the task is about
+  the tooling that is refining it.
+- You are NOT shown the target project's files. When the plan depends on their
+  contents — a repo name, an existing setup guide, current remotes, framework
+  choices — make step 1 "read <the relevant file(s)> in the repo and follow what
+  they specify", and record in assumptions that the worker must ground itself in
+  the repo rather than in anything guessed here. Do not invent file contents,
+  repository names, or project descriptions.
 - If the rough request is ambiguous, choose the smallest safe interpretation
   and record every choice in assumptions. Never invent credentials or approval.
 - Output valid JSON, no markdown or prose.
@@ -64,7 +88,17 @@ async def refine_job(job_id: int, *, allow_cloud: bool = False,
     # AGENTS/README and absolute paths out of this cloud call avoids unnecessary
     # project-context egress.
     instructions = (instructions or "").strip()[:2000]
+    # The project NAME, not its path or contents. Without it the model has no
+    # idea which repo the job targets and fills the gap with whatever project it
+    # can see — which is how job #21, targeting TFI-banisa, came back as a
+    # complete work order for Code-as-a-Chat.
+    project_name = Path(job["project"]).name if job.get("project") else ""
     prompt = f"ROUGH TASK:\n{rough}"
+    if project_name:
+        prompt = (f"TARGET PROJECT: {project_name}\n"
+                  f"The worker will run inside that repository. You cannot see its\n"
+                  f"files; plan to read them rather than guessing their contents.\n\n"
+                  + prompt)
     # Give the refiner just the nearest capability/task title. This is enough to
     # frame the work as a true extension or distinguish it from a duplicate,
     # without sending repository contents or local paths to the cloud model.
@@ -79,13 +113,15 @@ async def refine_job(job_id: int, *, allow_cloud: bool = False,
                    "Do not recreate behavior that already exists.")
     if instructions:
         prompt += f"\n\nOWNER'S REFINEMENT INSTRUCTIONS:\n{instructions}"
-    raw = await _claude_cli(_SYSTEM, prompt, timeout=90, model="sonnet")
+    # 90s was too tight: a full work order is a long structured generation and
+    # a timeout here surfaces to the owner as a hard refinement failure.
+    raw = await _claude_cli(_SYSTEM, prompt, timeout=REFINE_TIMEOUT, model="sonnet")
     spec = _parse_complete(raw)
     if spec is None:
         raw = await _claude_cli(
             _SYSTEM + "\nYour previous response was incomplete. Include every field.",
             prompt,
-            timeout=90,
+            timeout=REFINE_TIMEOUT,
             model="sonnet",
         )
         spec = _parse_complete(raw)

@@ -26,7 +26,7 @@ Subcommands (passed via prompt):
 from datetime import datetime
 from pathlib import Path
 
-from server import config
+from server import workspace
 from server.skills.base import Skill
 from server.skills import register, get_skill
 
@@ -72,7 +72,7 @@ TEMPLATE = """\
 # ── paths ─────────────────────────────────────────────────────────────────────
 
 def _workspace() -> Path:
-    return config.WORKSPACE_DIR
+    return workspace.active()
 
 
 def _path(name: str = CANONICAL, workspace: Path | None = None) -> Path:

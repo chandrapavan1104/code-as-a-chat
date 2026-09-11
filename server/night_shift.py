@@ -202,6 +202,7 @@ def _mark_backlog_done(project_dir: str, task: str) -> None:
 async def _git(repo: str, *args: str, timeout: int = 60) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", repo, *args,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     try:

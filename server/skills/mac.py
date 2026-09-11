@@ -39,6 +39,7 @@ WEBCAM_APP = Path.home() / "Applications" / "WebcamSnap.app"
 async def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
