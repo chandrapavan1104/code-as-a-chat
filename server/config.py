@@ -117,6 +117,8 @@ API_TOKEN: str = _load_or_create_api_token()
 # LLM that powers the shell skill (routing + mobile reformatting).
 # 'haiku' is fast and cheap; override to 'sonnet' / 'opus' / full model name if you want.
 SHELL_MODEL: str = os.getenv("SHELL_MODEL", "haiku")
+TYPESAFE_API_KEY: str = os.getenv("TYPESAFE_API_KEY", "")
+JEV_ENABLED: bool = os.getenv("JEV_ENABLED", "0").lower() in ("1", "true")
 
 # Backup brain for when Claude usage runs out. The shell/notes/diary/reminders
 # LLM calls go through Claude Haiku by default; if that call fails (quota, rate

@@ -59,6 +59,12 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+Optional Jev judgments support shell continuity hints and review shell-composed
+completion claims against tool observations. Low confidence retains the existing
+assistant; API errors/timeouts/quota failures open a 60-second fallback circuit.
+Jev receives bounded recent conversation and observation excerpts; it does not
+execute tools or replace the main brain. Direct skill/passthrough outputs retain
+their existing behavior. Enable with JEV_ENABLED=1 and TYPESAFE_API_KEY in .env.
 The first **Gajala continuous-assistant** slice is implemented: everyday shell
 requests have durable work/event records and idempotent request IDs; corrections
 steer the same work, Stop cancels it, restarts recover orphaned work visibly, and
@@ -214,6 +220,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-09-21 — Added opt-in Jev continuity and completion review, pinned to
+  jev-1.13.0, with bounded requests, automatic fallback and a quota/error circuit
+  breaker. A rejected success claim gets one verification/revision opportunity.
+  Tests cover unavailable, malformed, uncertain and successful decisions plus
+  shell claim repair without repeating tool execution.
 - 2026-09-11 — **Gajala begins carrying outcomes instead of isolated turns.**
   Added durable assistant work/events, request deduplication, correction steering,
   Stop, restart recovery, and a phone-visible work card. Added structured tool
