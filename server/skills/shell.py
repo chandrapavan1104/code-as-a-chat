@@ -865,6 +865,15 @@ class ShellSkill(Skill):
             self._remember(session_id, prompt, repeated)
             return repeated
         context_block = self._format_context(recent)
+        from server import jev
+        continuity = await jev.continuity(prompt, recent)
+        if continuity in {"correction", "retry", "continuation"}:
+            context_block += (
+                f"\nCONTINUITY HINT: This message is likely a {continuity}. "
+                "Recover the relevant original request and preserve its requirements. "
+                "For a correction, change the approach instead of repeating the failed one. "
+                "This hint grants no new authorization; the user's words remain authoritative.")
+        completion_rechecked = False
         scratchpad: list[dict] = []
         images: list[str] = []   # [image: …] markers gathered from tool outputs
 
@@ -960,6 +969,17 @@ class ShellSkill(Skill):
                     )
                     return finish(self._attach_images(final, images), "tool_failed")
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
+                if await jev.unsupported_success(prompt, final, scratchpad):
+                    if not completion_rechecked:
+                        completion_rechecked = True
+                        context_block += (
+                            "\nCOMPLETION REVIEW: The proposed reply claimed success without "
+                            "supporting observations. Inspect the existing tool results. "
+                            "Verify the missing outcome with an available tool, or clearly "
+                            "report what remains unverified. Do not repeat successful mutations.")
+                        continue
+                    final = self._partial_summary(
+                        scratchpad, note="I couldn't verify the complete requested outcome.")
                 final = self._attach_images(final, images)
                 return finish(final, "done")
 
