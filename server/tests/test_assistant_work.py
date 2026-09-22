@@ -85,13 +85,16 @@ def test_request_id_deduplicates_and_correction_keeps_original(tmp_path, monkeyp
 
     assert created is True and duplicate_created is False
     assert again["id"] == first["id"]
-    assert correction_created is False
+    assert correction_created is True
     assert corrected["id"] == first["id"]
     assert corrected["original_prompt"] == "clone this repository"
     assert corrected["latest_prompt"] == "and open it"
     assert corrected["revision"] == 2
     assert [e["kind"] for e in assistant_tasks_store.get(
         first["id"], include_events=True)["events"]] == ["accepted", "accepted"]
+    package = assistant_tasks_store.context_for(first["id"])
+    assert "ORIGINAL REQUEST: clone this repository" in package
+    assert "and open it" in package
 
 
 def test_stream_exposes_durable_work_and_deduplicates(tmp_path, monkeypatch):
@@ -108,6 +111,8 @@ def test_stream_exposes_durable_work_and_deduplicates(tmp_path, monkeypatch):
                             "args": "clone x", "label": "Cloning repository"})
             await on_event({"type": "step_result", "n": 1, "tool": "projects",
                             "ok": True, "status": "succeeded", "summary": "verified"})
+            await on_event({"type": "completion", "status": "completed",
+                            "reason": "done"})
         return "Cloned and verified"
 
     monkeypatch.setattr(main.orchestrator, "route", fake_route)

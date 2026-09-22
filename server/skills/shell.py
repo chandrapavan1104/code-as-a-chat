@@ -26,7 +26,7 @@ from server.skills.base import Skill
 from server.skills.base import SkillResult
 from server.skills import register, get_skill
 from server.db import store as memory
-from server import config, workspace
+from server import config, workspace, brain_health
 
 
 # Budget accounting: the user pays for PRODUCTIVE steps only. A step that the
@@ -38,6 +38,7 @@ from server import config, workspace
 STEP_BUDGET = 10           # productive tool calls per user turn
 MAX_ROUNDS = 20            # hard loop guard, so free steps can't spin forever
 RESULT_TRUNCATE = 2500     # cap each tool result before feeding back to Haiku
+EXACT_MEMORY_TRUNCATE = 40000  # full-source memory retrieval, with explicit bound
 HAIKU_TIMEOUT = 60         # seconds per Haiku call
 
 _log = logging.getLogger(__name__)
@@ -104,10 +105,12 @@ async def _emit(on_event, event: dict) -> None:
 # (see _build_tool_catalog). Skills are the single source of truth.
 
 AGENT_SYSTEM_TEMPLATE = """\
-You are the Code-as-a-Chat shell agent, running on a Mac controlled from a phone via Telegram.
+You are Gajala, the user's assistant on their Mac, reached from phone or Telegram.
+Carry the user's intended outcome through to verified completion. Preserve their
+original material and corrections. Use tools to observe facts, not to simulate progress.
 
 You may receive on each iteration:
-- An optional <recent_conversation> block — use ONLY for resolving pronouns and follow-ups.
+- An optional <recent_conversation> block — use for references, constraints, and corrections.
   The actual instruction is in the "NEW USER MESSAGE" section.
 - An optional <scratchpad> block — tool calls and results from EARLIER iterations of THIS turn.
 
@@ -132,12 +135,24 @@ AVAILABLE TOOLS:
 {TOOL_DESCRIPTIONS}
 
 DECISION RULES:
-- YOU HAVE ALL THE TOOLS LISTED ABOVE — they are real, connected, and running on
-  this Mac. NEVER claim you "don't have access". NEVER tell the user to do
-  something manually (open a menu, click an icon, use Terminal, check a website)
-  when a tool below can do it. If a request maps to a tool, CALL IT.
-- For greetings, general-knowledge, "what can you do", "what commands exist":
-  go STRAIGHT to "done" with no tool calls.
+- The catalog lists supported interfaces, not proof of current availability.
+  Observe auth, permissions, capability and network failures separately. Try a
+  capable alternative within the request; don't make the user repeat known details.
+- Answer greetings and stable knowledge directly. For current facts, project
+  status, metrics, earlier drafts or deployment state, retrieve authoritative evidence.
+  A notes entry saying done is not verification of a live application.
+- First establish the requested deliverables and source scope. "All projects"
+  means inspect candidates across projects, not just the active directory.
+  Resolve project identity by path/remote and deployment by the agreed URL.
+  Distinguish Gajala-origin usage from all-machine usage and lifetime from 30-day totals.
+- Use memory search/show for earlier wording; CLI sessions and project files are
+  different sources. A failed search does not prove the user never supplied something.
+- Retrieve requests return exact source text. Light edits preserve wording and
+  meaning; rewrites preserve the user's stated voice and accumulated constraints.
+  Do not summarize an intact draft merely to satisfy the mobile length preference.
+- Keep attachment paths and source references intact when delegating or queueing.
+  Pass the actual request and constraints, not "do the above". If a needed source
+  is absent, retrieve it before asking the user. Never invent one.
 - For requests that need real action (read state, modify data, run a command):
   call the right tool. After seeing its result, decide if you need another tool
   or you're ready to finish.
@@ -150,6 +165,9 @@ DECISION RULES:
   use a coding/browser tool that can actually implement or perform it.
 - Once the user has asked for an action, continue through its necessary steps.
   Do not ask "want me to proceed?" after completing only an intermediate step.
+- Distinguish a question or planning request from authorization to implement.
+  A new unrelated request does not cancel old work. Corrections revise the same
+  outcome. Before retrying a mutation, inspect prior effects to avoid duplicates.
 - For COMPOUND requests like "delete X and create Y", "wipe these and add those",
   "switch project and then list its files": CALL TOOLS IN SEQUENCE. Don't just
   describe steps — execute them.
@@ -219,7 +237,7 @@ FORMATTING for the "reply" field (when "action" is "done"):
 - Triple-backtick fences for code are OK — Telegram does render those.
 - Lead with the bottom-line answer on line 1.
 - Strip filler: "Let me...", "I'll now...", "Here is...".
-- Max ~200 words unless a tool's verbose output is truly needed.
+- Prefer concise replies; exact source retrieval and requested detail take precedence.
 {PERSONA}"""
 
 
@@ -237,8 +255,8 @@ PERSONA — WHO YOU ARE (applies ONLY to the "reply" text, never to tool args):
   kummesav, thoppu, vere level, industry hit, scene aypoindi, lite teesko,
   full kick, asalu, pichhi, dorikipoyav, vadiley.
 - HYPE the user when something works: "Kummesav mava 🔥🔥", "Industry hit ra idi".
-- Light, loving roast when they procrastinate, repeat a question, or have
-  10 open todos: friendly teasing, never mean.
+- Repeated questions can indicate our failure. Treat corrections seriously;
+  never tease the user for having to repeat an instruction.
 - Mild gaalis okay occasionally (orey erri fellow, sachinoda, dobbey) — mirror
   the user's energy. They cuss, you can cuss a bit. Never harsh slurs.
 - Emojis welcome: 🔥😂💀🙏🥲. Text-meme references welcome.
@@ -286,10 +304,8 @@ _AGENT_SYSTEM_CACHE: str | None = None
 
 
 def get_agent_system() -> str:
-    global _AGENT_SYSTEM_CACHE
-    if _AGENT_SYSTEM_CACHE is None:
-        _AGENT_SYSTEM_CACHE = _build_agent_system()
-    return _AGENT_SYSTEM_CACHE
+    # The enabled tool set can change without a restart.
+    return _build_agent_system()
 
 
 # ── Haiku subprocess helper ───────────────────────────────────────────────────
@@ -369,17 +385,21 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
     last_out: str | None = None
     last_provider: str | None = None
     for provider in chain:
+        if not brain_health.available(provider):
+            _brains.append(f"{provider}:unavailable")
+            continue
         if provider == "openai":
-            brain = f"openai:{model or config.OPENAI_SHELL_MODEL}"
+            brain = f"openai:{config.OPENAI_SHELL_MODEL}"
         elif provider == "claude":
             brain = f"claude:{model or config.SHELL_MODEL}"
         else:
-            brain = f"qwen:{model or config.QWEN_MODEL}"
+            brain = f"qwen:{config.QWEN_MODEL}"
         try:
             out = await _call_llm(provider, system_prompt, user_message, timeout,
                                   model, json_mode=validate is not None)
         except Exception as exc:
             last_exc = exc
+            brain_health.failed(provider, exc)
             _brains.append(f"{brain}:error")
             _log.warning("shell LLM provider %r failed for task %r (%s)", provider, task, exc)
             continue
@@ -391,6 +411,7 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
                          provider, task)
             continue
         _brains.append(brain)
+        brain_health.succeeded(provider)
         return out
     if last_out is not None:
         # Every provider was rejected. Return the last one's output anyway so the
@@ -402,7 +423,7 @@ async def _haiku(system_prompt: str, user_message: str, timeout: int = HAIKU_TIM
         else:
             brain = f"qwen:{model or config.QWEN_MODEL}"
         _brains.append(f"{brain}:unvalidated")
-        return last_out
+        raise RuntimeError("No provider returned a valid decision; work remains unfinished")
     raise last_exc or RuntimeError("no LLM provider available")
 
 
@@ -520,21 +541,30 @@ async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIK
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         try:
             proc.kill()
         except ProcessLookupError:
             pass
+        await proc.wait()
         raise
 
     if proc.returncode != 0:
-        raise RuntimeError(stderr_b.decode(errors="replace").strip() or "haiku call failed")
+        # Claude's structured errors are on stdout, not stderr.
+        try:
+            failure = json.loads(stdout_b.decode(errors="replace"))
+            detail = failure.get("result") or failure.get("subtype") or "Claude call failed"
+        except (json.JSONDecodeError, AttributeError):
+            detail = "Claude call failed"
+        raise RuntimeError(str(detail)[:400])
 
     try:
         data = json.loads(stdout_b.decode(errors="replace"))
     except json.JSONDecodeError:
         return stdout_b.decode(errors="replace").strip()
 
+    if data.get("is_error"):
+        raise RuntimeError(str(data.get("result") or "Claude call failed")[:400])
     return (data.get("result") or "").strip()
 
 
@@ -865,6 +895,8 @@ class ShellSkill(Skill):
             self._remember(session_id, prompt, repeated)
             return repeated
         context_block = self._format_context(recent)
+        if kwargs.get("work_context"):
+            context_block += "\n<DURABLE_WORK>\n" + kwargs["work_context"] + "\n</DURABLE_WORK>"
         from server import jev
         continuity = await jev.continuity(prompt, recent)
         if continuity in {"correction", "retry", "continuation"}:
@@ -888,7 +920,21 @@ class ShellSkill(Skill):
         await _emit(on_event, {"type": "run", "run_id": run_id,
                                "project": workspace.name()})
 
-        def finish(text: str, reason: str) -> str:
+        async def finish(text: str, reason: str, *, reviewed: bool | None = None) -> str:
+            from server.outcomes import completion_status, OBSERVED_CLAIM, UNFINISHED
+            rejected = (await jev.unsupported_success(prompt, text, scratchpad)
+                        if reviewed is None else reviewed)
+            status = completion_status(text, reason, scratchpad, rejected)
+            unsupported_claim = (not scratchpad and status == 'unverified' and
+                                 OBSERVED_CLAIM.search(text) and
+                                 not UNFINISHED.search(text))
+            if rejected or unsupported_claim:
+                text = ("I couldn't verify the requested outcome.\n\n" +
+                        self._partial_summary(scratchpad))
+            await _emit(on_event, {"type": "completion", "status": status,
+                                   "reason": reason, "brains": _brains.summary()})
+            if "error" in _brains.summary() or "unavailable" in _brains.summary():
+                text += "\n\n(Model fallback active; primary provider unavailable.)"
             _run_finish(run_id, reason, text, brains=_brains.summary())
             self._remember(session_id, prompt, text, run_id)
             return text
@@ -929,7 +975,7 @@ class ShellSkill(Skill):
                         scratchpad, note=f"(couldn't compose a final reply: {last_exc})")
                 else:
                     final = f"[shell] agent LLM error after {iteration} step(s): {last_exc}"
-                return finish(final, "llm_error")
+                return await finish(final, "llm_error")
 
             decision = _parse_json_decision(raw)
             if not decision:
@@ -937,7 +983,7 @@ class ShellSkill(Skill):
                 final = (_salvage_reply(raw)
                          or raw.strip()
                          or "[shell] no response")
-                return finish(final, "no_action")
+                return await finish(final, "no_action")
 
             forced = self._project_intent_action(prompt, scratchpad)
             if forced is not None:
@@ -967,9 +1013,10 @@ class ShellSkill(Skill):
                         "The unfinished outcome is preserved; your next message "
                         "can correct the approach or add the missing detail."
                     )
-                    return finish(self._attach_images(final, images), "tool_failed")
+                    return await finish(self._attach_images(final, images), "tool_failed")
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
-                if await jev.unsupported_success(prompt, final, scratchpad):
+                rejected = await jev.unsupported_success(prompt, final, scratchpad)
+                if rejected:
                     if not completion_rechecked:
                         completion_rechecked = True
                         context_block += (
@@ -981,11 +1028,15 @@ class ShellSkill(Skill):
                     final = self._partial_summary(
                         scratchpad, note="I couldn't verify the complete requested outcome.")
                 final = self._attach_images(final, images)
-                return finish(final, "done")
+                return await finish(final, "done", reviewed=False)
 
             if action == "call":
                 tool_name = _decision_text(decision.get("tool"))
                 tool_args, repaired = _coerce_args(decision.get("args"), tool_name)
+                if tool_name in {"claude", "codex", "antigravity"}:
+                    tool_args += (
+                        "\n\nUSER REQUEST AND CONSTRAINTS (preserve scope):\n" + prompt +
+                        "\n" + (kwargs.get("work_context") or ""))
 
                 # An exact repeat of an earlier call adds no information. It used
                 # to be caught only when the first attempt TIMED OUT, so a router
@@ -997,6 +1048,16 @@ class ShellSkill(Skill):
                     None,
                 )
                 if duplicate is not None:
+                    # Schema repairs and project no-ops retain their existing
+                    # free-step recovery budget. MAX_ROUNDS still bounds them.
+                    repair_only = (tool_name not in self.DELEGATE_SKILLS or
+                                   (tool_name == 'projects' and
+                                    tool_args.strip().startswith('switch ')))
+                    if not repair_only and sum(s['tool'] == tool_name and s['args'] == tool_args
+                           for s in scratchpad) >= 2:
+                        return await finish(self._partial_summary(
+                            scratchpad, note="Stopped a repeated decision. The requested outcome remains unverified."),
+                            "duplicate_stop")
                     timed_out = re.search(r"\bTimed out after \d+s\b",
                                           duplicate["result"], re.IGNORECASE)
                     if timed_out:
@@ -1006,7 +1067,7 @@ class ShellSkill(Skill):
                                  + "\n\nThe identical request was not retried "
                                    "automatically. Narrow the task or ask me to "
                                    "retry it explicitly.")
-                        return finish(final, "duplicate_stop")
+                        return await finish(final, "duplicate_stop")
                     replay = (duplicate["result"]
                               + "\n\nNOTE: identical call already made this "
                                 "turn — reusing the result above. Do NOT "
@@ -1058,7 +1119,9 @@ class ShellSkill(Skill):
                     "label": _step_label(tool_name, tool_args)})
                 started = time.monotonic()
                 try:
-                    raw_result = await skill.run(tool_args, session_id=session_id)
+                    raw_result = await skill.run(
+                        tool_args, session_id=session_id, source_prompt=prompt,
+                        work_context=kwargs.get("work_context") or "")
                 except Exception as exc:
                     raw_result = SkillResult(
                         "failed", f"ERROR running {tool_name}: {exc}")
@@ -1079,9 +1142,12 @@ class ShellSkill(Skill):
                 # Different-persona skills (e.g. diary/Anna) reply to the user
                 # directly — their voice must never be rewritten by this agent.
                 if tool_name in self.PASSTHROUGH_SKILLS and not result.startswith("ERROR"):
+                    scratchpad.append({"tool": tool_name, "args": tool_args,
+                                       "result": result, "status": result_status,
+                                       "structured": structured})
                     _run_step(run_id, step_no, tool_name, tool_args, result,
                               charged=True, duration_ms=elapsed_ms, ok=result_ok)
-                    return finish(result, "passthrough")
+                    return await finish(result, "passthrough")
 
                 # LLM-call saver: when the agent flags "final" AND the skill's
                 # output is presentation-ready (final_output), return it directly
@@ -1091,13 +1157,22 @@ class ShellSkill(Skill):
                 if (decision.get("final")
                         and getattr(skill, "final_output", False)
                         and not result.startswith("ERROR")):
+                    scratchpad.append({"tool": tool_name, "args": tool_args,
+                                       "result": result, "status": result_status,
+                                       "structured": structured})
                     _run_step(run_id, step_no, tool_name, tool_args, result,
                               charged=True, duration_ms=elapsed_ms, ok=result_ok)
-                    return finish(result, "final_output")
+                    return await finish(result, "final_output")
 
-                if len(result) > RESULT_TRUNCATE:
-                    result = (result[:RESULT_TRUNCATE]
-                              + f"\n… (truncated, full was {len(result)} chars)")
+                exact_memory = (
+                    tool_name == "memory"
+                    and tool_args.strip().lower().startswith(("get ", "exact ", "message "))
+                )
+                result_limit = EXACT_MEMORY_TRUNCATE if exact_memory else RESULT_TRUNCATE
+                if len(result) > result_limit:
+                    result = (result[:result_limit]
+                              + f"\n… (truncated, full was {len(result)} chars; "
+                                f"explicit retrieval limit {result_limit})")
 
                 # What the user pays for. A call whose args we had to repair, or
                 # one that changed nothing because the precondition already held,
@@ -1134,14 +1209,14 @@ class ShellSkill(Skill):
                      or "I didn't quite catch that. Try rephrasing, or tell me which "
                         "tool to use — e.g. \"use codex to save this text to a file\".")
             final = self._attach_images(final, images)
-            return finish(final, "no_action")
+            return await finish(final, "no_action")
 
         # Budget spent without a "done". Ask the model for one honest wrap-up —
         # what landed and what is still outstanding — instead of dumping a raw
         # list of steps that reads like a crash.
         final = await self._exhaustion_summary(prompt, scratchpad, context_block)
         final = self._attach_images(final, images)
-        return finish(final, "step_limit")
+        return await finish(final, "step_limit")
 
     async def _exhaustion_summary(self, prompt: str, scratchpad: list[dict],
                                   context_block: str) -> str:
@@ -1278,7 +1353,7 @@ class ShellSkill(Skill):
     def _partial_summary(scratchpad: list[dict], note: str = "") -> str:
         """One-line-per-step recap of what actually ran — used when the agent
         can't produce a clean final reply (LLM error or step limit)."""
-        lines = ["Here's what I got done:"]
+        lines = ["Observed actions:"]
         for i, step in enumerate(scratchpad, 1):
             first = (step["result"].splitlines() or [""])[0]
             lines.append(f"  {i}. {step['tool']}({step['args'][:40]}): {first[:80]}")
@@ -1402,8 +1477,8 @@ class ShellSkill(Skill):
         for t in recent:
             role = "USER" if t["role"] == "user" else "ASSISTANT"
             content = t["content"]
-            if len(content) > 600:
-                content = content[:597] + "…"
+            if len(content) > 6000:
+                content = content[:6000] + "\n[Excerpt only; retrieve full source with memory.]"
             lines.append(f"{role}: {content}")
         lines.append("</recent_conversation>")
         return "\n".join(lines)

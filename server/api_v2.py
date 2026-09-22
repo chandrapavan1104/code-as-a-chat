@@ -306,6 +306,9 @@ class ReminderIn(BaseModel):
     text: str
     due_at: float                 # unix timestamp
     project: str | None = None
+    recurrence: str = "none"
+    timezone: str = "UTC"
+    until_note_id: int | None = None
 
 
 @router.get("/reminders")
@@ -315,8 +318,12 @@ def list_reminders(limit: int = 100):
 
 @router.post("/reminders", status_code=201)
 def create_reminder(r: ReminderIn):
-    rid = reminders_store.add(r.text, r.due_at, project=r.project)
-    return {"id": rid, "text": r.text, "due_at": r.due_at, "project": r.project}
+    rid = reminders_store.add(r.text, r.due_at, project=r.project,
+                              recurrence=r.recurrence, timezone=r.timezone,
+                              until_note_id=r.until_note_id)
+    return {"id": rid, "text": r.text, "due_at": r.due_at, "project": r.project,
+            "recurrence": r.recurrence, "timezone": r.timezone,
+            "until_note_id": r.until_note_id}
 
 
 @router.delete("/reminders/{reminder_id}", status_code=204)
@@ -1008,6 +1015,10 @@ def queue_edit(job_id: int, body: QueueEditIn):
     if body.engine is not None and body.engine not in ("auto", "claude", "codex", "gemini"):
         raise HTTPException(400, "invalid engine")
     spec = migrate_spec(body.spec.model_dump(), body.spec.source_text or job["task"])
+    # Keep the originating chat attachments available to the worker when an
+    # owner edits/refines the structured fields on the phone.
+    if not spec.attachment_refs:
+        spec.attachment_refs = list((job.get("spec_json") or {}).get("attachment_refs") or [])
     if spec.is_complete:
         mark_refined(spec, provider="manual")
     else:

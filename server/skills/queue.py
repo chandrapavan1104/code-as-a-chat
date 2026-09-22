@@ -21,6 +21,7 @@ Subcommands (passed via prompt):
 """
 
 from pathlib import Path
+import re
 
 from server import config
 from server import workspace
@@ -31,6 +32,30 @@ from server.skills import register
 _ENGINES = ("claude", "codex", "gemini")
 _TAGS = ("auto", "mine")
 _BACKLOG_DIR = Path.home() / ".codeasachat" / "backlogs"
+_ATTACHMENT_RE = re.compile(
+    r"\[User sent (?:an image|a file), saved at:\s*([^\]\n]+)\]",
+    re.IGNORECASE,
+)
+
+
+def _attachment_refs(prompt: str, session_id: str | None = None,
+                     source_prompt: str | None = None) -> list[str]:
+    """Return only existing files the app is allowed to serve.
+
+    The shell passes the current source prompt separately because the turn is
+    not persisted until after the skill returns. Do not scan older conversation
+    turns: an unrelated earlier image must never silently enter a new job.
+    """
+    texts = [prompt or "", source_prompt or ""]
+    from server.media import is_served_path
+    found: list[str] = []
+    for text in texts:
+        for raw in _ATTACHMENT_RE.findall(text):
+            candidate = str(Path(raw.strip()).expanduser())
+            p = Path(candidate)
+            if candidate not in found and is_served_path(p):
+                found.append(str(p.resolve()))
+    return found[:8]
 
 
 # ── parsing ───────────────────────────────────────────────────────────────────
@@ -108,11 +133,13 @@ def _list_view() -> str:
 
 
 def _review_view() -> str:
-    done = night_queue_store.list_jobs(status="completed,deployed,staged,needs_you,failed")
+    done = night_queue_store.list_jobs(
+        status="completed,deployed,staged,needs_you,blocked,unverified,failed")
     if not done:
         return "🌙 Nothing to review yet — no completed night jobs."
     buckets: dict[str, list[dict]] = {
-        "completed": [], "deployed": [], "staged": [], "needs_you": [], "failed": []
+        "completed": [], "deployed": [], "staged": [], "needs_you": [],
+        "blocked": [], "unverified": [], "failed": []
     }
     for j in done:
         buckets[j["status"]].append(j)
@@ -134,6 +161,10 @@ def _review_view() -> str:
                 out.append(f"      ↳ {j['summary'][:160]}")
     if buckets["failed"]:
         out += ["", "⚠️ Failed:"] + [_line(j) for j in buckets["failed"]]
+    if buckets["blocked"]:
+        out += ["", "⛔ Blocked:"] + [_line(j) for j in buckets["blocked"]]
+    if buckets["unverified"]:
+        out += ["", "⚠️ Unverified research (review sources):"] + [_line(j) for j in buckets["unverified"]]
     out += ["", "Full detail: /queue show <id>"]
     return "\n".join(out)
 
@@ -294,7 +325,11 @@ class QueueSkill(Skill):
             if not task:
                 return ("Usage: /queue add [auto|mine] [engine] [<project>:] <task>\n"
                         "e.g. /queue add auto codaur: add a CSV export command")
-            jid = night_queue_store.add(project=project, task=task, tag=tag, engine=engine)
+            refs = _attachment_refs(prompt, kwargs.get("session_id"),
+                                    kwargs.get("source_prompt"))
+            spec = {"attachment_refs": refs} if refs else None
+            jid = night_queue_store.add(project=project, task=task, tag=tag, engine=engine,
+                                        spec=spec)
             saved = night_queue_store.get(jid)
             draft = not night_queue_store.is_refined(saved)
             where = "saved as a draft — use /queue refine " + str(jid) if draft else (

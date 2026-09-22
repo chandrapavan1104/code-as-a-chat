@@ -8,13 +8,28 @@ recovery, visible Gajala work cards, structured tool outcomes, exact routing
 model IDs, truthful failure handling, and a verified clone-and-activate project
 workflow. The Mac companion, general browser control, TV pilot, complete
 research-to-queue workflow, and writing evaluator remain future stages. The
-The first server/app slice is implemented; a real phone walkthrough remains.
+first server/app slice is implemented; a real phone walkthrough remains.
 
 Gajala should make the phone a dependable place to get things done on the Mac.
 The user should be able to speak roughly, correct themselves, leave the app,
 and return to either a verified result or a specific, actionable blocker.
 The measure of success is less explaining, supervising, and returning to the
 monitor. Adding capabilities alone has not delivered that experience.
+
+## September 22 reliability release
+
+The next implementation increment adds preserved original requests and revisions,
+request-history deduplication, scoped conversation search and exact-source reads,
+classification of corrections versus new tasks, queued attachment retention,
+provider failure visibility/cooldowns, all-exit completion review, and bounded
+repeated-call recovery. CLI cancellation reaps the process group. Research queue
+handoffs carry current attachments and distinguish missing-input, blocked, and
+unverified results. Daily reminders preserve timezone and recurrence and validate
+explicit linked-note completion.
+
+These changes do not complete the Mac companion, general browser control, TV
+pilot, leased cross-process workers, or subjective writing-quality evaluation.
+Automated regression evidence does not replace real-phone acceptance.
 
 ## Evidence and limits
 

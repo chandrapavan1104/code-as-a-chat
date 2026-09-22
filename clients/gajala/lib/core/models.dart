@@ -400,7 +400,13 @@ class AssistantWork {
     'recovering',
     'waiting_for_user',
     'failed',
+    'unverified',
   }.contains(status);
+
+  /// A completed result can still receive an explicit correction. The client
+  /// never treats it as running or restores it as active work; classification
+  /// must first decide that the new message is a correction/retry.
+  bool get isContinuable => isActive || status == 'completed';
 
   factory AssistantWork.fromJson(Map<String, dynamic> j) => AssistantWork(
     id: j['id']?.toString() ?? '',

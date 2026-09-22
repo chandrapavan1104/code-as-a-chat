@@ -27,6 +27,10 @@ class WorkOrderSpec(BaseModel):
     test_handoff: str = ""
     out_of_scope: str = ""
     assumptions: list[str] = Field(default_factory=list)
+    # Validated server-side paths supplied with the originating chat turn.
+    # These are deliberately separate from source_text so refinement cannot
+    # accidentally discard an image/file handoff.
+    attachment_refs: list[str] = Field(default_factory=list)
     source_text: str = ""
     refined_at: float | None = None
     refined_by: str | None = None

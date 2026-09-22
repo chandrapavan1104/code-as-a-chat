@@ -14,6 +14,8 @@ class TasksScreen extends ConsumerWidget {
     'running',
     'deploying',
     'awaiting_input',
+    'blocked',
+    'unverified',
     'queued',
     'deployed',
     'staged',
@@ -169,6 +171,18 @@ class _JobList extends ConsumerWidget {
         color: GajalaColors.amber,
         icon: Icons.pan_tool_outlined,
         label: 'needs you',
+      );
+    case 'blocked':
+      return (
+        color: GajalaColors.danger,
+        icon: Icons.block_outlined,
+        label: 'blocked',
+      );
+    case 'unverified':
+      return (
+        color: GajalaColors.amber,
+        icon: Icons.help_outline,
+        label: 'unverified',
       );
     case 'failed':
       return (

@@ -13,6 +13,9 @@ interactive one.
 """
 
 import asyncio
+import json
+from dataclasses import dataclass
+from pathlib import Path
 
 from server import config
 
@@ -54,10 +57,94 @@ and include direct source URLs with each useful finding. Clearly separate facts,
 inferences, and recommendations. Never fabricate a source, company, person, or
 contact detail.
 
+Return ONLY one JSON object: {"status":"report_complete"|"waiting_input"|"blocked"|"unverified","report":"...","question":"...","reason":"..."}.
+Use report_complete only when useful findings include source URLs. Use unverified
+when findings cannot be adequately sourced; use waiting_input for a user decision
+and blocked for an external/access/tool blocker. Never turn an error into a report.
+
 READ-ONLY SAFETY: do not contact anyone; do not send email/messages, submit forms,
 log in, purchase, register, or change any external/local state. If the task asks
 for outreach, provide a proposed strategy/template only and state that no outreach
 was performed. End with a concise findings summary and practical next steps."""
+
+
+@dataclass(frozen=True)
+class ResearchOutcome:
+    status: str
+    report: str = ""
+    question: str = ""
+    reason: str = ""
+
+
+def _has_source(report: str) -> bool:
+    return "http://" in report.lower() or "https://" in report.lower()
+
+
+def _mentions_missing_attachment(report: str) -> bool:
+    lower = report.lower()
+    return any(marker in lower for marker in (
+        "missing image", "image unavailable", "attachment unavailable",
+        "could not read the provided", "couldn't read the provided",
+        "could not access the provided", "file was not provided",
+    ))
+
+
+def parse_research_outcome(text: str) -> ResearchOutcome:
+    """Parse the research protocol conservatively, including legacy output."""
+    raw = (text or "").strip()
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        value = None
+    if isinstance(value, dict):
+        status = str(value.get("status") or "").strip().lower()
+        report = str(value.get("report") or "").strip()
+        question = str(value.get("question") or "").strip()
+        reason = str(value.get("reason") or "").strip()
+        if status in {"report_complete", "waiting_input", "blocked", "unverified"}:
+            if status == "report_complete" and _mentions_missing_attachment(report):
+                return ResearchOutcome("blocked", report, reason="required attachment was unavailable")
+            if status == "report_complete" and (not report or not _has_source(report)):
+                return ResearchOutcome("unverified", report, reason="report has no source URL")
+            return ResearchOutcome(status, report, question, reason)
+    lower = raw.lower()
+    if any(marker in lower for marker in ("need your input", "waiting for your", "decision needed")):
+        return ResearchOutcome("waiting_input", question=raw)
+    if any(marker in lower for marker in ("blocked", "could not access", "cannot access", "tool error")):
+        return ResearchOutcome("blocked", reason=raw)
+    if any(marker in lower for marker in ("unverified", "not verified", "insufficient evidence")):
+        return ResearchOutcome("unverified", report=raw, reason="legacy output marked unverified")
+    if raw and _mentions_missing_attachment(raw):
+        return ResearchOutcome("blocked", report=raw, reason="required attachment was unavailable")
+    if raw and _has_source(raw):
+        return ResearchOutcome("report_complete", report=raw)
+    return ResearchOutcome("unverified", report=raw, reason="legacy output lacks source URLs")
+
+
+def attachment_handoff(job: dict) -> tuple[list[str], list[str]]:
+    """Validate persisted refs immediately before handing them to an agent."""
+    from server.media import is_served_path
+    refs = (job.get("spec_json") or {}).get("attachment_refs") or []
+    valid, missing = [], []
+    for value in refs:
+        path = Path(str(value)).expanduser()
+        if is_served_path(path):
+            valid.append(str(path.resolve()))
+        else:
+            missing.append(str(value))
+    return valid, missing
+
+
+def task_with_attachments(job: dict) -> tuple[str, str | None]:
+    """Build the worker prompt using only validated existing attachment paths."""
+    task = job.get("task") or ""
+    valid, missing = attachment_handoff(job)
+    if missing:
+        return task, "Required attachment is unavailable: " + ", ".join(missing[:4])
+    if valid:
+        task += "\n\n=== PROVIDED ATTACHMENTS ===\n" + "\n".join(
+            f"Read this provided file: {path}" for path in valid)
+    return task, None
 
 
 def _argv(engine: str, repo: str, prompt: str, model: str) -> list[str]:

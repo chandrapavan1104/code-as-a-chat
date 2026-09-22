@@ -27,7 +27,10 @@ final _imgMarker = RegExp(r'\[image:\s*([^\]]+?)\s*\]');
 }
 
 /// Pulls a "[[move:dir]]" confirm-to-move marker out of a reply → (clean, dir).
-final _moveMarker = RegExp(r'\[\[move:\s*([a-z0-9\-]+)\s*\]\]', caseSensitive: false);
+final _moveMarker = RegExp(
+  r'\[\[move:\s*([a-z0-9\-]+)\s*\]\]',
+  caseSensitive: false,
+);
 (String, String?) splitMove(String raw) {
   String? target;
   final clean = raw.replaceAllMapped(_moveMarker, (m) {
@@ -40,8 +43,10 @@ final _moveMarker = RegExp(r'\[\[move:\s*([a-z0-9\-]+)\s*\]\]', caseSensitive: f
 /// Pulls a "[[switch:name]]" marker out of a reply → (clean, project). The
 /// agent emits it when it changed project mid-turn, so the app can move the
 /// conversation to that project's thread.
-final _switchMarker =
-    RegExp(r'\[\[switch:\s*([^\]]+?)\s*\]\]', caseSensitive: false);
+final _switchMarker = RegExp(
+  r'\[\[switch:\s*([^\]]+?)\s*\]\]',
+  caseSensitive: false,
+);
 (String, String?) splitSwitch(String raw) {
   String? target;
   final clean = raw.replaceAllMapped(_switchMarker, (m) {
@@ -64,13 +69,24 @@ class ChatKey {
   int get hashCode => Object.hash(command, sid);
 }
 
+/// A message waiting behind a running turn. Keep the attachment with its text
+/// so an image sent while the assistant is busy is never silently discarded.
+@immutable
+class QueuedMessage {
+  final String text;
+  final String? imagePath;
+  final String? continuationTaskId;
+  const QueuedMessage(this.text, {this.imagePath, this.continuationTaskId});
+}
+
 @immutable
 class ChatState {
   final List<ChatMessage> messages;
   final bool sending;
-  final List<String> queued;   // typed while a turn was running
-  final String draft;          // half-typed input, kept across navigation
+  final List<QueuedMessage> queued; // typed while a turn was running
+  final String draft; // half-typed input, kept across navigation
   final bool loaded;
+
   /// ONE-SHOT signal: "the last turn ended in this project". The screen follows
   /// it and then clears it via [ChatController.consumeWorkspace].
   ///
@@ -95,7 +111,7 @@ class ChatState {
   ChatState copyWith({
     List<ChatMessage>? messages,
     bool? sending,
-    List<String>? queued,
+    List<QueuedMessage>? queued,
     String? draft,
     bool? loaded,
     String? workspace,
@@ -105,16 +121,15 @@ class ChatState {
     bool clearWorkspace = false,
     AssistantWork? work,
     bool clearWork = false,
-  }) =>
-      ChatState(
-        messages: messages ?? this.messages,
-        sending: sending ?? this.sending,
-        queued: queued ?? this.queued,
-        draft: draft ?? this.draft,
-        loaded: loaded ?? this.loaded,
-        workspace: clearWorkspace ? null : (workspace ?? this.workspace),
-        work: clearWork ? null : (work ?? this.work),
-      );
+  }) => ChatState(
+    messages: messages ?? this.messages,
+    sending: sending ?? this.sending,
+    queued: queued ?? this.queued,
+    draft: draft ?? this.draft,
+    loaded: loaded ?? this.loaded,
+    workspace: clearWorkspace ? null : (workspace ?? this.workspace),
+    work: clearWork ? null : (work ?? this.work),
+  );
 }
 
 class ChatController extends StateNotifier<ChatState> {
@@ -144,7 +159,9 @@ class ChatController extends StateNotifier<ChatState> {
           if (urls.isEmpty) return m;
           return ChatMessage('bot', clean, remoteImages: urls);
         }).toList();
-      } catch (_) {/* fall through to welcome */}
+      } catch (_) {
+        /* fall through to welcome */
+      }
       if (key.command == 'shell') {
         try {
           for (final item in await api.assistantWork(key.sid)) {
@@ -153,7 +170,9 @@ class ChatController extends StateNotifier<ChatState> {
               break;
             }
           }
-        } catch (_) {/* older servers have no durable-work endpoint */}
+        } catch (_) {
+          /* older servers have no durable-work endpoint */
+        }
       }
     }
     state = state.copyWith(
@@ -167,10 +186,12 @@ class ChatController extends StateNotifier<ChatState> {
 
   void setDraft(String v) => state = state.copyWith(draft: v);
 
-  void addSystemNote(String text) =>
-      state = state.copyWith(messages: [...state.messages, ChatMessage('system', text)]);
+  void addSystemNote(String text) => state = state.copyWith(
+    messages: [...state.messages, ChatMessage('system', text)],
+  );
 
-  String _requestId() => '${key.sid}:${DateTime.now().microsecondsSinceEpoch}:'
+  String _requestId() =>
+      '${key.sid}:${DateTime.now().microsecondsSinceEpoch}:'
       '${Random.secure().nextInt(1 << 32)}';
 
   Future<void> stopWork() async {
@@ -179,7 +200,9 @@ class ChatController extends StateNotifier<ChatState> {
     if (api == null || work == null || !work.isActive) return;
     try {
       state = state.copyWith(work: await api.stopWork(work.id), sending: false);
-    } catch (_) {/* retain the server-authoritative running state */}
+    } catch (_) {
+      /* retain the server-authoritative running state */
+    }
   }
 
   /// Send a message. If a turn is already running the message is QUEUED and
@@ -188,17 +211,37 @@ class ChatController extends StateNotifier<ChatState> {
     final t = text.trim();
     if (t.isEmpty && imagePath == null) return;
     if (state.sending) {
+      final prior = state.work;
+      final queued = QueuedMessage(t, imagePath: imagePath);
       state = state.copyWith(
         draft: '',
-        queued: [...state.queued, t],
-        messages: [...state.messages, ChatMessage('queued', t)],
+        queued: [...state.queued, queued],
+        messages: [
+          ...state.messages,
+          ChatMessage(
+            'queued',
+            t.isEmpty ? '📷 Photo' : t,
+            localImage: imagePath,
+          ),
+        ],
       );
-      final work = state.work;
-      final api = _api;
-      if (work != null && work.isActive && api != null) {
-        try {
-          state = state.copyWith(work: await api.steerWork(work.id));
-        } catch (_) {/* the original turn remains authoritative */}
+      // Put the message on the durable in-memory queue immediately. The
+      // advisory classifier may be slow or unavailable, but must never make
+      // an image/text submission disappear while the current turn completes.
+      if (prior?.isContinuable == true) {
+        final continuation = await _classifyContinuation(t, prior!);
+        if (continuation != null && mounted) {
+          final q = [...state.queued];
+          final index = q.indexOf(queued);
+          if (index >= 0) {
+            q[index] = QueuedMessage(
+              t,
+              imagePath: imagePath,
+              continuationTaskId: continuation,
+            );
+            state = state.copyWith(queued: q);
+          }
+        }
       }
       return;
     }
@@ -211,23 +254,53 @@ class ChatController extends StateNotifier<ChatState> {
     while (state.queued.isNotEmpty && mounted) {
       final next = state.queued.first;
       final msgs = [...state.messages];
-      final i = msgs.indexWhere((m) => m.role == 'queued' && m.text == next);
+      final display = next.text.isEmpty ? '📷 Photo' : next.text;
+      final i = msgs.indexWhere((m) => m.role == 'queued' && m.text == display);
       if (i >= 0) msgs.removeAt(i);
       state = state.copyWith(queued: state.queued.sublist(1), messages: msgs);
-      await _runTurn(next, null);
+      await _runTurn(
+        next.text,
+        next.imagePath,
+        forcedContinuation: next.continuationTaskId,
+      );
     }
   }
 
-  Future<void> _runTurn(String text, String? imagePath) async {
+  Future<String?> _classifyContinuation(
+    String text,
+    AssistantWork prior,
+  ) async {
+    final api = _api;
+    if (api == null) return null;
+    try {
+      final relation = await api.classifyWork(prior.id, text);
+      if (const {'correction', 'retry', 'continuation'}.contains(relation)) {
+        return prior.id;
+      }
+    } catch (_) {
+      /* unavailable classification leaves this as a new task */
+    }
+    return null;
+  }
+
+  Future<void> _runTurn(
+    String text,
+    String? imagePath, {
+    String? forcedContinuation,
+  }) async {
     final api = _api;
     if (api == null) return;
 
     final seeded = [
       ...state.messages,
-      ChatMessage('user', text.isEmpty ? '📷 Photo' : text, localImage: imagePath),
+      ChatMessage(
+        'user',
+        text.isEmpty ? '📷 Photo' : text,
+        localImage: imagePath,
+      ),
       ChatMessage('status', 'Gajala typing…'),
     ];
-    final liveIdx = seeded.length - 1;   // queued bubbles append after this
+    final liveIdx = seeded.length - 1; // queued bubbles append after this
     state = state.copyWith(messages: seeded, sending: true);
 
     void setLive(String s) {
@@ -243,8 +316,12 @@ class ChatController extends StateNotifier<ChatState> {
     void setLiveSteps(List<RunStep> steps, String? project) {
       final m = [...state.messages];
       if (liveIdx < m.length && m[liveIdx].role == 'status') {
-        m[liveIdx] = ChatMessage('status', 'Gajala typing…',
-            steps: steps, project: project);
+        m[liveIdx] = ChatMessage(
+          'status',
+          'Gajala typing…',
+          steps: steps,
+          project: project,
+        );
         state = state.copyWith(messages: m);
       }
     }
@@ -269,32 +346,47 @@ class ChatController extends StateNotifier<ChatState> {
     String? runId;
     String? project;
     final requestId = _requestId();
-    final continuing = state.work?.isActive == true ? state.work!.id : null;
+    String? continuing = forcedContinuation;
+    final priorWork = state.work;
+    if (continuing == null && priorWork?.isContinuable == true) {
+      continuing = await _classifyContinuation(text, priorWork!);
+    }
 
     void showSteps() {
       final ordered = live.keys.toList()..sort();
       setLiveSteps([for (final n in ordered) live[n]!], project);
     }
 
+    var requestStarted = false;
     try {
       if (imagePath != null) {
         setLive('Uploading image…');
         final bytes = await File(imagePath).readAsBytes();
-        final serverPath =
-            await api.uploadImage(bytes, imagePath.split('/').last);
+        final serverPath = await api.uploadImage(
+          bytes,
+          imagePath.split('/').last,
+        );
         final marker = '[User sent an image, saved at: $serverPath]';
         prompt = prompt.isEmpty ? marker : '$marker\n$prompt';
       }
 
-      await for (final ev in api.runStream(key.command, prompt, key.sid,
-          notify: true, project: state.workspace, requestId: requestId,
-          continueTaskId: continuing)) {
+      requestStarted = true;
+      await for (final ev in api.runStream(
+        key.command,
+        prompt,
+        key.sid,
+        notify: true,
+        project: state.workspace,
+        requestId: requestId,
+        continueTaskId: continuing,
+      )) {
         switch (ev['type']) {
           case 'work':
             final raw = ev['work'];
             if (raw is Map) {
-              state = state.copyWith(work: AssistantWork.fromJson(
-                  Map<String, dynamic>.from(raw)));
+              state = state.copyWith(
+                work: AssistantWork.fromJson(Map<String, dynamic>.from(raw)),
+              );
             }
             break;
           // Sent before any work starts, so a dropped stream can still fetch
@@ -344,22 +436,33 @@ class ChatController extends StateNotifier<ChatState> {
           case 'final':
             final rawWork = ev['work'];
             if (rawWork is Map) {
-              state = state.copyWith(work: AssistantWork.fromJson(
-                  Map<String, dynamic>.from(rawWork)));
+              state = state.copyWith(
+                work: AssistantWork.fromJson(
+                  Map<String, dynamic>.from(rawWork),
+                ),
+              );
             }
             final ws = ev['workspace']?.toString();
-            final (imgClean, urls) = splitImages(ev['result']?.toString() ?? '', api);
+            final (imgClean, urls) = splitImages(
+              ev['result']?.toString() ?? '',
+              api,
+            );
             final (moveClean, moveTo) = splitMove(imgClean);
             final (clean, switchedTo) = splitSwitch(moveClean);
             final ordered = live.keys.toList()..sort();
-            finish(ChatMessage(
+            finish(
+              ChatMessage(
                 'bot',
-                clean.isEmpty && urls.isNotEmpty ? '' : (clean.isEmpty ? '(no result)' : clean),
+                clean.isEmpty && urls.isNotEmpty
+                    ? ''
+                    : (clean.isEmpty ? '(no result)' : clean),
                 remoteImages: urls,
                 moveTo: moveTo,
                 runId: runId,
                 steps: [for (final n in ordered) live[n]!],
-                project: ws ?? project));
+                project: ws ?? project,
+              ),
+            );
             // The agent may have switched project mid-turn; follow it so the
             // header and thread key land on the project the turn ended in.
             final landed = switchedTo ?? ws;
@@ -368,24 +471,39 @@ class ChatController extends StateNotifier<ChatState> {
             }
             break;
           case 'error':
-            finish(ChatMessage('error', ev['message']?.toString() ?? 'Server error',
-                runId: runId));
+            finish(
+              ChatMessage(
+                'error',
+                ev['message']?.toString() ?? 'Server error',
+                runId: runId,
+              ),
+            );
             break;
         }
       }
       if (!replaced) {
         setLive('Connection interrupted · still working…');
-        finish(await _recoverReply(text, runId) ??
-            ChatMessage('system',
+        finish(
+          await _recoverReply(text, runId) ??
+              ChatMessage(
+                'system',
                 'Connection dropped mid-reply — it\'s still being written on the '
-                'Mac. Reopen this chat in a moment to see it.',
-                runId: runId));
+                    'Mac. Reopen this chat in a moment to see it.',
+                runId: runId,
+              ),
+        );
       }
     } catch (e) {
       if (!replaced) {
+        if (!requestStarted) {
+          finish(ChatMessage('error', 'Image upload failed. ${friendlyError(e)}'));
+          return;
+        }
         setLive('Connection interrupted · still working…');
-        finish(await _recoverReply(text, runId) ??
-            ChatMessage('error', friendlyError(e), runId: runId));
+        finish(
+          await _recoverReply(text, runId) ??
+              ChatMessage('error', friendlyError(e), runId: runId),
+        );
       }
     } finally {
       if (mounted) state = state.copyWith(sending: false);
@@ -406,11 +524,17 @@ class ChatController extends StateNotifier<ChatState> {
               h[j - 1].role == 'user' &&
               h[j - 1].text.trim() == want) {
             final (clean, urls) = splitImages(h[j].text, api);
-            return ChatMessage('bot', clean.isEmpty ? h[j].text : clean,
-                remoteImages: urls, runId: runId ?? h[j].runId);
+            return ChatMessage(
+              'bot',
+              clean.isEmpty ? h[j].text : clean,
+              remoteImages: urls,
+              runId: runId ?? h[j].runId,
+            );
           }
         }
-      } catch (_) {/* keep polling */}
+      } catch (_) {
+        /* keep polling */
+      }
       await Future.delayed(const Duration(seconds: 4));
     }
     return null;
@@ -420,6 +544,9 @@ class ChatController extends StateNotifier<ChatState> {
 /// One controller per conversation, kept alive for the app's lifetime so a
 /// running turn (and your draft) survives navigating away and back.
 final chatControllerProvider =
-    StateNotifierProvider.family<ChatController, ChatState, ChatKey>((ref, key) {
-  return ChatController(ref.watch(apiProvider), key);
-});
+    StateNotifierProvider.family<ChatController, ChatState, ChatKey>((
+      ref,
+      key,
+    ) {
+      return ChatController(ref.watch(apiProvider), key);
+    });
