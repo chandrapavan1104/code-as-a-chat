@@ -10,6 +10,7 @@ import '../core/push.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
 import '../widgets/run_trace.dart';
+import '../widgets/chat_content.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String command;   // 'shell' = Gajala agent; else a specific skill
@@ -334,6 +335,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             padding: const EdgeInsets.all(12),
             itemCount: msgs.length,
             itemBuilder: (_, i) => _Bubble(msgs[i], imgHeaders,
+                api: ref.read(apiProvider),
                 onMove: sending ? null : _moveAndAsk),
           ),
         ),
@@ -452,9 +454,10 @@ class _WorkCard extends StatelessWidget {
 
 class _Bubble extends StatelessWidget {
   final ChatMessage m;
+  final GajalaApi? api;
   final Map<String, String>? imgHeaders;   // auth headers for /api/file images
   final void Function(String dir)? onMove;  // confirm-to-move action
-  const _Bubble(this.m, this.imgHeaders, {this.onMove});
+  const _Bubble(this.m, this.imgHeaders, {this.onMove, this.api});
   @override
   Widget build(BuildContext context) {
     if (m.role == 'status') {
@@ -565,7 +568,7 @@ class _Bubble extends StatelessWidget {
                 ),
               ),
             if (hasText)
-              SelectableText(m.text,
+              ChatContent(text: m.text, api: isUser ? null : api,
                   style: TextStyle(
                       color: isError ? GajalaColors.danger : context.pal.text, height: 1.35)),
             if (m.moveTo != null && onMove != null) ...[

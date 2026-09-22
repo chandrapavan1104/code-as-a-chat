@@ -59,6 +59,11 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+Gajala chat now renders shared-file cards and fenced code with a Copy action.
+`/files share <path>` stages readable files up to 200 MB in authenticated uploads,
+so downloads survive project switches. Text/code and images preview on the phone;
+other formats open through Android viewers. The update banner rechecks on resume,
+pull-to-refresh, and every minute, so new builds appear while Home stays open.
 Reliability hardening now preserves original requests and accepted corrections in
 durable work packages, retains all request IDs for retry deduplication, and
 classifies corrections separately from unrelated queued messages. Queued photos
@@ -236,6 +241,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-09-22 — **Files and code on the phone.** Added authenticated durable file
+  sharing from Mac paths, phone download/preview/open cards, and copyable fenced
+  code snippets. Binary files no longer render as garbled text. Download auth is
+  restricted to the API origin, and authenticated redirects are rejected. Update
+  checks now refresh on resume, dashboard refresh, and periodically.
 - 2026-09-22 — **Reliability hardening across conversation and execution.**
   Preserved original requests/revisions in delegated work, historical request
   deduplication, exact searchable memory, classified continuations and queued

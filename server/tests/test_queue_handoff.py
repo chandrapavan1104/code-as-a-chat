@@ -47,3 +47,12 @@ def test_attachment_capture_uses_current_source_only(tmp_path, monkeypatch):
     prior = f"[User sent an image, saved at: {old}]"
     assert _attachment_refs("queue this", "app:one", current) == [str(good)]
     assert _attachment_refs("queue this", "app:one", prior) == [str(old)]
+
+
+def test_shell_preserves_file_markers_when_composing_summary():
+    from server.skills.shell import ShellSkill
+
+    marker = "[file: /tmp/shared/report.pdf]"
+    reply = ShellSkill._attach_images("Here is the file.", [marker])
+    assert marker in reply
+    assert ShellSkill._attach_images(reply, [marker]) == reply

@@ -3,6 +3,7 @@ together, with no external CLIs or network. Keeps CI meaningful and green."""
 
 import asyncio
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -174,6 +175,86 @@ def test_filemanager_recovers_bare_known_project(tmp_path, monkeypatch):
     result = asyncio.run(FileManagerSkill().run("list Sibling-Project"))
 
     assert result.startswith(f"{sibling}/")
+
+
+def test_filemanager_share_stages_unique_downloadable_files(tmp_path, monkeypatch):
+    from server import media
+    from server.skills.filemanager import FileManagerSkill
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    source_a = tmp_path / "a" / "snippet.py"
+    source_a.parent.mkdir()
+    source_a.write_text("print('a')")
+    source_b = tmp_path / "b" / "snippet.py"
+    source_b.parent.mkdir()
+    source_b.write_text("print('b')")
+    monkeypatch.setattr("server.skills.filemanager.ensure_uploads_dir", lambda: uploads)
+    monkeypatch.setattr(media, "UPLOADS_DIR", uploads)
+
+    first = asyncio.run(FileManagerSkill().run(f"share {source_a}"))
+    second = asyncio.run(FileManagerSkill().run(f"share {source_b}"))
+    assert first.status == second.status == "succeeded"
+    assert "[file: " in first.message and "[file: " in second.message
+    assert first.data["name"] == second.data["name"] == "snippet.py"
+    assert first.data["path"] != second.data["path"]
+    assert Path(first.data["path"]).read_text() == "print('a')"
+    assert Path(second.data["path"]).read_text() == "print('b')"
+
+    bracket = tmp_path / "report].txt"
+    bracket.write_text("safe marker")
+    third = asyncio.run(FileManagerSkill().run(f"share {bracket}"))
+    assert third.status == "succeeded"
+    assert "]" not in third.data["path"]
+    assert third.data["name"] == "report].txt"
+
+
+def test_filemanager_share_rejects_directories_and_large_files(tmp_path, monkeypatch):
+    from server.skills.filemanager import FileManagerSkill
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setattr("server.skills.filemanager.ensure_uploads_dir", lambda: uploads)
+    directory = tmp_path / "folder"
+    directory.mkdir()
+    result = asyncio.run(FileManagerSkill().run(f"share {directory}"))
+    assert result.status == "failed" and "regular file" in result.message
+
+    from server.skills import filemanager
+    monkeypatch.setattr(filemanager, "MAX_SHARE_BYTES", 3)
+    large = tmp_path / "large.bin"
+    large.write_bytes(b"1234")
+    result = asyncio.run(FileManagerSkill().run(f"share {large}"))
+    assert result.status == "failed" and "too large" in result.message
+
+
+def test_filemanager_binary_read_suggests_share(tmp_path):
+    from server.skills.filemanager import FileManagerSkill
+
+    binary = tmp_path / "archive.bin"
+    binary.write_bytes(b"\x00\x01\xff")
+    result = asyncio.run(FileManagerSkill().run(f"read {binary}"))
+    assert "Binary file" in result and "share" in result
+
+
+def test_shared_file_serving_survives_active_project_change(tmp_path, monkeypatch):
+    from server import api_v2, media, workspace
+
+    uploads = tmp_path / "uploads"
+    shared = uploads / "shared" / "unique"
+    shared.mkdir(parents=True)
+    staged = shared / "manual.pdf"
+    staged.write_bytes(b"pdf bytes")
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+    monkeypatch.setattr(media, "UPLOADS_DIR", uploads)
+    monkeypatch.setattr(workspace, "active", lambda: project_a)
+    first = api_v2.serve_file(str(staged))
+    monkeypatch.setattr(workspace, "active", lambda: project_b)
+    second = api_v2.serve_file(str(staged))
+    assert first.path == second.path == str(staged)
 
 
 def test_shell_repeats_last_update_without_regeneration():

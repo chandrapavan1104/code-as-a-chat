@@ -288,13 +288,27 @@ class GajalaApi {
     void Function(double) onProgress,
   ) async {
     final d = Dio();
-    await d.download(
-      url,
-      savePath,
-      onReceiveProgress: (recv, total) {
-        if (total > 0) onProgress(recv / total);
-      },
-    );
+    final target = Uri.parse(url);
+    final base = Uri.parse(_dio.options.baseUrl);
+    final authenticated =
+        target.scheme == base.scheme &&
+        target.host == base.host &&
+        target.port == base.port;
+    try {
+      await d.download(
+        url,
+        savePath,
+        options: Options(
+          headers: authenticated ? authHeaders : null,
+          followRedirects: !authenticated,
+        ),
+        onReceiveProgress: (recv, total) {
+          if (total > 0) onProgress(recv / total);
+        },
+      );
+    } finally {
+      d.close();
+    }
   }
 
   /// Absolute URL the app uses to fetch a server-side image path.
