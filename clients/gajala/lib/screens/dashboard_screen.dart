@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/models.dart';
@@ -15,6 +16,8 @@ import 'mac_screen.dart';
 import 'skills_screen.dart';
 
 // Display-label overrides for skill tiles (the screen behind is unchanged).
+final _updateRefreshProvider = StateProvider<int>((ref) => 0);
+
 const _tileLabels = {'usage': 'codaur', 'notes': 'brain dump'};
 
 const _icons = {
@@ -56,6 +59,7 @@ class DashboardScreen extends ConsumerWidget {
       ),
       body: RefreshIndicator(
         onRefresh: () async {
+          ref.read(_updateRefreshProvider.notifier).state++;
           ref.invalidate(systemProvider);
           ref.invalidate(skillsProvider);
           ref.invalidate(notesProvider);
@@ -213,21 +217,41 @@ class _UpdateBanner extends ConsumerStatefulWidget {
   ConsumerState<_UpdateBanner> createState() => _UpdateBannerState();
 }
 
-class _UpdateBannerState extends ConsumerState<_UpdateBanner> {
+class _UpdateBannerState extends ConsumerState<_UpdateBanner>
+    with WidgetsBindingObserver {
   UpdateInfo? _update;
   bool _downloading = false;
   double _progress = 0;
+  Timer? _timer;
+  bool _checking = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _timer = Timer.periodic(const Duration(minutes: 1), (_) => _check());
     WidgetsBinding.instance.addPostFrameCallback((_) => _check());
   }
 
+  @override
+  void dispose() {
+    _timer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _check();
+  }
+
   Future<void> _check() async {
+    if (!mounted || _checking || _downloading) return;
     final api = ref.read(apiProvider);
     if (api == null) return;
+    _checking = true;
     final u = await UpdateService.check(api);
+    _checking = false;
     if (mounted) setState(() => _update = u);
   }
 
@@ -249,6 +273,7 @@ class _UpdateBannerState extends ConsumerState<_UpdateBanner> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(_updateRefreshProvider, (_, __) => _check());
     final u = _update;
     if (u == null) return const SizedBox.shrink();
     final pal = context.pal;

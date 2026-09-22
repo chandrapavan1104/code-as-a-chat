@@ -48,6 +48,7 @@ _log = logging.getLogger(__name__)
 # we collect markers mechanically and re-attach any missing ones to the final
 # reply — the app renders them, Telegram shows the path.
 _IMAGE_MARKER_RE = re.compile(r"\[image:\s*[^\]]+\]")
+_FILE_MARKER_RE = re.compile(r"\[file:\s*[^\]]+\]")
 
 
 # ── live progress labels ──────────────────────────────────────────────────────
@@ -931,6 +932,9 @@ class ShellSkill(Skill):
             if rejected or unsupported_claim:
                 text = ("I couldn't verify the requested outcome.\n\n" +
                         self._partial_summary(scratchpad))
+            # Completion review or model fallback can replace the composed
+            # response; keep every file/image emitted by a tool reachable.
+            text = self._attach_images(text, images)
             await _emit(on_event, {"type": "completion", "status": status,
                                    "reason": reason, "brains": _brains.summary()})
             if "error" in _brains.summary() or "unavailable" in _brains.summary():
@@ -1138,6 +1142,7 @@ class ShellSkill(Skill):
 
                 # Remember any image a tool produced, before truncation can clip it.
                 images.extend(_IMAGE_MARKER_RE.findall(result))
+                images.extend(_FILE_MARKER_RE.findall(result))
 
                 # Different-persona skills (e.g. diary/Anna) reply to the user
                 # directly — their voice must never be rewritten by this agent.
@@ -1339,6 +1344,7 @@ class ShellSkill(Skill):
         if not images:
             return reply
         present = set(_IMAGE_MARKER_RE.findall(reply))
+        present.update(_FILE_MARKER_RE.findall(reply))
         seen: set[str] = set()
         missing: list[str] = []
         for m in images:
