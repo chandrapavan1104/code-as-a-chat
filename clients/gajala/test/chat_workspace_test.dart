@@ -91,12 +91,29 @@ void main() {
       expect(work.revision, 2);
     });
 
+    test('unverified work remains visible and continuable', () {
+      final work = AssistantWork.fromJson({
+        'id': 'work-2',
+        'status': 'unverified',
+      });
+      expect(work.isActive, isTrue);
+    });
+
     test('completed work does not absorb an unrelated next request', () {
       final work = AssistantWork.fromJson({
         'id': 'work-1',
         'status': 'completed',
       });
       expect(work.isActive, isFalse);
+    });
+
+    test('completed work is eligible only for explicit correction routing', () {
+      final work = AssistantWork.fromJson({
+        'id': 'work-3',
+        'status': 'completed',
+      });
+      expect(work.isActive, isFalse);
+      expect(work.isContinuable, isTrue);
     });
   });
 }

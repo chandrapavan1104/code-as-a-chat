@@ -156,7 +156,13 @@ def add(*, project: str, task: str, tag: str = "auto", engine: str = "auto",
         depends_on: list[int] | None = None, source_note_id: int | None = None) -> int:
     init()
     from server.work_orders import migrate_spec
-    parsed = migrate_spec(spec, task)
+    if spec and not spec.get("title"):
+        # Callers may attach metadata (for example validated chat files) at
+        # capture time before a complete work order exists.
+        parsed = migrate_spec(None, task)
+        parsed.attachment_refs = list(spec.get("attachment_refs") or [])
+    else:
+        parsed = migrate_spec(spec, task)
     # Rough captures are inbox items, never executable instructions. Refinement
     # returns them held as well so the owner reviews before enabling automation.
     if parsed.readiness == "draft":

@@ -1,4 +1,6 @@
 import asyncio
+import os
+import signal
 import shutil
 import time
 from server.skills.base import Skill
@@ -134,16 +136,20 @@ class CLISubprocessSkill(Skill):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                start_new_session=True,
             )
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=self.timeout
             )
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             if proc is not None:
                 try:
-                    proc.kill()
+                    os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                await proc.wait()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             return None, "", "__timeout__"
         return (proc.returncode,
                 stdout_b.decode(errors="replace"),

@@ -181,6 +181,14 @@ class GajalaApi {
     Map<String, dynamic>.from((await _dio.post('/api/work/$id/steer')).data),
   );
 
+  Future<String> classifyWork(String id, String prompt) async {
+    final r = await _dio.post(
+      '/api/work/$id/classify',
+      data: {'prompt': prompt},
+    );
+    return (r.data['relation'] ?? 'uncertain').toString();
+  }
+
   Future<List<AssistantWork>> assistantWork(String sessionId) async {
     final r = await _dio.get(
       '/api/work',

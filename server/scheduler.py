@@ -25,20 +25,36 @@ _last_battery_alert: float = 0.0
 
 async def _check_reminders() -> None:
     from server.notifier import notify_app
+    from server.db import notes_store
     for r in reminders_store.due_now():
+        note_id = r.get("until_note_id")
+        if note_id:
+            note = notes_store.get(int(note_id))
+            if note and note.get("status") in {"done", "closed"}:
+                reminders_store.cancel(r["id"])
+                log.info("Stopped reminder #%s because note #%s is complete", r["id"], note_id)
+                continue
         text = f"⏰ REMINDER\n\n{r['text']}"
         if r.get("project"):
             text += f"\n\n(project: {r['project']})"
         ok = await notify.push_text(text, chat_id=r.get("chat_id"))
         # Log to the Gajala inbox + push (no-op if FCM isn't configured), so a
         # fired reminder lives in the Alerts tab alongside everything else.
-        try:
-            await notify_app("reminder", title="⏰ Reminder", body=r["text"],
-                             ref_kind="reminder", ref_id=r["id"])
-        except Exception:
-            pass
+        # Telegram can be temporarily unavailable. Record the app alert only
+        # once in that case, so every scheduler tick does not duplicate FCM.
+        if not r.get("app_notified"):
+            try:
+                await notify_app("reminder", title="⏰ Reminder", body=r["text"],
+                                 ref_kind="reminder", ref_id=r["id"])
+            except Exception:
+                pass
+            finally:
+                # The attempt is durable even if the push wrapper raises. A
+                # later scheduler tick may retry Telegram, but must not emit
+                # another identical app/FCM notification.
+                reminders_store.mark_app_notified(r["id"])
         if ok:
-            reminders_store.mark_fired(r["id"])
+            reminders_store.complete_delivery(r["id"])
             log.info("Fired reminder #%s", r["id"])
 
 

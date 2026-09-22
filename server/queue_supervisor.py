@@ -96,6 +96,15 @@ def job_explanation(job: dict) -> dict:
         action = "Tap Ship, or change it to Auto for supervised deployment."
     elif status in ("shipped", "completed"):
         action = "No action needed; this task is complete."
+    elif status == "awaiting_input":
+        blocker = blocker or "The worker is waiting for an answer or required input."
+        action = action or "Answer the question in Alerts to resume this task."
+    elif status == "blocked":
+        blocker = blocker or "The worker could not proceed because of an external blocker."
+        action = action or "Resolve the blocker, then retry this task."
+    elif status == "unverified":
+        blocker = blocker or "The research output did not meet the evidence requirement."
+        action = action or "Review the sources or rerun with a narrower task."
     return {
         "blocker": blocker,
         "next_action": action,

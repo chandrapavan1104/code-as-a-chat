@@ -84,6 +84,67 @@ def get_recent(session_id: str, n: int = 5) -> list[dict]:
     ]
 
 
+def client_scope(session_id: str) -> str:
+    """Return the client namespace shared by a user's conversations.
+
+    Session IDs are deliberately client-prefixed (``app:<install>`` and
+    ``tg:<chat>``).  The prefix is the safe boundary for an explicit
+    cross-project search; callers never receive another client's memory.
+    """
+    return (session_id or "").split(":", 1)[0]
+
+
+def search(session_id: str, query: str, *, limit: int = 20, offset: int = 0,
+           all_client: bool = False) -> list[dict]:
+    """Find exact matching messages in this session or its client namespace."""
+    if not session_id or not query or limit <= 0 or offset < 0:
+        return []
+    limit = min(limit, 100)
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    with _conn() as c:
+        if all_client and client_scope(session_id):
+            rows = c.execute(
+                "SELECT id, session_id, role, content, ts, run_id "
+                "FROM conversations WHERE session_id LIKE ? AND content LIKE ? ESCAPE '\\' "
+                "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                (client_scope(session_id) + ":%", pattern, limit, offset),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT id, session_id, role, content, ts, run_id "
+                "FROM conversations WHERE session_id = ? AND content LIKE ? ESCAPE '\\' "
+                "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                (session_id, pattern, limit, offset),
+            ).fetchall()
+    return [
+        {"id": r[0], "session_id": r[1], "role": r[2], "content": r[3],
+         "ts": r[4], "run_id": r[5]}
+        for r in rows
+    ]
+
+
+def get_message(message_id: int, session_id: str, *, all_client: bool = False) -> dict | None:
+    """Return one full message, enforcing session/client ownership."""
+    if not session_id or message_id <= 0:
+        return None
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id, session_id, role, content, ts, run_id "
+            "FROM conversations WHERE id = ?", (message_id,)
+        ).fetchone()
+    if not row:
+        return None
+    allowed = row[1] == session_id or (
+        all_client and client_scope(session_id) and
+        client_scope(row[1]) == client_scope(session_id)
+    )
+    if not allowed:
+        return None
+    return {"id": row[0], "session_id": row[1], "role": row[2],
+            "content": row[3], "ts": row[4], "run_id": row[5]}
+
+
 def clear(session_id: str) -> int:
     if not session_id:
         return 0

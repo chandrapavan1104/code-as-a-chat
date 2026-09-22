@@ -283,6 +283,16 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
         await _notify_status(jid, job, "failed", f"project path is gone: {repo}")
         return
 
+    worker_task, attachment_error = night_exec.task_with_attachments(job)
+    if attachment_error:
+        question = f"{attachment_error}. Reattach the file in the original chat and answer this task again."
+        night_queue_store.update(jid, status="awaiting_input", ended_at=time.time(),
+                                 blocker_reason=attachment_error,
+                                 next_action="Reattach the missing file, then answer the task.",
+                                 summary=question)
+        await _notify_input(jid, job, question)
+        return
+
     if (job.get("spec_json") or {}).get("work_type") == "research":
         await _process_research_job(job, engine, repo, jid)
         return
@@ -321,7 +331,7 @@ async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> No
                 _running[jid]["proc"] = proc
 
         summary, total, billable, error = await night_exec.run_job(
-            engine, str(worktree), job["task"],
+            engine, str(worktree), worker_task,
             getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
             on_spawn=_hold)
         _record_run(repo, engine, started, error, total, billable)
@@ -421,8 +431,17 @@ async def _process_research_job(
         if jid in _running:
             _running[jid]["proc"] = proc
 
+    worker_task, attachment_error = night_exec.task_with_attachments(job)
+    if attachment_error:
+        question = f"{attachment_error}. Reattach the file in the original chat and answer this task again."
+        night_queue_store.update(jid, status="awaiting_input", ended_at=time.time(),
+                                 blocker_reason=attachment_error,
+                                 next_action="Reattach the missing file, then answer the task.",
+                                 summary=question)
+        await _notify_input(jid, job, question)
+        return
     summary, total, billable, error = await night_exec.run_research_job(
-        engine, cwd, job["task"], getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
+        engine, cwd, worker_task, getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
         on_spawn=_hold,
     )
     _record_run(cwd, engine, started, error, total, billable)
@@ -440,17 +459,34 @@ async def _process_research_job(
         )
         await _notify_status(jid, job, "failed", reason)
         return
-    if not summary.strip():
-        reason = "Research agent returned no report."
-        night_queue_store.update(
-            jid, status="failed", engine_used=engine, ended_at=time.time(),
-            summary=reason,
-        )
-        await _notify_status(jid, job, "failed", reason)
+    outcome = night_exec.parse_research_outcome(summary)
+    if outcome.status == "waiting_input":
+        question = outcome.question or outcome.report or "Research needs your input."
+        night_queue_store.update(jid, status="awaiting_input", engine_used=engine,
+            tokens_total=total, tokens_billable=billable, ended_at=time.time(),
+            summary=question, next_action="Answer the research question, then retry this task.")
+        await _notify_input(jid, job, question)
         return
+    if outcome.status == "blocked":
+        reason = outcome.reason or "Research was blocked before producing a report."
+        night_queue_store.update(jid, status="blocked", engine_used=engine,
+            tokens_total=total, tokens_billable=billable, ended_at=time.time(),
+            summary=reason, blocker_reason=reason,
+            next_action="Resolve the blocker, then retry the task.")
+        await _notify_status(jid, job, "blocked", reason)
+        return
+    if outcome.status == "unverified":
+        reason = outcome.reason or "Research findings were not sufficiently verified."
+        night_queue_store.update(jid, status="unverified", engine_used=engine,
+            tokens_total=total, tokens_billable=billable, ended_at=time.time(),
+            summary=outcome.report or reason, blocker_reason=reason,
+            next_action="Review sources or rerun with a narrower task.")
+        await _notify_status(jid, job, "unverified", reason)
+        return
+    report = outcome.report.strip()
     night_queue_store.update(
         jid, status="completed", engine_used=engine, tokens_total=total,
-        tokens_billable=billable, ended_at=time.time(), summary=summary.strip(),
+        tokens_billable=billable, ended_at=time.time(), summary=report,
     )
     await _notify_status(jid, job, "completed", "Research report is ready.")
 
@@ -470,10 +506,11 @@ async def _notify_status(jid: int, job: dict, status: str, detail: str = "",
                          deployed: bool = False) -> None:
     from server.notifier import notify_app
     icon = {"deployed": "📦", "staged": "⏸", "completed": "✅", "failed": "⚠️",
-            "needs_you": "🙋"}.get(status, "•")
+            "needs_you": "🙋", "blocked": "⛔", "unverified": "⚠️"}.get(status, "•")
     verb = {"deployed": "deployed — test on phone", "completed": "completed — report ready",
             "staged": "staged — ship when ready",
-            "failed": "failed", "needs_you": "needs you"}.get(status, status)
+            "failed": "failed", "needs_you": "needs you", "blocked": "blocked",
+            "unverified": "unverified — review sources"}.get(status, status)
     title = f"{icon} Task #{jid} {verb}"
     body = f"{_project_name(job['project'])}: {job['task'][:80]}"
     if detail:

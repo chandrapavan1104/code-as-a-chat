@@ -128,6 +128,9 @@ async def refine_job(job_id: int, *, allow_cloud: bool = False,
     if spec is None:
         raise RuntimeError("Claude did not return a complete work order")
     spec.source_text = rough
+    # Claude is intentionally not shown local paths. Preserve the validated
+    # handoff captured at queue time across every refinement.
+    spec.attachment_refs = list(current.get("attachment_refs") or [])
     mark_refined(spec, provider="claude-sonnet")
     prior = (job.get("summary") or "").strip() if job["status"] == "failed" else ""
     summary = "Refined by Claude Sonnet; held for review."

@@ -17,7 +17,10 @@ from pathlib import Path
 
 
 DB_PATH = Path.home() / ".codeasachat" / "assistant_tasks.db"
-CONTINUABLE = ("accepted", "working", "recovering", "waiting_for_user", "failed")
+CONTINUABLE = (
+    "accepted", "working", "recovering", "waiting_for_user", "failed",
+    "unverified", "completed",
+)
 
 
 @contextmanager
@@ -63,7 +66,20 @@ def init() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_assistant_task_events
                 ON assistant_task_events(task_id, id);
+            CREATE TABLE IF NOT EXISTS assistant_task_requests (
+                request_id TEXT PRIMARY KEY,
+                task_id    TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_assistant_task_requests_task
+                ON assistant_task_requests(task_id);
         """)
+        # Older deployments stored only the latest request on the task row.
+        # Preserve that identity when introducing the append-only request map.
+        conn.execute(
+            "INSERT OR IGNORE INTO assistant_task_requests(request_id, task_id, created_at) "
+            "SELECT request_id, id, created_at FROM assistant_tasks"
+        )
         conn.commit()
 
 
@@ -87,9 +103,21 @@ def accept(*, request_id: str, session_id: str, command: str, prompt: str,
     init()
     now = time.time()
     with _conn() as conn:
+        # Deduplication is a mutation boundary: serialize the lookup and
+        # insert so two retries cannot both launch the same work.
+        conn.execute("BEGIN IMMEDIATE")
+        scoped_request_id = f"{session_id}:{request_id}"
         existing = conn.execute(
-            "SELECT * FROM assistant_tasks WHERE request_id = ?", (request_id,)
+            "SELECT t.* FROM assistant_tasks t JOIN assistant_task_requests r "
+            "ON r.task_id=t.id WHERE r.request_id = ?", (scoped_request_id,)
         ).fetchone()
+        if existing is None:
+            # Compatibility with a database created between schema versions.
+            existing = conn.execute(
+                "SELECT * FROM assistant_tasks WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if existing is not None and existing["session_id"] != session_id:
+                existing = None
         if existing:
             return dict(existing), False
 
@@ -102,12 +130,12 @@ def accept(*, request_id: str, session_id: str, command: str, prompt: str,
         if target and target["status"] in CONTINUABLE:
             revision = int(target["revision"]) + 1
             conn.execute(
-                "UPDATE assistant_tasks SET request_id=?, latest_prompt=?, revision=?, "
+                "UPDATE assistant_tasks SET latest_prompt=?, revision=?, "
                 "status='accepted', blocker='', next_action='', updated_at=? WHERE id=?",
-                (request_id, prompt, revision, now, target["id"]),
+                (prompt, revision, now, target["id"]),
             )
             task_id = target["id"]
-            created = False
+            created = True
         else:
             task_id = uuid.uuid4().hex[:16]
             conn.execute(
@@ -115,11 +143,15 @@ def accept(*, request_id: str, session_id: str, command: str, prompt: str,
                 "(id, request_id, session_id, command, original_prompt, latest_prompt, "
                 "project, status, summary, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?)",
-                (task_id, request_id, session_id, command, prompt, prompt, project,
+                (task_id, scoped_request_id, session_id, command, prompt, prompt, project,
                  _summary(prompt), now, now),
             )
             revision = 1
             created = True
+        conn.execute(
+            "INSERT INTO assistant_task_requests(request_id, task_id, created_at) "
+            "VALUES (?, ?, ?)", (scoped_request_id, task_id, now)
+        )
         conn.execute(
             "INSERT INTO assistant_task_events (task_id, kind, payload, created_at) "
             "VALUES (?, 'accepted', ?, ?)",
@@ -131,6 +163,41 @@ def accept(*, request_id: str, session_id: str, command: str, prompt: str,
             "SELECT * FROM assistant_tasks WHERE id = ?", (task_id,)
         ).fetchone()
     return dict(row), created
+
+
+def context_for(task_id: str, *, max_chars: int = 40000) -> str:
+    """Build the complete bounded work package for a continued task.
+
+    The original request is always retained, followed by accepted corrections
+    in order and the latest observed state. Payload text is preserved until
+    the explicit bound, with a visible truncation marker rather than silently
+    pretending the context is complete.
+    """
+    if not task_id:
+        return ""
+    task = get(task_id, include_events=True)
+    if not task:
+        return ""
+    lines = [
+        f"WORK PACKAGE id={task_id} revision={task['revision']}",
+        f"ORIGINAL REQUEST: {task['original_prompt']}",
+    ]
+    for event in task.get("events", []):
+        if event["kind"] != "accepted":
+            continue
+        payload = event.get("payload") or {}
+        lines.append(
+            f"ACCEPTED REVISION {payload.get('revision', '?')} REQUEST "
+            f"({payload.get('request_id', 'unknown')}): {payload.get('prompt', '')}"
+        )
+    for label in ("summary", "result", "blocker", "next_action"):
+        value = task.get(label) or ""
+        if value:
+            lines.append(f"PREVIOUS {label.upper()}: {value}")
+    text = "\n".join(lines)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n[WORK PACKAGE TRUNCATED; retrieve the source task for the full text]"
 
 
 def update(task_id: str, *, status: str | None = None, summary: str | None = None,
