@@ -4,11 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/errors.dart';
 import 'core/push.dart';
 import 'core/state.dart';
+import 'core/storage.dart';
 import 'core/theme.dart';
+import 'core/voice.dart';
 import 'core/widget_bridge.dart';
 import 'screens/chat_screen.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_shell.dart';
+import 'screens/voice_sheet.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,10 +50,21 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
       ref.invalidate(unreadCountProvider);
       ref.invalidate(queueProvider);
     };
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Long-press home / the assistant button opens the voice sheet — on a cold
+    // start and when Gajala is already running.
+    AssistLaunch.listen(_openVoice);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       Push.handleLaunchMessage();
       handleWidgetLaunch();   // route Ask / Dump widget deep-links
+      if (await AssistLaunch.consumeInitial()) await _openVoice();
     });
+  }
+
+  Future<void> _openVoice() async {
+    // Voice needs a paired Mac for anything but phone actions; before pairing
+    // the connect screen is the right place to land.
+    if (await Storage.loadConfig() == null) return;
+    await showVoiceSheet();
   }
 
   @override

@@ -56,6 +56,14 @@ final _switchMarker = RegExp(
   return (clean, target);
 }
 
+/// The Gajala (shell) thread id for a project directory. Must match the
+/// server's `workspace.slug()` — the suffix is how it recovers the project.
+String shellSessionId(String installId, String? dir) {
+  if (dir == null || dir.isEmpty) return installId;
+  final slug = dir.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+  return '$installId::$slug';
+}
+
 /// Identifies one conversation: a skill tab, or a per-directory Gajala thread.
 @immutable
 class ChatKey {

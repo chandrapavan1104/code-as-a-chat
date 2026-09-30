@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- In-app updater: install the downloaded APK via the system installer -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- Voice: speech input, and "set an alarm/timer" handed to the clock app -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
     <application
         android:label="Gajala"
         android:name="${applicationName}"
@@ -33,7 +36,40 @@
             <intent-filter>
                 <action android:name="es.antonborri.home_widget.action.LAUNCH" />
             </intent-filter>
+            <!-- Assistant gesture: legacy ACTION_ASSIST and our voice session. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
+
+        <!-- Default digital assistant: long-press home opens the voice sheet. -->
+        <service
+            android:name=".GajalaVoiceInteractionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/voice_interaction_service" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".GajalaVoiceSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <!-- Required by the assistant role; forwards to the phone's real recognizer. -->
+        <service
+            android:name=".GajalaRecognitionService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
+        </service>
 
         <!-- Quick-actions widget: Lock / Ask / Dump -->
         <receiver
@@ -86,6 +122,13 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Voice: find speech recognizers and text-to-speech engines. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
         </intent>
     </queries>
 </manifest>
