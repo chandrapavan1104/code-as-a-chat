@@ -11,7 +11,23 @@ import android.service.voice.VoiceInteractionSessionService
  * binds this while Gajala holds the assistant role; it needs no logic of its
  * own — the work happens in [GajalaVoiceSession].
  */
-class GajalaVoiceInteractionService : VoiceInteractionService()
+class GajalaVoiceInteractionService : VoiceInteractionService() {
+    // Set only while Gajala holds the assistant role and the system has bound
+    // us; "Hey Gajala" then opens voice mode through showSession().
+    override fun onReady() {
+        super.onReady()
+        instance = this
+    }
+
+    override fun onShutdown() {
+        instance = null
+        super.onShutdown()
+    }
+
+    companion object {
+        @Volatile var instance: GajalaVoiceInteractionService? = null
+    }
+}
 
 class GajalaVoiceSessionService : VoiceInteractionSessionService() {
     override fun onNewSession(args: Bundle?): VoiceInteractionSession = GajalaVoiceSession(this)

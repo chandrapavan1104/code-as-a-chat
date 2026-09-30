@@ -49,6 +49,7 @@ dependencies:
   android_intent_plus: ^6.1.0
   flutter_gemma: ^1.11.3
   flutter_gemma_litertlm: ^1.8.5
+  sherpa_onnx: ^1.13.8
 
 dev_dependencies:
   flutter_test:

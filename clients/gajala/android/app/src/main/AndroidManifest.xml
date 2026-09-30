@@ -7,6 +7,10 @@
     <!-- Voice: speech input, and "set an alarm/timer" handed to the clock app -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+    <!-- "Hey Gajala": the mic may only stay on in the background inside a
+         microphone foreground service with a visible notification. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <application
         android:label="Gajala"
         android:name="${applicationName}"
@@ -59,6 +63,11 @@
             android:name=".GajalaVoiceSessionService"
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <!-- Hands-free "Hey Gajala" listener. -->
+        <service
+            android:name=".WakeWordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
         <!-- Required by the assistant role; forwards to the phone's real recognizer. -->
         <service
             android:name=".GajalaRecognitionService"

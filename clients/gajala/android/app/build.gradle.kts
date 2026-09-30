@@ -31,9 +31,16 @@ android {
 
     // flutter_gemma_litertlm bundles Qualcomm NPU blobs (~57 MB) unconditionally.
     // The offline voice model runs on CPU/GPU and never requests the NPU.
+    // The "Hey Gajala" engine (sherpa_onnx) ships ~75 MB of extra libraries for
+    // 32-bit and x86 CPUs; hands-free is 64-bit ARM only (WakeWordService.supported).
     packaging {
         jniLibs {
-            excludes += listOf("**/libQnn*.so", "**/libLiteRtDispatch_Qualcomm.so")
+            excludes += listOf(
+                "**/libQnn*.so", "**/libLiteRtDispatch_Qualcomm.so",
+                "lib/x86/**",
+                "lib/x86_64/libsherpa-onnx-*.so", "lib/x86_64/libonnxruntime.so",
+                "lib/armeabi-v7a/libsherpa-onnx-*.so", "lib/armeabi-v7a/libonnxruntime.so",
+            )
         }
     }
 
