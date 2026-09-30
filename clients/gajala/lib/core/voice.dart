@@ -10,6 +10,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'storage.dart';
 import 'voice_logic.dart';
+import 'wake_word.dart';
 
 class Voice {
   Voice._();
@@ -22,6 +23,7 @@ class Voice {
   Completer<String>? _pending;
   void Function(String)? _onPartial;
   String _latest = '';
+  bool _holdingMic = false;
 
   bool get isListening => _stt.isListening;
 
@@ -52,6 +54,8 @@ class Voice {
     _finish();
     final done = Completer<String>();
     _pending = done;
+    _holdingMic = true;
+    await WakeWord.hold();
     _onPartial = onPartial;
     _latest = '';
     await _stt.listen(
@@ -72,6 +76,10 @@ class Voice {
   }
 
   void _finish({String? error}) {
+    if (_holdingMic) {
+      _holdingMic = false;
+      WakeWord.release();
+    }
     final p = _pending;
     if (p == null || p.isCompleted) return;
     _pending = null;
@@ -105,7 +113,13 @@ class Voice {
       _ttsReady = true;
     }
     await _tts.stop();
-    await _tts.speak(text);
+    // Don't let the wake word hear Gajala saying its own name.
+    await WakeWord.hold();
+    try {
+      await _tts.speak(text);
+    } finally {
+      await WakeWord.release();
+    }
   }
 
   Future<void> stopSpeaking() async {

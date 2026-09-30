@@ -5,6 +5,7 @@
 // memory and appear there afterwards. When the Mac is unreachable, the
 // on-phone model answers general questions instead.
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,12 +17,27 @@ import '../core/state.dart';
 import '../core/theme.dart';
 import '../core/voice.dart';
 import '../core/voice_logic.dart';
+import '../core/wake_word.dart';
 import 'chat_screen.dart';
 
 /// Open the voice sheet over whatever is on screen.
+bool _sheetOpen = false;
+
 Future<void> showVoiceSheet([BuildContext? context]) async {
   final ctx = context ?? Push.navigatorKey.currentContext;
-  if (ctx == null) return;
+  // A second "Hey Gajala" while voice mode is open must not stack another sheet.
+  if (ctx == null || _sheetOpen) return;
+  _sheetOpen = true;
+  unawaited(WakeWord.hold());
+  try {
+    await _showSheet(ctx);
+  } finally {
+    _sheetOpen = false;
+    await WakeWord.release();
+  }
+}
+
+Future<void> _showSheet(BuildContext ctx) async {
   await showModalBottomSheet(
     context: ctx,
     isScrollControlled: true,
@@ -335,6 +351,8 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
   int _bytes = 0;
   double? _progress;
   String? _modelError;
+  WakeWordState _wake = WakeWordState.off;
+  String? _wakeError;
 
   @override
   void initState() {
@@ -344,8 +362,36 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
 
   Future<void> _refresh() async {
     final b = await OfflineBrain.instance.installedBytes();
-    if (mounted) setState(() => _bytes = b);
+    final w = await WakeWord.state();
+    if (mounted) {
+      setState(() {
+        _bytes = b;
+        _wake = w;
+      });
+    }
   }
+
+  Future<void> _toggleWake(bool on) async {
+    setState(() => _wakeError = null);
+    if (on) {
+      final why = await WakeWord.enable();
+      if (why != null && mounted) setState(() => _wakeError = why);
+    } else {
+      await WakeWord.disable();
+    }
+    // The service reports "listening" once its engine has loaded the model.
+    await Future.delayed(const Duration(milliseconds: 600));
+    await _refresh();
+  }
+
+  String get _wakeSubtitle =>
+      _wakeError ??
+      switch (_wake) {
+        WakeWordState.unsupported => 'Not available on this phone',
+        WakeWordState.off => 'Say it anytime the screen is on; a notification shows while it listens',
+        WakeWordState.listening => 'Listening on this phone only — nothing is recorded or sent',
+        WakeWordState.paused => 'On · paused while the screen is off, Battery Saver is on, or Gajala is using the mic',
+      };
 
   Future<void> _download() async {
     final api = ref.read(apiProvider);
@@ -391,6 +437,13 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
           title: const Text('Make Gajala the phone assistant'),
           subtitle: const Text('Pick Gajala under “Digital assistant app”'),
           onTap: openAssistantSettings,
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.hearing),
+          title: const Text('Hands-free “Hey Gajala”'),
+          subtitle: Text(_wakeSubtitle),
+          value: _wake == WakeWordState.listening || _wake == WakeWordState.paused,
+          onChanged: _wake == WakeWordState.unsupported ? null : _toggleWake,
         ),
         ListTile(
           leading: const Icon(Icons.cloud_off_outlined),

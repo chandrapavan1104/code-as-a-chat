@@ -72,7 +72,22 @@ phone downloads it once from the Mac (`GET /api/voice/model/file`, fetched onto
 the Mac by `scripts/fetch-voice-model`), never from a third party. Because the
 assistant role also makes Gajala the system speech recognizer,
 `GajalaRecognitionService` forwards recognition to Google's recognizer so voice
-typing keeps working phone-wide. Not yet built: wake word, TTS persona voice.
+typing keeps working phone-wide. Not yet built: TTS persona voice.
+Unverified on a real phone.
+**Hands-free "Hey Gajala" (queue #26)** is opt-in from voice settings.
+`WakeWordService` is a microphone foreground service (persistent notification,
+Android 14+ rules: startable only while Gajala is on screen, not restarted by
+the system; every app open restarts it) that owns a headless Flutter engine
+running `wakeWordMain` (`lib/core/wake_word.dart`) with sherpa-onnx keyword
+spotting — open-source, on-device, no account or key. The phoneme-based zh-en
+3M model (`android/app/src/main/assets/wakeword/`, ~5 MB) spells "Hey Gajala"
+in five ARPAbet pronunciations. It releases the mic when the screen is off or
+locked, in Battery Saver, and while Gajala itself listens or speaks. On
+detection it opens voice mode directly when Gajala is on screen, via the
+assistant session when Gajala is the default assistant, and otherwise posts a
+"tap to talk" notification (Android blocks background activity starts).
+64-bit ARM only. Synthetic-voice tests: 29/30 detections, ~1 false trigger per
+6 min of deliberately similar speech; accuracy drops in background noise.
 Unverified on a real phone.
 
 Gajala chat now renders shared-file cards and fenced code with a Copy action.
@@ -257,6 +272,14 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-09-30 — **"Hey Gajala" wake word (queue #26).** Microphone foreground
+  service with a headless Flutter engine running sherpa-onnx keyword spotting;
+  pauses on screen-off/lock, Battery Saver and Gajala's own mic use; opens voice
+  mode via the app, the assistant session, or a tap-to-talk notification.
+  Model/threshold chosen from TTS-voice tests (the gigaspeech BPE models failed:
+  the mobile export crashes on sherpa-onnx 1.13.8, the standard one caught ~55%).
+  Non-arm64 sherpa libraries excluded from the APK (+32 MB instead of ~100 MB).
+  Not yet exercised on a device.
 - 2026-09-29 — **Gajala voice assistant (queue #25).** Dictation mic and spoken
   replies in chat; a voice sheet with on-device intent routing (alarm, timer,
   dial, maps, web search, Google handoff) and Gajala-domain requests kept on the
