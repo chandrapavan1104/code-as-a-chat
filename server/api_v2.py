@@ -355,6 +355,27 @@ def register_device(d: DeviceIn):
     return {"registered": True, "count": devices_store.count()}
 
 
+# ── voice: offline on-phone model ─────────────────────────────────────────────
+
+@router.get("/voice/model")
+def voice_model_info():
+    """What the phone should download for offline voice, if the Mac has it."""
+    path = cfg.VOICE_MODEL_PATH
+    if not path.is_file():
+        return {"available": False, "name": path.name,
+                "hint": "Run scripts/fetch-voice-model on the Mac."}
+    return {"available": True, "name": path.name, "size": path.stat().st_size,
+            "model_type": "qwen3", "file_type": "litertlm"}
+
+
+@router.get("/voice/model/file")
+def voice_model_file():
+    path = cfg.VOICE_MODEL_PATH
+    if not path.is_file():
+        raise HTTPException(404, "voice model not present on the Mac")
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
+
+
 # ── image upload / serve ──────────────────────────────────────────────────────
 
 @router.post("/upload")

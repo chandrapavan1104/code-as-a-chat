@@ -59,6 +59,22 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Gajala voice (queue #25, phases 1–3 + on-device routing + offline).** The chat
+composer has a dictation mic; dictated messages get their reply spoken. A voice
+sheet (chat app-bar button, or long-press home once Gajala is the phone's
+Digital assistant app) listens, routes, answers and speaks. Alarms, timers,
+dialing numbers, maps and web search run as on-device Android intents; named
+calls and "ask Google …" hand off to the Google app; anything touching Gajala's
+world (notes, queue, projects, Mac…) goes to the same per-project shell thread
+as the chat, so voice shares its memory. When the Mac is unreachable, an
+on-phone Qwen3 0.6B (LiteRT-LM via flutter_gemma) answers general questions; the
+phone downloads it once from the Mac (`GET /api/voice/model/file`, fetched onto
+the Mac by `scripts/fetch-voice-model`), never from a third party. Because the
+assistant role also makes Gajala the system speech recognizer,
+`GajalaRecognitionService` forwards recognition to Google's recognizer so voice
+typing keeps working phone-wide. Not yet built: wake word, TTS persona voice.
+Unverified on a real phone.
+
 Gajala chat now renders shared-file cards and fenced code with a Copy action.
 `/files share <path>` stages readable files up to 200 MB in authenticated uploads,
 so downloads survive project switches. Text/code and images preview on the phone;
@@ -241,6 +257,15 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-09-29 — **Gajala voice assistant (queue #25).** Dictation mic and spoken
+  replies in chat; a voice sheet with on-device intent routing (alarm, timer,
+  dial, maps, web search, Google handoff) and Gajala-domain requests kept on the
+  shared per-project thread. Registered `VoiceInteractionService` + session so
+  Gajala can be the default digital assistant, with a forwarding
+  `RecognitionService` so taking the role does not break phone-wide voice input.
+  Offline fallback: Qwen3 0.6B on the phone, served from the Mac via
+  `/api/voice/model*` (`VOICE_MODEL_PATH`). Router + speech cleanup unit-tested,
+  endpoints tested; not yet exercised on a device.
 - 2026-09-22 — **Files and code on the phone.** Added authenticated durable file
   sharing from Mac paths, phone download/preview/open cards, and copyable fenced
   code snippets. Binary files no longer render as garbled text. Download auth is

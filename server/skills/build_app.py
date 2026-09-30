@@ -50,6 +50,7 @@ export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
 rsync -a "{repo}/clients/gajala/lib/" "{dev}/lib/"
 rsync -a "{repo}/clients/gajala/android/app/src/main/" "{dev}/android/app/src/main/"
 cp "{repo}/clients/gajala/pubspec.yaml" "{dev}/pubspec.yaml"
+cp "{repo}/clients/gajala/android/app/build.gradle.kts" "{dev}/android/app/build.gradle.kts"
 cd "{dev}"
 flutter pub get >/dev/null
 flutter build apk --release --build-number={build_number} --build-name={version_name}

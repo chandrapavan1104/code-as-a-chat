@@ -311,6 +311,24 @@ class GajalaApi {
     }
   }
 
+  /// Quick "can the phone reach the Mac right now?" — decides online vs
+  /// offline voice without waiting out the chat stream's long timeouts.
+  Future<bool> reachable() async {
+    try {
+      final r = await _dio
+          .get('/health')
+          .timeout(const Duration(seconds: 5));
+      return r.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> voiceModelInfo() async =>
+      Map<String, dynamic>.from((await _dio.get('/api/voice/model')).data);
+
+  String get voiceModelUrl => '${_dio.options.baseUrl}/api/voice/model/file';
+
   /// Absolute URL the app uses to fetch a server-side image path.
   String fileUrl(String serverPath) =>
       '${_dio.options.baseUrl}/api/file?path=${Uri.encodeQueryComponent(serverPath)}';

@@ -13,6 +13,12 @@ class Storage {
   static const _kSession = 'session_id';
   static const _kTheme = 'theme_mode';
   static const _kFavs = 'fav_skills';
+  static const _kSpeak = 'voice_speak_replies';
+
+  static Future<bool> speakReplies() async =>
+      (await _s.read(key: _kSpeak)) != 'false';
+  static Future<void> setSpeakReplies(bool on) async =>
+      _s.write(key: _kSpeak, value: on.toString());
 
   /// Skill tiles pinned to the home screen, in display order.
   /// Empty list = never set, so the dashboard seeds a sensible default.

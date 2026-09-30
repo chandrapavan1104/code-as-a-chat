@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets Android list Gajala under Settings → Default apps → Digital assistant app. -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.codeasachat.gajala.GajalaVoiceSessionService"
+    android:recognitionService="com.codeasachat.gajala.GajalaRecognitionService"
+    android:settingsActivity="com.codeasachat.gajala.MainActivity"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="false"
+    android:supportsLocalInteraction="false" />

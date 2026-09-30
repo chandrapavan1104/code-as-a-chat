@@ -29,6 +29,14 @@ android {
         versionName = flutter.versionName
     }
 
+    // flutter_gemma_litertlm bundles Qualcomm NPU blobs (~57 MB) unconditionally.
+    // The offline voice model runs on CPU/GPU and never requests the NPU.
+    packaging {
+        jniLibs {
+            excludes += listOf("**/libQnn*.so", "**/libLiteRtDispatch_Qualcomm.so")
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.

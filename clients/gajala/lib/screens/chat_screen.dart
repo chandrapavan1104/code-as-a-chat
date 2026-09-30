@@ -9,8 +9,10 @@ import '../core/models.dart';
 import '../core/push.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import '../core/voice.dart';
 import '../widgets/run_trace.dart';
 import '../widgets/chat_content.dart';
+import 'voice_sheet.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String command;   // 'shell' = Gajala agent; else a specific skill
@@ -35,6 +37,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   // screen watches, which rebuilds — this stops that rebuild starting another
   // follow before the first has finished.
   bool _followingWorkspace = false;
+  bool _dictating = false;
+  bool _dictated = false;     // this draft came from the mic → speak the reply
 
   /// The conversation this screen is showing. State lives in the controller so
   /// it survives navigating away (a running turn keeps running and stays visible).
@@ -99,9 +103,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (widget.command != 'shell') {
       return '$_installId::${widget.command}';
     }
-    if (dir == null || dir.isEmpty) return _installId ?? '';
-    final slug = dir.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
-    return '$_installId::$slug';
+    return shellSessionId(_installId ?? '', dir);
   }
 
   /// The server owns the active project. If it changed — the agent used the
@@ -210,10 +212,46 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final chat = _chat;
     if (chat == null) return;
     _lastUserText = text;
+    final spoken = _dictated;
+    _dictated = false;
     setState(() => _pending = null);
     _input.clear();
     chat.setDraft('');
+    final key = _key!;
+    final wasBusy = ref.read(chatControllerProvider(key)).sending;
+    final before = ref.read(chatControllerProvider(key)).messages.length;
     await chat.send(text, imagePath: attach?.path);
+    if (!spoken || wasBusy || !await Voice.instance.speakReplies()) return;
+    final msgs = ref.read(chatControllerProvider(key)).messages.skip(before);
+    final replies = msgs.where((m) => m.role == 'bot');
+    if (replies.isNotEmpty) await Voice.instance.speak(replies.last.text);
+  }
+
+  /// Mic in the composer: dictate into the text box so it can be checked
+  /// before sending. Tapping again stops early.
+  Future<void> _dictate() async {
+    if (_dictating) {
+      await Voice.instance.stopListening();
+      return;
+    }
+    final prefix = _input.text.trim().isEmpty ? '' : '${_input.text.trim()} ';
+    setState(() => _dictating = true);
+    try {
+      final heard = await Voice.instance.listen(onPartial: (p) {
+        if (mounted) _input.text = '$prefix$p';
+      });
+      if (!mounted) return;
+      _input.text = '$prefix$heard'.trim();
+      _input.selection = TextSelection.collapsed(offset: _input.text.length);
+      _chat?.setDraft(_input.text);
+      if (heard.isNotEmpty) _dictated = true;
+    } on VoiceUnavailable catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } finally {
+      if (mounted) setState(() => _dictating = false);
+    }
   }
 
   /// Pin the view to the newest message. A single post-frame scroll lands short
@@ -327,7 +365,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
 
     return Scaffold(
-      appBar: AppBar(title: _buildTitle(context)),
+      appBar: AppBar(
+        title: _buildTitle(context),
+        actions: [
+          if (widget.command == 'shell')
+            IconButton(
+              tooltip: 'Voice mode',
+              icon: const Icon(Icons.graphic_eq),
+              onPressed: () => showVoiceSheet(context),
+            ),
+        ],
+      ),
       body: Column(children: [
         Expanded(
           child: ListView.builder(
@@ -379,6 +427,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 onPressed: sending ? null : _pickImage,
                 tooltip: 'Attach image',
               ),
+              IconButton(
+                icon: Icon(_dictating ? Icons.stop_circle_outlined : Icons.mic_none,
+                    color: _dictating ? GajalaColors.danger : context.pal.textDim),
+                onPressed: _dictate,
+                tooltip: _dictating ? 'Stop dictation' : 'Dictate',
+              ),
               Expanded(
                 child: TextField(
                   controller: _input,
@@ -388,7 +442,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   textInputAction: TextInputAction.newline,
                   onChanged: (v) => _chat?.setDraft(v),
                   decoration: InputDecoration(
-                    hintText: sending
+                    hintText: _dictating
+                        ? 'Listening…'
+                        : sending
                         ? 'Send again to queue…'
                         : 'Message or /command…',
                   ),

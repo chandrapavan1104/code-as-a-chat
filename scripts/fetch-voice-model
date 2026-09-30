@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Download Gajala's offline voice model onto the Mac. The phone then fetches it
+# from the Mac over the authenticated API, never from a third party directly.
+set -euo pipefail
+
+URL="https://huggingface.co/litert-community/Qwen3-0.6B/resolve/main/Qwen3-0.6B.litertlm"
+DEST="${VOICE_MODEL_PATH:-$HOME/.codeasachat/models/Qwen3-0.6B.litertlm}"
+
+mkdir -p "$(dirname "$DEST")"
+if [[ -s "$DEST" ]]; then
+  echo "Already present: $DEST ($(du -h "$DEST" | cut -f1))"
+  exit 0
+fi
+echo "Downloading ~586 MB to $DEST"
+curl -fL --retry 3 -C - -o "$DEST.part" "$URL"
+mv "$DEST.part" "$DEST"
+echo "Done: $DEST ($(du -h "$DEST" | cut -f1))"

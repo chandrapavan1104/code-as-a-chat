@@ -250,6 +250,14 @@ FCM_SERVICE_ACCOUNT: Path = Path(
     os.getenv("FCM_SERVICE_ACCOUNT", str(Path.home() / ".codeasachat" / "fcm-service-account.json"))
 ).expanduser()
 
+# ── Gajala voice: offline on-phone model ──────────────────────────────────────
+# The phone downloads this LiteRT-LM file once from the Mac (never from a third
+# party), then answers voice turns on-device when it cannot reach the Mac.
+# Fetch it with scripts/fetch-voice-model.
+VOICE_MODEL_PATH: Path = Path(
+    os.getenv("VOICE_MODEL_PATH", str(Path.home() / ".codeasachat" / "models" / "Qwen3-0.6B.litertlm"))
+).expanduser()
+
 
 # Apply any persisted workspace override (from /projects switch …).
 # Done inside a function so the import order stays clean.
