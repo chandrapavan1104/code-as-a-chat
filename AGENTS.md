@@ -81,7 +81,8 @@ the system; every app open restarts it) that owns a headless Flutter engine
 running `wakeWordMain` (`lib/core/wake_word.dart`) with sherpa-onnx keyword
 spotting — open-source, on-device, no account or key. The phoneme-based zh-en
 3M model (`android/app/src/main/assets/wakeword/`, ~5 MB) spells "Hey Gajala"
-in five ARPAbet pronunciations. It releases the mic when the screen is off or
+in eleven ARPAbet pronunciations, including the stressed "ga-ZIL-a" form the
+owner actually uses (Google transcribed it as "Godzilla"/"gazella"). It releases the mic when the screen is off or
 locked, in Battery Saver, and while Gajala itself listens or speaks. On
 detection it opens voice mode directly when Gajala is on screen, via the
 assistant session when Gajala is the default assistant, and otherwise posts a
@@ -272,6 +273,12 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-09-30 — **Wake word matched to the owner's pronunciation.** Real use
+  woke ~1 in 10; the owner's attempts transcribed as "Hey Godzilla/Gisela/
+  gazella", i.e. stress on a "ZIL/ZEL" middle syllable, which none of the five
+  "JAH" spellings covered (0/30 on synthetic clips of that style). Added six
+  such spellings: 17-18/30 on that style, 28/30 on the original, no added
+  false triggers. Still synthetic-only; real-voice enrollment is the next step.
 - 2026-09-30 — **"Hey Gajala" wake word (queue #26).** Microphone foreground
   service with a headless Flutter engine running sherpa-onnx keyword spotting;
   pauses on screen-off/lock, Battery Saver and Gajala's own mic use; opens voice

@@ -5,7 +5,10 @@ k2-fsa/sherpa-onnx GitHub release "kws-models"
 (sha256 68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6).
 Files are the chunk-16 int8 encoder/joiner and fp32 decoder, renamed.
 
-keywords.txt spells "Hey Gajala" as ARPAbet phonemes in five pronunciations.
-Settings (threshold 0.3, boost 1.5, 3 trailing blanks) were chosen from
-synthetic-voice tests: 29/30 detections on natural voices, 1 false trigger in
-5.7 min of deliberately similar speech; accuracy drops in background noise.
+keywords.txt spells "Hey Gajala" as ARPAbet phonemes in eleven pronunciations:
+five "ga-JAH-la" forms, plus six with a stressed "ZIL"/"ZEL"/"JIL" middle
+syllable. The owner's real attempts were transcribed by Google as "Hey
+Godzilla", "Gisela", "gazella" and "Coachella"; the original five caught 0/30
+synthetic clips of that style, the combined set 17-18/30 (and still 28/30 of
+"ga-JAH-la"). Settings: threshold 0.3, boost 1.5, 3 trailing blanks; ~2 false
+triggers in 6.9 min of deliberately similar speech. Accuracy drops in noise.
