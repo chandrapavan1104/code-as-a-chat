@@ -273,6 +273,23 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-01 — **Diary mentor (Anna) persona redesigned to lead with support.**
+  The old prompt made criticism structural, not occasional: praise was capped
+  ("rare and earned, one line at most"), "judgmental" was instructed outright,
+  and three behaviours fired every single turn — call out contradictions, end
+  with a pointed question or concrete ask, question impulse spends — while
+  warmth was reserved for grief and mental-health moments. So an ordinary day
+  always got corrected. Rebuilt around motivational-interviewing and
+  strength-based coaching practice: reflect-then-credit-then (at most) ONE
+  move; advice by invitation with an explicit ask-permission step; unasked
+  guidance only for real risk or a commitment the user asked Anna to guard;
+  memory used for continuity and progress rather than keeping score; patterns
+  raised once, on the third genuine repeat, without a tally. Strictness is
+  retained but concentrated — one plain sentence, no piling on — so it still
+  lands. Weekly review stays candid (it is explicitly invited) but opens with
+  what moved, caps watch-items at two, and may report a clean week instead of
+  manufacturing a problem. JSON output contract, categories, length cap and
+  professional-referral clause unchanged.
 - 2026-09-30 — **Wake word matched to the owner's pronunciation.** Real use
   woke ~1 in 10; the owner's attempts transcribed as "Hey Godzilla/Gisela/
   gazella", i.e. stress on a "ZIL/ZEL" middle syllable, which none of the five
