@@ -27,7 +27,8 @@ async def route(command: str, prompt: str = "", **kwargs) -> str:
     # A directly-typed /projects switch is the user choosing, so it also moves
     # the default for new threads. The agent calling the same skill mid-turn
     # only rebinds that turn (see server/skills/projects.py).
-    if skill_name == "projects":
+    # The same holds for a directly-typed `/sessions continue <id>`.
+    if skill_name in ("projects", "sessions"):
         kwargs.setdefault("persist", True)
     result = await skill.run(prompt, **kwargs)
     # Direct /run callers still receive the long-standing text contract. The

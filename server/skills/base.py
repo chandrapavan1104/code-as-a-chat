@@ -23,6 +23,11 @@ class SkillResult:
     def ok(self) -> bool:
         return self.status == "succeeded"
 
+    def __str__(self) -> str:
+        # Callers that still format a skill's return value into text get the
+        # message, not a dataclass repr.
+        return self.message
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,

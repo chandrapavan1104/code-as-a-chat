@@ -40,10 +40,46 @@ def _init() -> None:
                 PRIMARY KEY (workspace, engine)
             )
         """)
+        # An explicitly chosen session ("continue session <id>"). Kept apart
+        # from the pointer above because that one is overwritten whenever the
+        # folder's newest native session is reconciled.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS cli_session_pins (
+                workspace   TEXT NOT NULL,
+                engine      TEXT NOT NULL,
+                session_id  TEXT NOT NULL,
+                PRIMARY KEY (workspace, engine)
+            )
+        """)
         c.commit()
 
 
 _init()
+
+
+def pin(workspace: str, engine: str, session_id: str) -> None:
+    """Make the next run in this folder resume exactly this session, even if
+    it is not the folder's newest."""
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO cli_session_pins (workspace, engine, session_id) "
+            "VALUES (?, ?, ?)", (workspace, engine, session_id))
+        c.commit()
+
+
+def pinned(workspace: str, engine: str) -> str | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT session_id FROM cli_session_pins WHERE workspace = ? AND engine = ?",
+            (workspace, engine)).fetchone()
+    return row["session_id"] if row else None
+
+
+def unpin(workspace: str, engine: str) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM cli_session_pins WHERE workspace = ? AND engine = ?",
+                  (workspace, engine))
+        c.commit()
 
 
 def get(workspace: str, engine: str) -> str | None:

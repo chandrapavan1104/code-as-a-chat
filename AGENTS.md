@@ -59,6 +59,18 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Continue a specific CLI session from Gajala.** `sessions continue <id>
+[message]` moves the chat to that session's own folder and pins that exact
+session (`cli_session_pins`), so the engine resumes it even when it is not the
+folder's newest; with a message it is sent there in the same step. The pin is
+spent after one run. A coding CLI that is out of quota now returns a failed
+`SkillResult` reading "<Engine>'s usage limit is reached. It resets around
+<local time>…" (`server/usage_limits.py`) instead of `[claude error code 1]`,
+the shell prompt forbids routing quota errors to `auth`, and the fallback note
+names the real reason. A reply that claims a project/session switch when
+nothing was rebound this turn is prefixed with a correction
+(`outcomes.false_switch_claim`).
+
 **Gajala voice (queue #25, phases 1–3 + on-device routing + offline).** The chat
 composer has a dictation mic; dictated messages get their reply spoken. A voice
 sheet (chat app-bar button, or long-press home once Gajala is the phone's
@@ -273,6 +285,14 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-02 — **Claude session access from Gajala fixed.** On 10-01 a request
+  to use a Claude desktop session failed: Claude was out of quota (shown only as
+  `[claude error code 1]`, then misrouted to `auth`), the fallback model's call
+  went to `general`'s session instead of the named one, and it claimed "Switched
+  to the UltraSync session" after only reading it. Added `sessions continue
+  <id> [message]` with a one-shot session pin, plain usage-limit reporting with
+  the reset in local time, CLI errors as failed `SkillResult`s (they were traced
+  as ok), and a guard against unsupported switch claims. 14 regression tests.
 - 2026-09-30 — **Wake word matched to the owner's pronunciation.** Real use
   woke ~1 in 10; the owner's attempts transcribed as "Hey Godzilla/Gisela/
   gazella", i.e. stress on a "ZIL/ZEL" middle syllable, which none of the five
