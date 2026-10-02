@@ -3,9 +3,9 @@ import os
 import signal
 import shutil
 import time
-from server.skills.base import Skill
+from server.skills.base import Skill, SkillResult
 from server import config
-from server import workspace
+from server import usage_limits, workspace
 from server.db import cli_runs_store, cli_sessions_store, native_sessions
 
 
@@ -167,6 +167,11 @@ class CLISubprocessSkill(Skill):
         The pointer stays as the fallback for when native discovery finds nothing
         (unreadable store, or an engine whose layout we don't parse).
         """
+        # "Continue session <id>" wins over newest-in-folder until it has run
+        # once; after that it IS the newest, so the pin is dropped (see run()).
+        pin = cli_sessions_store.pinned(cwd, self.session_engine)
+        if pin:
+            return pin
         stored = cli_sessions_store.get(cwd, self.session_engine)
         if not getattr(config, "SESSION_FOLLOW_NATIVE", True):
             return stored
@@ -206,6 +211,7 @@ class CLISubprocessSkill(Skill):
         # the user never gets stuck behind a dead id.
         if rc not in (0, None) and resume_id and self._resume_rejected(stdout, stderr):
             cli_sessions_store.clear(cwd, self.session_engine)
+            cli_sessions_store.unpin(cwd, self.session_engine)
             resume_id = None
             cmd, new_id = _fresh()
             started_at = time.time()
@@ -213,7 +219,7 @@ class CLISubprocessSkill(Skill):
             self._record_attempt(cwd, source, started_at, rc, stdout, new_id)
         return rc, stdout, stderr, new_id, resume_id
 
-    async def run(self, prompt: str = "", **kwargs) -> str:
+    async def run(self, prompt: str = "", **kwargs) -> str | SkillResult:
         prompt = prompt.strip()
         if not prompt:
             return f"Usage: /{self.name} <prompt>"
@@ -248,8 +254,13 @@ class CLISubprocessSkill(Skill):
             return f"[{self.name}] Timed out after {self.timeout}s"
 
         if rc != 0:
-            return (f"[{self.name} error code {rc}]\n"
-                    f"{stderr.strip() or stdout.strip() or '(no output)'}")
+            limit = usage_limits.notice(self.name.capitalize(), f"{stdout}\n{stderr}")
+            if limit:
+                return SkillResult("failed", limit, data={
+                    "kind": "usage_limit", "engine": self.session_engine})
+            return SkillResult("failed", (
+                f"[{self.name} error code {rc}]\n"
+                f"{stderr.strip() or stdout.strip() or '(no output)'}"))
 
         # Remember the session id so the next call in this project continues it.
         # CLI-assigned engines report it in output; client-assigned ones already
@@ -258,6 +269,7 @@ class CLISubprocessSkill(Skill):
             sid = self.extract_session_id(stdout) or new_id or resume_id
             if sid:
                 cli_sessions_store.set(cwd, self.session_engine, sid)
+            cli_sessions_store.unpin(cwd, self.session_engine)
 
         # Write-side sync: this engine may have edited its own context file —
         # converge them so the next engine (or the Mac) sees the update.

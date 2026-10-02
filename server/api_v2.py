@@ -493,6 +493,10 @@ def active_cli_sessions():
         if native:
             sessions[engine] = native[0]
             cli_sessions_store.set(ws, engine, native[0])
+        # A session the user explicitly chose to continue is what will run next.
+        pin = cli_sessions_store.pinned(ws, engine)
+        if pin:
+            sessions[engine] = pin
     out = []
     for engine, sid in sorted(sessions.items()):
         tmpl = _RESUME_CMD.get(engine)

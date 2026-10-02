@@ -197,6 +197,14 @@ DECISION RULES:
   needs re-authentication. Do NOT keep retrying it and do NOT invent reasons —
   call the "auth" tool ({"action":"call","tool":"auth","args":"<engine>"}) so the
   user can re-login from their phone, and tell them plainly which engine it was.
+- USAGE LIMITS ARE NOT AUTH FAILURES: if a coding tool says its usage limit is
+  reached (quota, session limit, rate limit, 429), do NOT call "auth" and do NOT
+  retry that engine. Tell the user which engine is out of quota and when it
+  resets, exactly as the tool reported, and offer another engine.
+- NEVER CLAIM A SWITCH YOU DID NOT MAKE. Reading a session with "sessions show"
+  does not move this chat. To work in another project call "projects"; to carry
+  on a specific past session call "sessions" with "continue <id> [message]".
+  Only say you switched after that tool confirms it.
 
 ATTACHMENTS & MEDIA:
 - The user message may include markers like:
@@ -932,13 +940,23 @@ class ShellSkill(Skill):
             if rejected or unsupported_claim:
                 text = ("I couldn't verify the requested outcome.\n\n" +
                         self._partial_summary(scratchpad))
+            from server.outcomes import false_switch_claim
+            if false_switch_claim(
+                    text, switched=workspace.rebound_to() is not None,
+                    project_names=[p.name for p in workspace.candidates()],
+                    steps=scratchpad):
+                status = 'unverified'
+                text = (f"Correction: I did not switch anything. This chat is still "
+                        f"in {workspace.name()}. To carry on a past session, say "
+                        f"\"continue session <id>\"; to change project, name the "
+                        f"project folder.\n\n{text}")
             # Completion review or model fallback can replace the composed
             # response; keep every file/image emitted by a tool reachable.
             text = self._attach_images(text, images)
             await _emit(on_event, {"type": "completion", "status": status,
                                    "reason": reason, "brains": _brains.summary()})
             if "error" in _brains.summary() or "unavailable" in _brains.summary():
-                text += "\n\n(Model fallback active; primary provider unavailable.)"
+                text += f"\n\n({brain_health.fallback_note()})"
             _run_finish(run_id, reason, text, brains=_brains.summary())
             self._remember(session_id, prompt, text, run_id)
             return text

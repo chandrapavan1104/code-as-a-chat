@@ -6,6 +6,8 @@ Subcommands (passed via prompt):
   list                       same as empty
   claude | codex | gemini    list sessions from one engine only
   show <id-prefix>           show the conversation in a session
+  continue <id-prefix> [msg] move this chat to that session's folder and resume
+                             THAT session; with a message, send it there too
   count                      counts per engine
 
 Storage formats parsed:
@@ -22,8 +24,10 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from server.skills.base import Skill
-from server.skills import register
+from server import workspace
+from server.db import cli_sessions_store
+from server.skills.base import Skill, SkillResult
+from server.skills import get_skill, register
 
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
@@ -397,13 +401,75 @@ def _show_view(prefix: str) -> str:
 
 # ── skill ─────────────────────────────────────────────────────────────────────
 
+# Which skill drives each engine's CLI.
+_ENGINE_SKILL = {"claude": "claude", "codex": "codex", "gemini": "antigravity"}
+
+
+async def _continue_view(prefix: str, message: str, **kwargs) -> SkillResult:
+    """Carry on one specific past session rather than "whatever is newest in
+    the current project": bind this turn to the session's own folder and pin the
+    session so the engine resumes exactly it."""
+    if not prefix:
+        return SkillResult("failed", "Usage: /sessions continue <id-prefix> [message]")
+    session = _find_session(prefix)
+    if session is None:
+        return SkillResult("not_found", f"No session id starts with '{prefix}'. "
+                                        "Send /sessions to list them.")
+    folder = Path(str(session["cwd"])).expanduser()
+    if not folder.is_dir():
+        return SkillResult("not_found", (
+            f"Session {_short_id(session['id'])} ran in {session['cwd']}, which is "
+            "not a folder on this Mac any more, so it cannot be continued."))
+
+    changed, reason = workspace.rebind(folder)
+    if not changed and reason.startswith("locked:"):
+        return SkillResult("failed", (
+            f"This turn already switched to {reason.split(':', 1)[1]}; only one "
+            f"project change is allowed per turn. Ask again to continue session "
+            f"{_short_id(session['id'])}."))
+    if changed and kwargs.get("persist"):
+        workspace.persist_default(folder)
+
+    engine = session["engine"]
+    cli_sessions_store.pin(str(folder), engine, session["id"])
+    marker = f"\n[[switch:{folder.name}]]" if changed else ""
+    head = (f"CONTINUING SESSION {_short_id(session['id'])} [{engine.upper()}] in "
+            f"{workspace.prettify(folder)}.\nThe next {engine} call here resumes "
+            "that exact session with its full history.")
+    if folder.parent.resolve() != workspace.parent_dir().resolve():
+        head += (f"\nNOTE: this folder is outside {workspace.prettify(workspace.parent_dir())}, "
+                 "so only this turn runs there; later messages return to the default project.")
+    data = {"session_id": session["id"], "engine": engine, "folder": str(folder)}
+
+    message = message.strip()
+    if not message:
+        return SkillResult("succeeded", head + marker, changed=changed, data=data)
+
+    skill = get_skill(_ENGINE_SKILL[engine])
+    if skill is None:
+        return SkillResult("failed", f"{head}\n\nThe {engine} skill is not "
+                                     f"available, so nothing was sent.{marker}",
+                           changed=changed, data=data)
+    reply = await skill.run(message, session_id=kwargs.get("session_id"))
+    sent_ok = not (isinstance(reply, SkillResult) and not reply.ok)
+    return SkillResult(
+        "succeeded" if sent_ok else "failed",
+        f"{head}\n\n{engine.upper()} REPLIED:\n{reply}{marker}",
+        changed=changed, data=data)
+
+
 class SessionsSkill(Skill):
     name = "sessions"
     description = "Browse past chats: /sessions | /sessions <engine> | /sessions show <id>"
     final_output = True
-    agent_doc = ('Browse past chats from claude/codex/gemini. '
+    agent_doc = ('Browse AND continue past chats from claude/codex/gemini. '
                  'args: "" (list recent) | "claude"|"codex"|"gemini" (filter) | '
-                 '"show <id-prefix>" | "count"')
+                 '"show <id-prefix>" (read only) | "count" | '
+                 '"continue <id-prefix> [message]" — moves this chat to that '
+                 "session's folder and resumes THAT exact session; with a "
+                 'message, also sends it to that session. Use "continue" when '
+                 'the user wants to switch to, resume, or ask something of a '
+                 'specific past session.')
 
     async def run(self, prompt: str = "", **kwargs) -> str:
         args = prompt.strip().split()
@@ -418,6 +484,11 @@ class SessionsSkill(Skill):
             return _list_view(cmd)
         if cmd == "show":
             return _show_view(args[1] if len(args) > 1 else "")
+        if cmd in ("continue", "resume", "open"):
+            rest = prompt.strip().split(None, 2)
+            return await _continue_view(
+                rest[1] if len(rest) > 1 else "", rest[2] if len(rest) > 2 else "",
+                **kwargs)
         if cmd == "count":
             return _count_view()
 

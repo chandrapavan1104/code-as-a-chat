@@ -10,6 +10,29 @@ OBSERVED_CLAIM = re.compile(
     r"(?:deployed|committed|pushed|cloned|saved|created|deleted|scheduled)\b|"
     r"(?:current|latest) (?:status|usage|stats)", re.I)
 
+_SWITCH_CLAIM = re.compile(
+    r"\b(?:switched|moved|changed)\s+(?:you\s+)?(?:over\s+)?(?:in)?to\b([^.\n]{0,80})", re.I)
+_SWITCH_NOUN = re.compile(r"\b(?:session|project|folder|directory|workspace|thread|repo)\b", re.I)
+
+
+def false_switch_claim(reply: str, *, switched: bool, project_names: list[str],
+                       steps: list[dict]) -> bool:
+    """True when the reply says the chat moved to another project/session but
+    nothing was rebound this turn. A fallback model once answered "Switched to
+    the UltraSync session" after merely reading it; the next request then ran in
+    the wrong folder."""
+    if switched:
+        return False
+    # "Already on X" is a satisfied precondition, not a false claim.
+    if any("already on" in str(s.get("result", "")).lower() for s in steps):
+        return False
+    for match in _SWITCH_CLAIM.finditer(reply or ""):
+        target = match.group(1)
+        low = target.lower()
+        if _SWITCH_NOUN.search(target) or any(n.lower() in low for n in project_names if n):
+            return True
+    return False
+
 
 def completion_status(reply: str, reason: str, steps: list[dict],
                       rejected: bool = False) -> str:
