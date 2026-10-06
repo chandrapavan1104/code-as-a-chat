@@ -59,6 +59,14 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Optional app lock (from OpenClaw's biometric lock).** Dashboard menu → App
+lock on/off. When on (`lib/core/app_lock.dart`), `AppLockGate` wraps the whole
+navigator, so chats, voice mode and the wake-word sheet are covered; it asks
+for fingerprint/face/screen PIN on cold start and after >1 min in the
+background, and the unlock dialog itself never re-locks. Turning it on needs
+one successful unlock first. `MainActivity` is now a `FlutterFragmentActivity`
+(local_auth requirement).
+
 **Question cards (from OpenClaw's native question cards).** When the shell
 needs the owner to pick between 2–6 concrete options it ends the reply with
 `[[ask:{"question","options","multi"}]]`; `server/ask_cards.py` keeps one valid
@@ -326,6 +334,9 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **App lock.** Opt-in biometric/PIN lock over the whole app. The
+  boot test now uses the secure-storage mock (the gate reads its setting before
+  first paint, so a locked app never flashes content). 2 new app tests.
 - 2026-10-06 — **Question cards in chat.** The agent can ask a multiple-choice
   question that the owner answers with one tap. 5 server + 3 app tests.
 - 2026-10-06 — **Phone abilities.** The agent can read location, calendar,

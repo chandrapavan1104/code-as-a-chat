@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'core/app_lock.dart';
 import 'core/chat_controller.dart';
 import 'core/errors.dart';
 import 'core/outbox.dart';
@@ -111,6 +112,8 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
       darkTheme: buildTheme(Brightness.dark),
       themeMode: mode,
       home: config == null ? const ConnectScreen() : const HomeShell(),
+      builder: (context, child) =>
+          AppLockGate(child: child ?? const SizedBox.shrink()),
     );
   }
 }
