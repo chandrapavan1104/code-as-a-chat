@@ -289,7 +289,7 @@ String _normalize(String s) => s
     .replaceAll(RegExp(r'\bp\.m\.?'), 'pm')
     .replaceAll(RegExp(r'[?!]+$'), '')
     .replaceAll(RegExp(r'\s+'), ' ')
-    .replaceAll(RegExp(r'^(please |can you |could you |hey gajala,? )+'), '')
+    .replaceAll(RegExp(r'^(please |can you |could you |(?:hey )?gajala[, ]+)+'), '')
     .trim();
 
 const _unitSeconds = {
