@@ -436,6 +436,35 @@ def list_projects():
     }
 
 
+class PhoneResult(BaseModel):
+    ok: bool
+    data: dict = Field(default_factory=dict)
+    error: str | None = None
+    disabled: bool = False
+
+
+@router.post("/phone/result/{request_id}")
+def phone_result(request_id: str, body: PhoneResult):
+    """The phone's answer to a phone_request frame from a running turn."""
+    from server import phone_bridge
+    if not phone_bridge.deliver(request_id, body.model_dump()):
+        raise HTTPException(404, "no turn is waiting for this phone answer")
+    return {"delivered": True}
+
+
+@router.get("/projects/diff")
+def project_diff(project: str | None = None):
+    """Uncommitted changes (incl. untracked files) for the review screen."""
+    from server import project_diff as pd
+    path = Path(_resolve_project_path(project))
+    try:
+        return pd.collect(path)
+    except pd.NotARepo as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(502, f"git failed: {exc}") from exc
+
+
 class ProjectSwitch(BaseModel):
     name: str
 

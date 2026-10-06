@@ -17,6 +17,7 @@ class RunTraceStrip extends StatefulWidget {
   final int? durationMs;
   final String? stopLabel;
   final String? brains;
+  final RunUsage? usage;
   final bool live;
   final bool hitStepLimit;
   final VoidCallback? onContinue;
@@ -28,6 +29,7 @@ class RunTraceStrip extends StatefulWidget {
     this.durationMs,
     this.stopLabel,
     this.brains,
+    this.usage,
     this.live = false,
     this.hitStepLimit = false,
     this.onContinue,
@@ -41,6 +43,7 @@ class RunTraceStrip extends StatefulWidget {
         durationMs: t.durationMs,
         stopLabel: t.stopLabel,
         brains: t.brains,
+        usage: t.usage,
         hitStepLimit: t.hitStepLimit,
         onContinue: onContinue,
       );
@@ -60,6 +63,9 @@ class _RunTraceStripState extends State<RunTraceStrip> {
     // Collapse automatically when a live turn finishes.
     if (old.live && !widget.live) _open = false;
   }
+
+  // Kept visible when collapsed, so a turn with failures never looks clean.
+  int get _failed => widget.steps.where((s) => !s.ok).length;
 
   String get _summary {
     final n = widget.steps.length;
@@ -131,6 +137,12 @@ class _RunTraceStripState extends State<RunTraceStrip> {
                       fontSize: 12.5,
                       fontWeight: FontWeight.w500)),
             ),
+            if (!widget.live && _failed > 0)
+              Text(' · $_failed failed',
+                  style: const TextStyle(
+                      color: GajalaColors.danger,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600)),
           ]),
         ),
       );
@@ -161,6 +173,25 @@ class _RunTraceStripState extends State<RunTraceStrip> {
                 Flexible(
                   child: Text(widget.brains!,
                       style: TextStyle(color: pal.textDim, fontSize: 11.5)),
+                ),
+              ]),
+            ),
+          // What the turn cost: totals, then one line per model call.
+          if (widget.usage case final u?)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(Icons.data_usage, size: 13, color: pal.textDim),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    '${compactTokens(u.inputTokens)} in · ${compactTokens(u.outputTokens)} out'
+                    '${u.costUsd == null ? '' : ' · \$${u.costUsd!.toStringAsFixed(4)}'
+                        '${u.costComplete ? '' : ' + unpriced calls'}'}'
+                    '${[for (final c in u.calls) '\n${c.source} · ${c.model} · '
+                        '${compactTokens(c.input)}${c.output == null ? '' : '/${compactTokens(c.output!)}'}'].join()}',
+                    style: TextStyle(color: pal.textDim, fontSize: 11.5),
+                  ),
                 ),
               ]),
             ),

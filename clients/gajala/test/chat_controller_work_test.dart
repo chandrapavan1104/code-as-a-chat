@@ -5,6 +5,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gajala/core/api.dart';
 import 'package:gajala/core/chat_controller.dart';
 import 'package:gajala/core/models.dart';
+import 'package:gajala/core/outbox.dart';
+
+/// Each test gets its own throwaway outbox instead of the phone's storage.
+Outbox _tempOutbox() {
+  final dir = Directory.systemTemp.createTempSync('gajala-outbox');
+  addTearDown(() => dir.delete(recursive: true));
+  return Outbox(dir: () async => dir);
+}
 
 class FakeApi extends GajalaApi {
   final started = Completer<void>();
@@ -68,6 +76,7 @@ void main() {
       final controller = ChatController(
         api,
         const ChatKey('shell', 'app:test'),
+        outbox: _tempOutbox(),
       );
       final first = controller.send('first');
       await api.started.future;
@@ -91,7 +100,7 @@ void main() {
   test('classified correction reuses the active work id', () async {
     final api = FakeApi()..holdFirst = false;
     api.relation = 'correction';
-    final controller = ChatController(api, const ChatKey('shell', 'app:test'));
+    final controller = ChatController(api, const ChatKey('shell', 'app:test'), outbox: _tempOutbox());
 
     await controller.send('first');
     await controller.send('please fix that');
@@ -102,7 +111,7 @@ void main() {
 
   test('new task classification does not reuse prior work', () async {
     final api = FakeApi()..holdFirst = false;
-    final controller = ChatController(api, const ChatKey('shell', 'app:test'));
+    final controller = ChatController(api, const ChatKey('shell', 'app:test'), outbox: _tempOutbox());
 
     await controller.send('first');
     await controller.send('unrelated question');

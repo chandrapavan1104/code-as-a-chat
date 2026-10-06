@@ -1,3 +1,5 @@
+import '../core/app_lock.dart';
+import 'phone_abilities_screen.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -169,6 +171,18 @@ class _OverflowMenu extends ConsumerWidget {
             Navigator.of(context)
                 .push(MaterialPageRoute(builder: (_) => const SkillsScreen()));
             break;
+          case 'lock':
+            AppLock.enabled().then((on) async {
+              final why = await AppLock.setEnabled(!on);
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(why ?? (on ? 'App lock is off' : 'App lock is on'))));
+            });
+            break;
+          case 'abilities':
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => const PhoneAbilitiesScreen()));
+            break;
           case 'theme':
             final next = switch (mode) {
               ThemeMode.system => ThemeMode.light,
@@ -193,6 +207,18 @@ class _OverflowMenu extends ConsumerWidget {
             child: ListTile(
                 dense: true, contentPadding: EdgeInsets.zero,
                 leading: Icon(Icons.toggle_on, size: 20), title: Text('Skills marketplace'))),
+        const PopupMenuItem(
+            value: 'lock',
+            child: ListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.fingerprint, size: 20),
+                title: Text('App lock on/off'))),
+        const PopupMenuItem(
+            value: 'abilities',
+            child: ListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.phonelink_lock, size: 20),
+                title: Text('Phone abilities'))),
         PopupMenuItem(
             value: 'theme',
             child: ListTile(

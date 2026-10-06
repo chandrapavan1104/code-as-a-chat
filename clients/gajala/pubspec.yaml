@@ -50,6 +50,11 @@ dependencies:
   flutter_gemma: ^1.11.3
   flutter_gemma_litertlm: ^1.8.5
   sherpa_onnx: ^1.13.8
+  geolocator: ^14.0.2
+  device_calendar: ^4.3.3
+  flutter_contacts: ^2.6.0
+  battery_plus: ^7.1.2
+  local_auth: ^3.0.2
 
 dev_dependencies:
   flutter_test:

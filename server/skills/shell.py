@@ -26,7 +26,7 @@ from server.skills.base import Skill
 from server.skills.base import SkillResult
 from server.skills import register, get_skill
 from server.db import store as memory
-from server import config, workspace, brain_health
+from server import config, workspace, brain_health, run_usage
 
 
 # Budget accounting: the user pays for PRODUCTIVE steps only. A step that the
@@ -201,6 +201,11 @@ DECISION RULES:
   reached (quota, session limit, rate limit, 429), do NOT call "auth" and do NOT
   retry that engine. Tell the user which engine is out of quota and when it
   resets, exactly as the tool reported, and offer another engine.
+- ASKING THE USER TO CHOOSE: only when you cannot continue without the user
+  picking between 2-6 concrete options, end your reply with
+  [[ask:{"question":"<short question>","options":["<a>","<b>"],"multi":false}]]
+  (valid JSON, short option labels; "multi":true if several may be picked).
+  The app shows tappable choices. Do not use it for open-ended questions.
 - NEVER CLAIM A SWITCH YOU DID NOT MAKE. Reading a session with "sessions show"
   does not move this chat. To work in another project call "projects"; to carry
   on a specific past session call "sessions" with "continue <id> [message]".
@@ -461,6 +466,9 @@ async def _qwen_chat(system_prompt: str, user_message: str,
     if r.status_code != 200:
         raise RuntimeError(f"qwen (ollama) failed: {r.status_code} {r.text[:200]}")
     data = r.json()
+    run_usage.add("router", payload["model"],
+                  input_tokens=data.get("prompt_eval_count") or 0,
+                  output_tokens=data.get("eval_count") or 0, cost_usd=0.0)
     try:
         from server.db import local_llm_usage_store
         local_llm_usage_store.record(
@@ -494,6 +502,10 @@ async def _openai_chat(system_prompt: str, user_message: str,
     if r.status_code != 200:
         raise RuntimeError(f"openai fallback failed: {r.status_code} {r.text[:200]}")
     data = r.json()
+    usage = data.get("usage") or {}
+    run_usage.add("router", config.OPENAI_SHELL_MODEL,
+                  input_tokens=usage.get("prompt_tokens") or 0,
+                  output_tokens=usage.get("completion_tokens") or 0)
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 
@@ -574,6 +586,14 @@ async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIK
 
     if data.get("is_error"):
         raise RuntimeError(str(data.get("result") or "Claude call failed")[:400])
+    usage = data.get("usage") or {}
+    run_usage.add(
+        "router", model or config.SHELL_MODEL,
+        input_tokens=(usage.get("input_tokens") or 0)
+        + (usage.get("cache_creation_input_tokens") or 0)
+        + (usage.get("cache_read_input_tokens") or 0),
+        output_tokens=usage.get("output_tokens") or 0,
+        cost_usd=data.get("total_cost_usd"))
     return (data.get("result") or "").strip()
 
 
@@ -813,13 +833,14 @@ def _run_step(run_id: str | None, idx: int, tool: str, args: str, result: str,
 
 
 def _run_finish(run_id: str | None, reason: str, reply: str,
-                brains: str = "") -> None:
+                brains: str = "", usage: dict | None = None) -> None:
     if not run_id:
         return
     try:
         from server.db import agent_runs_store
         agent_runs_store.finish(run_id, stop_reason=reason, reply=reply,
-                                workspace=str(workspace.active()), brains=brains)
+                                workspace=str(workspace.active()), brains=brains,
+                                usage=usage)
     except Exception:
         pass
 
@@ -922,6 +943,7 @@ class ShellSkill(Skill):
         # `finish`, so a reply can always be traced back to the steps that
         # produced it — including the ones that went wrong.
         _brains_var.set([])   # fresh per turn; see _BrainLog
+        run_usage.start()     # tokens/cost for this turn only
         run_id = _run_start(session_id, prompt)
         # Announce the trace id up front, not at the end: if the stream drops
         # mid-turn the app can still fetch /api/runs/<id> and show what happened
@@ -953,11 +975,14 @@ class ShellSkill(Skill):
             # Completion review or model fallback can replace the composed
             # response; keep every file/image emitted by a tool reachable.
             text = self._attach_images(text, images)
+            from server import ask_cards
+            text = ask_cards.normalize(text)
             await _emit(on_event, {"type": "completion", "status": status,
                                    "reason": reason, "brains": _brains.summary()})
             if "error" in _brains.summary() or "unavailable" in _brains.summary():
                 text += f"\n\n({brain_health.fallback_note()})"
-            _run_finish(run_id, reason, text, brains=_brains.summary())
+            _run_finish(run_id, reason, text, brains=_brains.summary(),
+                        usage=run_usage.summary())
             self._remember(session_id, prompt, text, run_id)
             return text
 
@@ -1143,7 +1168,9 @@ class ShellSkill(Skill):
                 try:
                     raw_result = await skill.run(
                         tool_args, session_id=session_id, source_prompt=prompt,
-                        work_context=kwargs.get("work_context") or "")
+                        work_context=kwargs.get("work_context") or "",
+                        # Only a live app stream can carry a question to the phone.
+                        on_event=on_event if kwargs.get("phone_stream") else None)
                 except Exception as exc:
                     raw_result = SkillResult(
                         "failed", f"ERROR running {tool_name}: {exc}")

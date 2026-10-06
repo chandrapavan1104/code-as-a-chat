@@ -7,6 +7,14 @@
     <!-- Voice: speech input, and "set an alarm/timer" handed to the clock app -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+    <!-- Phone abilities: each is off until enabled in-app, and only used while
+         the owner is chatting. WRITE_CALENDAR is required by the calendar
+         plugin's permission check; Gajala only reads events. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.READ_CALENDAR"/>
+    <uses-permission android:name="android.permission.WRITE_CALENDAR"/>
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <!-- "Hey Gajala": the mic may only stay on in the background inside a
          microphone foreground service with a visible notification. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>

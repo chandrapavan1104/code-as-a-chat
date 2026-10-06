@@ -59,6 +59,63 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Per-reply token and cost details (from OpenClaw's message info).** Each
+shell turn tallies every model call it makes — the routing brain (Claude CLI,
+OpenAI, Qwen), nested reviews, and the coding CLIs — in a per-turn ContextVar
+(`server/run_usage.py`), stored as `runs.usage` and returned by
+`/api/runs/{id}`. Gajala's expanded "What it did" strip shows totals, cost
+where the provider reports it (Claude CLI; Qwen = 0) with "+ unpriced calls"
+when some are not priced, and one line per call.
+
+**Optional app lock (from OpenClaw's biometric lock).** Dashboard menu → App
+lock on/off. When on (`lib/core/app_lock.dart`), `AppLockGate` wraps the whole
+navigator, so chats, voice mode and the wake-word sheet are covered; it asks
+for fingerprint/face/screen PIN on cold start and after >1 min in the
+background, and the unlock dialog itself never re-locks. Turning it on needs
+one successful unlock first. `MainActivity` is now a `FlutterFragmentActivity`
+(local_auth requirement).
+
+**Question cards (from OpenClaw's native question cards).** When the shell
+needs the owner to pick between 2–6 concrete options it ends the reply with
+`[[ask:{"question","options","multi"}]]`; `server/ask_cards.py` keeps one valid
+card and drops malformed ones. Gajala renders it as tappable chips (multi:
+tick then Send; "Other…" focuses the composer); only the newest unanswered
+card is live. `/run` (Telegram, widgets) and push previews get a numbered
+plain-text list instead.
+
+**Phone abilities for the Mac agent (from OpenClaw's Android "node").** The
+`phone` skill can ask the owner's phone for location, calendar events
+(today/tomorrow/week, read-only), contact lookup by name, a photo the owner
+takes, or battery status. No permanent connection: during a Gajala app chat
+the turn sends a `phone_request` frame down the live `/run/stream`
+(`server/phone_bridge.py`), the app answers via `POST /api/phone/result/<id>`.
+Only `/run/stream` passes `phone_stream=True`, so Telegram/Night Shift/plain
+`/run` turns are told the phone needs the app open instead of hanging. Each
+ability is off until enabled (Dashboard menu → Phone abilities), Android asks
+permission on first use, and every use leaves a note above the reply. Adds
+location, READ/WRITE_CALENDAR (plugin requirement; never writes) and
+READ_CONTACTS; no background location.
+
+**Change review on the phone (from OpenClaw's `sessions.diff`).** The Gajala
+chat's "Review changes" button opens `DiffScreen` over
+`GET /api/projects/diff?project=` (`server/project_diff.py`): uncommitted and
+untracked changes of the chat's project, per file with status, +/- counts and
+numbered lines; binary files and renames are labelled. Long-press a line, tap
+another to extend, then "To chat" drops `In \`path\` lines a–b:` plus a diff
+block into the composer, or Copy. Read-only git with optional locks off; each
+file and the whole response are capped by serialized size (≤400 KB) and
+omitted files are counted, not hidden.
+
+**Durable chat outbox (borrowed from OpenClaw's Android app).** Every Gajala
+message, including ones queued behind a running turn, is written to
+`<app support>/outbox/outbox.json` (`lib/core/outbox.dart`) before any network
+attempt and removed when the server's first stream frame arrives. Connectivity
+failures leave it as a "waiting for connection" bubble; it is replayed with the
+same request id (server dedupe makes that safe) on chat open, app resume, and
+every 30 s for all threads. Photos are copied into the outbox so they survive
+restarts. Bounds: 50 messages, 48 h (expired ones are reported, not silently
+dropped). HTTP error responses are not retried.
+
 **Continue a specific CLI session from Gajala.** `sessions continue <id>
 [message]` moves the chat to that session's own folder and pins that exact
 session (`cli_session_pins`), so the engine resumes it even when it is not the
@@ -285,6 +342,29 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — Collapsed run traces show "· N failed" in red, so a turn with
+  failed steps no longer looks clean until expanded (from OpenClaw's
+  "Worked for…" row). 1 app test.
+- 2026-10-06 — **Token/cost per reply.** Usage tallied per turn and shown under
+  each reply; cost only where providers state it. 4 server + 2 app tests.
+- 2026-10-06 — **App lock.** Opt-in biometric/PIN lock over the whole app. The
+  boot test now uses the secure-storage mock (the gate reads its setting before
+  first paint, so a locked app never flashes content). 2 new app tests.
+- 2026-10-06 — **Question cards in chat.** The agent can ask a multiple-choice
+  question that the owner answers with one tap. 5 server + 3 app tests.
+- 2026-10-06 — **Phone abilities.** The agent can read location, calendar,
+  contacts, a photo or battery from the phone mid-chat, each owner-enabled and
+  noted in the chat. device_calendar pinned to 4.x (3.9 uses removed
+  `jcenter()`); the chat now finds its live bubble by role, not a fixed index,
+  so notes can be inserted mid-turn. 9 server + 2 app tests.
+- 2026-10-06 — **Review uncommitted changes from Gajala.** New diff endpoint
+  and review screen with line selection that hands exact ranges to the agent.
+  Size caps measure the JSON actually sent (budgeting on raw patch text let a
+  real repo return 1.3 MB). 5 server + 2 app tests.
+- 2026-10-06 — **Durable outbox for Gajala chat.** Messages that cannot reach
+  the Mac (Tailscale drop, timeout, app killed mid-send) are kept on the phone
+  and delivered automatically with their original request id instead of being
+  lost. 8 new tests; existing controller tests now use a temporary outbox.
 - 2026-10-02 — **Claude session access from Gajala fixed.** On 10-01 a request
   to use a Claude desktop session failed: Claude was out of quota (shown only as
   `[claude error code 1]`, then misrouted to `auth`), the fallback model's call

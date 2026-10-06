@@ -5,7 +5,7 @@ import shutil
 import time
 from server.skills.base import Skill, SkillResult
 from server import config
-from server import usage_limits, workspace
+from server import run_usage, usage_limits, workspace
 from server.db import cli_runs_store, cli_sessions_store, native_sessions
 
 
@@ -90,6 +90,10 @@ class CLISubprocessSkill(Skill):
         """Return (all tokens, billable tokens) for one CLI attempt."""
         return 0, 0
 
+    def extract_cost(self, stdout: str) -> float | None:
+        """USD cost of one attempt, when the CLI reports it."""
+        return None
+
     @staticmethod
     def _source(session_id: str | None) -> str:
         if session_id and session_id.startswith("app:"):
@@ -100,9 +104,12 @@ class CLISubprocessSkill(Skill):
 
     def _record_attempt(self, cwd: str, source: str, started_at: float,
                         rc: int | None, stdout: str,
-                        session_id: str | None) -> None:
+                        session_id: str | None, model: str = "") -> None:
         try:
             total, billable = self.extract_usage(stdout)
+            if total:
+                run_usage.add(self.name, model or None, input_tokens=total,
+                              cost_usd=self.extract_cost(stdout))
             status = ("timeout" if rc is None
                       else ("error" if self._failed(rc, stdout) else "success"))
             cli_runs_store.add(
@@ -204,7 +211,7 @@ class CLISubprocessSkill(Skill):
         started_at = time.time()
         rc, stdout, stderr = await self._spawn(cmd, cwd)
         self._record_attempt(cwd, source, started_at, rc, stdout,
-                             resume_id or new_id)
+                             resume_id or new_id, model)
 
         # A stored session can go stale (deleted, or the CLI rejects the id). If a
         # resume attempt failed, forget it and retry once with a fresh session so
@@ -216,7 +223,7 @@ class CLISubprocessSkill(Skill):
             cmd, new_id = _fresh()
             started_at = time.time()
             rc, stdout, stderr = await self._spawn(cmd, cwd)
-            self._record_attempt(cwd, source, started_at, rc, stdout, new_id)
+            self._record_attempt(cwd, source, started_at, rc, stdout, new_id, model)
         return rc, stdout, stderr, new_id, resume_id
 
     async def run(self, prompt: str = "", **kwargs) -> str | SkillResult:

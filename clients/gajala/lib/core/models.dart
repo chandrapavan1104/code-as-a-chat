@@ -107,6 +107,47 @@ class RunStep {
 
 /// What an agent turn actually did — the record that used to vanish the moment
 /// the reply landed.
+/// Tokens and cost of one turn. Cost is only what providers report (the
+/// Claude CLI does); [costComplete] is false when some calls had no price.
+class RunUsage {
+  final int inputTokens, outputTokens;
+  final double? costUsd;
+  final bool costComplete;
+  final List<({String source, String model, int input, int? output})> calls;
+  const RunUsage({
+    required this.inputTokens,
+    required this.outputTokens,
+    required this.calls,
+    this.costUsd,
+    this.costComplete = false,
+  });
+
+  static RunUsage? fromJson(dynamic j) {
+    if (j is! Map) return null;
+    return RunUsage(
+      inputTokens: (j['input_tokens'] as num?)?.toInt() ?? 0,
+      outputTokens: (j['output_tokens'] as num?)?.toInt() ?? 0,
+      costUsd: (j['cost_usd'] as num?)?.toDouble(),
+      costComplete: j['cost_complete'] == true,
+      calls: [
+        for (final c in (j['calls'] as List? ?? const []))
+          (
+            source: '${c['source']}',
+            model: '${c['model']}',
+            input: (c['input_tokens'] as num?)?.toInt() ?? 0,
+            output: (c['output_tokens'] as num?)?.toInt(),
+          ),
+      ],
+    );
+  }
+}
+
+String compactTokens(int n) => n >= 1000000
+    ? '${(n / 1000000).toStringAsFixed(1)}M'
+    : n >= 1000
+    ? '${(n / 1000).toStringAsFixed(1)}k'
+    : '$n';
+
 class RunTrace {
   final String id, workspace, prompt, stopReason, reply;
 
@@ -115,7 +156,9 @@ class RunTrace {
   final String brains;
   final int durationMs, chargedSteps;
   final List<RunStep> steps;
+  final RunUsage? usage;
   RunTrace({
+    this.usage,
     required this.id,
     required this.workspace,
     required this.prompt,
@@ -135,6 +178,7 @@ class RunTrace {
     brains: j['brains'] ?? '',
     durationMs: j['duration_ms'] ?? 0,
     chargedSteps: j['charged_steps'] ?? 0,
+    usage: RunUsage.fromJson(j['usage']),
     steps: ((j['steps'] as List?) ?? const [])
         .map((e) => RunStep.fromJson(Map<String, dynamic>.from(e)))
         .toList(),
@@ -352,6 +396,14 @@ class AppNotification {
   );
 }
 
+/// A multiple-choice question the agent attached to a reply ([[ask:{…}]]).
+class AskCard {
+  final String question;
+  final List<String> options;
+  final bool multi;
+  const AskCard(this.question, this.options, {this.multi = false});
+}
+
 class ChatMessage {
   final String role; // user | bot | error | status
   String text; // mutable so a live 'status' bubble can accumulate steps
@@ -367,9 +419,11 @@ class ChatMessage {
   final String? project; // where the turn ran
   final String? stopLabel; // why it stopped
   final bool hitStepLimit;
+  final AskCard? ask; // choices to tap, when the agent asked a question
   ChatMessage(
     this.role,
     this.text, {
+    this.ask,
     this.localImage,
     List<String>? remoteImages,
     this.moveTo,
