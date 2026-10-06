@@ -59,6 +59,25 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Phone actions, Google-Assistant style.** The `device` skill
+(`server/skills/device.py`) parses one short command into a validated
+`action.*` request sent over the phone bridge, so typed chat, voice and
+multi-step agent plans can: set alarms/timers (with labels), play music by
+search (Spotify / YouTube Music / YouTube), send media keys, change volume,
+open any installed app, compose an SMS or WhatsApp message (owner taps send),
+send an SMS directly, dial a contact, add a calendar event (confirmed on
+screen), toggle the flashlight, open Wi-Fi/Bluetooth/internet/volume/NFC
+panels, navigate (incl. saved home/work), toggle Do Not Disturb, read the
+notification shade, and open the camera. The phone side is
+`lib/core/device_actions.dart` plus native `DeviceActions.kt` (flashlight,
+media keys, volume, DND, `GajalaNotificationListener`, SMS, app list,
+settings panels, play-from-search). Direct SMS, DND and reading notifications
+are off until enabled in Phone abilities (DND/notifications also need Android
+access, opened automatically). Voice mode parses the simple phrases on-phone
+and runs them through the same module, so they work offline. Contact names
+are resolved to numbers on the phone. Adds SEND_SMS and
+ACCESS_NOTIFICATION_POLICY.
+
 **Per-reply token and cost details (from OpenClaw's message info).** Each
 shell turn tallies every model call it makes — the routing brain (Claude CLI,
 OpenAI, Qwen), nested reviews, and the coding CLIs — in a per-turn ContextVar
@@ -342,6 +361,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **Google-Assistant-style phone actions.** New `device` skill and
+  phone module for alarms, timers, music, media keys, volume, apps, messages,
+  direct SMS, calls, calendar events, flashlight, settings panels, navigation
+  (saved places), Do Not Disturb, notifications and camera, from voice, chat or
+  the agent. Sensitive ones are opt-in. 48 server + 25 app tests.
 - 2026-10-06 — Collapsed run traces show "· N failed" in red, so a turn with
   failed steps no longer looks clean until expanded (from OpenClaw's
   "Worked for…" row). 1 app test.

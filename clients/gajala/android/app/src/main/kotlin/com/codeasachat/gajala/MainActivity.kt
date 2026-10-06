@@ -14,6 +14,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var channel: MethodChannel? = null
     private var pendingAssist = false
     private var pendingEnable: MethodChannel.Result? = null
+    private var device: DeviceActions? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +55,9 @@ class MainActivity : FlutterFragmentActivity() {
                     result.notImplemented()
                 }
             }
+        }
+        device = DeviceActions(this).also {
+            MethodChannel(messenger, "gajala/device").setMethodCallHandler(it)
         }
         MethodChannel(messenger, "gajala/wakeword/control").setMethodCallHandler { call, result ->
             when (call.method) {
@@ -128,6 +132,7 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (device?.onPermissionResult(requestCode) == true) return
         if (requestCode != WAKEWORD_PERMISSIONS) return
         pendingEnable?.let(::finishEnable)
         pendingEnable = null

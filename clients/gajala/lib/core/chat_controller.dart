@@ -17,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api.dart';
 import 'models.dart';
 import 'outbox.dart';
+import 'device_actions.dart';
 import 'phone_abilities.dart';
 import 'state.dart';
 
@@ -190,6 +191,13 @@ class ChatState {
 typedef PhoneHandler = Future<Map<String, dynamic>> Function(
     String command, Map<String, dynamic> args, GajalaApi api);
 
+/// `action.*` = do something on the phone; anything else = read from it.
+Future<Map<String, dynamic>> _defaultPhone(
+        String command, Map<String, dynamic> args, GajalaApi api) =>
+    command.startsWith('action.')
+        ? DeviceActions.instance.run(command, args)
+        : PhoneAbilities.instance.handle(command, args, api);
+
 class ChatController extends StateNotifier<ChatState> {
   final GajalaApi? _api;
   final ChatKey key;
@@ -200,7 +208,7 @@ class ChatController extends StateNotifier<ChatState> {
   bool _replaying = false;
   ChatController(this._api, this.key, {Outbox? outbox, PhoneHandler? phone})
     : _outbox = outbox ?? Outbox.instance,
-      _phone = phone ?? PhoneAbilities.instance.handle,
+      _phone = phone ?? _defaultPhone,
       super(const ChatState());
 
   /// The agent asked this phone for something (location, calendar…). Answer
@@ -213,10 +221,17 @@ class ChatController extends StateNotifier<ChatState> {
     final result = await _phone(command, args, api);
     final ability = PhoneAbilities.instance.byId(command);
     if (mounted) {
+      final done = (result['data'] as Map?)?['done']?.toString();
       final note = ChatMessage('system', result['ok'] == true
-          ? (ability?.chatNote ?? 'Shared $command with Gajala')
-          : 'Gajala asked for ${ability?.title.toLowerCase() ?? command}: '
-              '${result['error']}');
+          ? (done != null
+              ? '📱 $done'
+              : command == 'action.notifications'
+                  ? '🔔 Read your notifications'
+                  : ability?.chatNote ?? 'Shared $command with Gajala')
+          : command.startsWith('action.')
+              ? '📱 Could not do that on the phone: ${result['error']}'
+              : 'Gajala asked for ${ability?.title.toLowerCase() ?? command}: '
+                  '${result['error']}');
       // Above the live bubble, so it reads question → what was shared → reply.
       final m = [...state.messages];
       final live = m.lastIndexWhere((x) => x.role == 'status');

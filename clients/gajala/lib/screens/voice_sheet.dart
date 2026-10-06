@@ -149,8 +149,8 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet> {
     if (local != null) {
       try {
         return _Exchange(heard, await runLocalIntent(local), 'Phone');
-      } on PlatformException {
-        return _Exchange(heard, 'No app on this phone can do that.', 'Phone');
+      } on PlatformException catch (e) {
+        return _Exchange(heard, e.message ?? 'No app on this phone can do that.', 'Phone');
       }
     }
 
