@@ -348,6 +348,10 @@ class GajalaApi {
     return r.data['path']?.toString() ?? '';
   }
 
+  /// Answer a phone_request frame from a running turn.
+  Future<void> phoneResult(String id, Map<String, dynamic> result) async =>
+      _dio.post('/api/phone/result/$id', data: result);
+
   /// Uncommitted changes of [project] (or the active project).
   Future<ProjectDiff> projectDiff(String? project) async {
     final r = await _dio.get(

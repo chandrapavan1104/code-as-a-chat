@@ -344,6 +344,9 @@ async def run_stream(body: RunRequest):
                     body.command, body.prompt,
                     session_id=body.session_id, on_event=on_event,
                     work_context=assistant_tasks_store.context_for(work['id']) if work else '',
+                    # This stream reaches the app, so the phone can answer
+                    # phone_request frames (see server/phone_bridge.py).
+                    phone_stream=True,
                 )
                 ws_name = workspace.name()
             _persist_skill_turn(body.command, body.session_id, body.prompt, result)

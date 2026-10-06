@@ -1,3 +1,4 @@
+import 'phone_abilities_screen.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -169,6 +170,10 @@ class _OverflowMenu extends ConsumerWidget {
             Navigator.of(context)
                 .push(MaterialPageRoute(builder: (_) => const SkillsScreen()));
             break;
+          case 'abilities':
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => const PhoneAbilitiesScreen()));
+            break;
           case 'theme':
             final next = switch (mode) {
               ThemeMode.system => ThemeMode.light,
@@ -193,6 +198,12 @@ class _OverflowMenu extends ConsumerWidget {
             child: ListTile(
                 dense: true, contentPadding: EdgeInsets.zero,
                 leading: Icon(Icons.toggle_on, size: 20), title: Text('Skills marketplace'))),
+        const PopupMenuItem(
+            value: 'abilities',
+            child: ListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.phonelink_lock, size: 20),
+                title: Text('Phone abilities'))),
         PopupMenuItem(
             value: 'theme',
             child: ListTile(

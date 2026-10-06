@@ -59,6 +59,19 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Phone abilities for the Mac agent (from OpenClaw's Android "node").** The
+`phone` skill can ask the owner's phone for location, calendar events
+(today/tomorrow/week, read-only), contact lookup by name, a photo the owner
+takes, or battery status. No permanent connection: during a Gajala app chat
+the turn sends a `phone_request` frame down the live `/run/stream`
+(`server/phone_bridge.py`), the app answers via `POST /api/phone/result/<id>`.
+Only `/run/stream` passes `phone_stream=True`, so Telegram/Night Shift/plain
+`/run` turns are told the phone needs the app open instead of hanging. Each
+ability is off until enabled (Dashboard menu → Phone abilities), Android asks
+permission on first use, and every use leaves a note above the reply. Adds
+location, READ/WRITE_CALENDAR (plugin requirement; never writes) and
+READ_CONTACTS; no background location.
+
 **Change review on the phone (from OpenClaw's `sessions.diff`).** The Gajala
 chat's "Review changes" button opens `DiffScreen` over
 `GET /api/projects/diff?project=` (`server/project_diff.py`): uncommitted and
@@ -305,6 +318,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **Phone abilities.** The agent can read location, calendar,
+  contacts, a photo or battery from the phone mid-chat, each owner-enabled and
+  noted in the chat. device_calendar pinned to 4.x (3.9 uses removed
+  `jcenter()`); the chat now finds its live bubble by role, not a fixed index,
+  so notes can be inserted mid-turn. 9 server + 2 app tests.
 - 2026-10-06 — **Review uncommitted changes from Gajala.** New diff endpoint
   and review screen with line selection that hands exact ranges to the agent.
   Size caps measure the JSON actually sent (budgeting on raw patch text let a

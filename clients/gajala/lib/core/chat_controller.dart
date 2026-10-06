@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api.dart';
 import 'models.dart';
 import 'outbox.dart';
+import 'phone_abilities.dart';
 import 'state.dart';
 
 /// Pulls "[image: /path]" markers out of an agent reply → (clean text, urls).
@@ -167,16 +168,46 @@ class ChatState {
   );
 }
 
+typedef PhoneHandler = Future<Map<String, dynamic>> Function(
+    String command, Map<String, dynamic> args, GajalaApi api);
+
 class ChatController extends StateNotifier<ChatState> {
   final GajalaApi? _api;
   final ChatKey key;
   final Outbox _outbox;
+  final PhoneHandler _phone;
   // Request ids queued in memory or currently being sent; a replay skips them.
   final Set<String> _active = {};
   bool _replaying = false;
-  ChatController(this._api, this.key, {Outbox? outbox})
+  ChatController(this._api, this.key, {Outbox? outbox, PhoneHandler? phone})
     : _outbox = outbox ?? Outbox.instance,
+      _phone = phone ?? PhoneAbilities.instance.handle,
       super(const ChatState());
+
+  /// The agent asked this phone for something (location, calendar…). Answer
+  /// without blocking the stream, and say in the chat what was shared.
+  Future<void> _answerPhone(GajalaApi api, Map<String, dynamic> ev) async {
+    final id = ev['id']?.toString();
+    final command = ev['command']?.toString() ?? '';
+    if (id == null) return;
+    final args = Map<String, dynamic>.from((ev['args'] as Map?) ?? const {});
+    final result = await _phone(command, args, api);
+    final ability = PhoneAbilities.instance.byId(command);
+    if (mounted) {
+      final note = ChatMessage('system', result['ok'] == true
+          ? (ability?.chatNote ?? 'Shared $command with Gajala')
+          : 'Gajala asked for ${ability?.title.toLowerCase() ?? command}: '
+              '${result['error']}');
+      // Above the live bubble, so it reads question → what was shared → reply.
+      final m = [...state.messages];
+      final live = m.lastIndexWhere((x) => x.role == 'status');
+      live >= 0 ? m.insert(live, note) : m.add(note);
+      state = state.copyWith(messages: m);
+    }
+    try {
+      await api.phoneResult(id, result);
+    } catch (_) {/* the turn timed out or ended; nothing is waiting */}
+  }
 
   /// Acknowledge the one-shot workspace signal. The screen calls this once it
   /// has acted on it (or decided not to), so build() stops re-scheduling.
@@ -460,12 +491,15 @@ class ChatController extends StateNotifier<ChatState> {
       ),
       ChatMessage('status', 'Gajala typing…'),
     ];
-    final liveIdx = seeded.length - 1; // queued bubbles append after this
+    // Located on every use, not remembered: notes (e.g. "shared your
+    // location") are inserted above it mid-turn and shift its position.
+    int liveIndex(List<ChatMessage> m) => m.lastIndexWhere((x) => x.role == 'status');
     state = state.copyWith(messages: seeded, sending: true);
 
     void setLive(String s) {
       final m = [...state.messages];
-      if (liveIdx < m.length && m[liveIdx].role == 'status') {
+      final liveIdx = liveIndex(m);
+      if (liveIdx >= 0) {
         m[liveIdx] = ChatMessage('status', s);
         state = state.copyWith(messages: m);
       }
@@ -475,7 +509,8 @@ class ChatController extends StateNotifier<ChatState> {
     /// keeps, so what you watch is what you can reopen afterwards.
     void setLiveSteps(List<RunStep> steps, String? project) {
       final m = [...state.messages];
-      if (liveIdx < m.length && m[liveIdx].role == 'status') {
+      final liveIdx = liveIndex(m);
+      if (liveIdx >= 0) {
         m[liveIdx] = ChatMessage(
           'status',
           'Gajala typing…',
@@ -491,8 +526,9 @@ class ChatController extends StateNotifier<ChatState> {
     // its sent bubble + live status, so a later replay doesn't show it twice.
     bool keepForLater() {
       final m = [...state.messages];
-      if (liveIdx < m.length && m[liveIdx].role == 'status') m.removeAt(liveIdx);
-      final userIdx = liveIdx - 1;
+      final liveIdx = liveIndex(m);
+      if (liveIdx >= 0) m.removeAt(liveIdx);
+      final userIdx = m.lastIndexWhere((x) => x.role == 'user' && x.text == display);
       final waiting = ChatMessage('outbox', display, localImage: imagePath);
       if (userIdx >= 0 && userIdx < m.length && m[userIdx].role == 'user') {
         m[userIdx] = waiting;
@@ -506,7 +542,8 @@ class ChatController extends StateNotifier<ChatState> {
 
     void finish(ChatMessage msg) {
       final m = [...state.messages];
-      if (liveIdx < m.length && m[liveIdx].role == 'status') {
+      final liveIdx = liveIndex(m);
+      if (liveIdx >= 0) {
         m[liveIdx] = msg;
       } else {
         m.add(msg);
@@ -560,6 +597,9 @@ class ChatController extends StateNotifier<ChatState> {
         // Any frame proves the Mac has the request; it is no longer ours to resend.
         await markDelivered();
         switch (ev['type']) {
+          case 'phone_request':
+            unawaited(_answerPhone(api, ev));
+            break;
           case 'work':
             final raw = ev['work'];
             if (raw is Map) {
