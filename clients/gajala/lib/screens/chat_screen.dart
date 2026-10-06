@@ -182,6 +182,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (state == AppLifecycleState.resumed) {
       Push.activeSession = _sid;
       _refreshWorkspace();   // catch a project switch made while we were away
+      _chat?.replayOutbox(); // the connection may be back
     } else if (Push.activeSession == _sid) {
       Push.activeSession = null;
     }
@@ -524,8 +525,10 @@ class _Bubble extends StatelessWidget {
       }
       return _StatusBubble(m.text);
     }
-    // Typed while a turn was running — waiting its turn, sent automatically.
-    if (m.role == 'queued') {
+    // Typed while a turn was running (queued), or could not reach the Mac yet
+    // (outbox) — both are kept and sent automatically.
+    if (m.role == 'queued' || m.role == 'outbox') {
+      final offline = m.role == 'outbox';
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
@@ -541,9 +544,10 @@ class _Bubble extends StatelessWidget {
             Text(m.text, style: TextStyle(color: context.pal.text.withValues(alpha: .75))),
             const SizedBox(height: 3),
             Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.schedule, size: 11, color: context.pal.textDim),
+              Icon(offline ? Icons.cloud_off : Icons.schedule,
+                  size: 11, color: context.pal.textDim),
               const SizedBox(width: 4),
-              Text('queued',
+              Text(offline ? 'waiting for connection · sends automatically' : 'queued',
                   style: TextStyle(fontSize: 10.5, color: context.pal.textDim)),
             ]),
           ]),

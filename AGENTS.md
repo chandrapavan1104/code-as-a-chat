@@ -59,6 +59,16 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Durable chat outbox (borrowed from OpenClaw's Android app).** Every Gajala
+message, including ones queued behind a running turn, is written to
+`<app support>/outbox/outbox.json` (`lib/core/outbox.dart`) before any network
+attempt and removed when the server's first stream frame arrives. Connectivity
+failures leave it as a "waiting for connection" bubble; it is replayed with the
+same request id (server dedupe makes that safe) on chat open, app resume, and
+every 30 s for all threads. Photos are copied into the outbox so they survive
+restarts. Bounds: 50 messages, 48 h (expired ones are reported, not silently
+dropped). HTTP error responses are not retried.
+
 **Continue a specific CLI session from Gajala.** `sessions continue <id>
 [message]` moves the chat to that session's own folder and pins that exact
 session (`cli_session_pins`), so the engine resumes it even when it is not the
@@ -285,6 +295,10 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **Durable outbox for Gajala chat.** Messages that cannot reach
+  the Mac (Tailscale drop, timeout, app killed mid-send) are kept on the phone
+  and delivered automatically with their original request id instead of being
+  lost. 8 new tests; existing controller tests now use a temporary outbox.
 - 2026-10-02 — **Claude session access from Gajala fixed.** On 10-01 a request
   to use a Claude desktop session failed: Claude was out of quota (shown only as
   `[claude error code 1]`, then misrouted to `auth`), the fallback model's call

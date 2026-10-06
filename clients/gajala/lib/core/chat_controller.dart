@@ -7,12 +7,15 @@
 // owns the conversation — messages, the running turn, a visible queue, and your
 // half-typed draft — so leaving and coming back shows the exact same state.
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api.dart';
 import 'models.dart';
+import 'outbox.dart';
 import 'state.dart';
 
 /// Pulls "[image: /path]" markers out of an agent reply → (clean text, urls).
@@ -84,7 +87,31 @@ class QueuedMessage {
   final String text;
   final String? imagePath;
   final String? continuationTaskId;
-  const QueuedMessage(this.text, {this.imagePath, this.continuationTaskId});
+  final String? requestId; // its outbox entry, so a restart can still send it
+  const QueuedMessage(
+    this.text, {
+    this.imagePath,
+    this.continuationTaskId,
+    this.requestId,
+  });
+}
+
+/// Failures where the request may never have reached the Mac. Anything else
+/// (an HTTP error status) means the server saw it, so it must not be resent.
+bool isConnectivityError(Object e) {
+  if (e is SocketException || e is HttpException || e is TimeoutException) {
+    return true;
+  }
+  if (e is DioException) {
+    return const {
+      DioExceptionType.connectionError,
+      DioExceptionType.connectionTimeout,
+      DioExceptionType.sendTimeout,
+      DioExceptionType.receiveTimeout,
+      DioExceptionType.unknown,
+    }.contains(e.type);
+  }
+  return false;
 }
 
 @immutable
@@ -143,7 +170,13 @@ class ChatState {
 class ChatController extends StateNotifier<ChatState> {
   final GajalaApi? _api;
   final ChatKey key;
-  ChatController(this._api, this.key) : super(const ChatState());
+  final Outbox _outbox;
+  // Request ids queued in memory or currently being sent; a replay skips them.
+  final Set<String> _active = {};
+  bool _replaying = false;
+  ChatController(this._api, this.key, {Outbox? outbox})
+    : _outbox = outbox ?? Outbox.instance,
+      super(const ChatState());
 
   /// Acknowledge the one-shot workspace signal. The screen calls this once it
   /// has acted on it (or decided not to), so build() stops re-scheduling.
@@ -190,6 +223,73 @@ class ChatController extends StateNotifier<ChatState> {
           ? loaded
           : [if (welcome != null) ChatMessage('bot', welcome)],
     );
+    await _showUnsent();
+    unawaited(replayOutbox());
+  }
+
+  /// Unsent messages from an earlier app session, shown as waiting bubbles.
+  Future<void> _showUnsent() async {
+    final (:pending, :expired) = await _outbox.load();
+    final mine = pending.where(_isMine).toList();
+    final lost = expired.where(_isMine).length;
+    if (mine.isEmpty && lost == 0) return;
+    state = state.copyWith(messages: [
+      ...state.messages,
+      for (final e in mine)
+        ChatMessage('outbox', e.text.isEmpty ? '📷 Photo' : e.text,
+            localImage: e.imagePath),
+      if (lost > 0)
+        ChatMessage('system',
+            '$lost unsent message${lost == 1 ? '' : 's'} older than 48 hours '
+            'could not be delivered and were dropped.'),
+    ]);
+  }
+
+  bool _isMine(OutboxEntry e) => e.command == key.command && e.sid == key.sid;
+
+  /// Send whatever is still waiting in the outbox for this conversation,
+  /// oldest first, stopping at the first one that still cannot get through.
+  Future<void> replayOutbox() async {
+    if (_replaying || state.sending || _api == null || !mounted) return;
+    _replaying = true;
+    try {
+      final (:pending, expired: _) = await _outbox.load();
+      for (final e in pending.where(_isMine)) {
+        if (!mounted || state.sending) break;
+        if (_active.contains(e.requestId)) continue;
+        final delivered = await _runTurn(
+          e.text,
+          e.imagePath,
+          requestId: e.requestId,
+          forcedContinuation: e.continuationTaskId,
+          project: e.project,
+          replay: true,
+        );
+        if (!delivered) break;
+      }
+    } finally {
+      _replaying = false;
+    }
+    await _drainQueue();
+  }
+
+  Future<OutboxEntry?> _persist(String text, String? imagePath,
+      {required String requestId, String? continuationTaskId}) async {
+    try {
+      return await _outbox.add(OutboxEntry(
+        requestId: requestId,
+        command: key.command,
+        sid: key.sid,
+        text: text,
+        imagePath: imagePath,
+        project: state.workspace,
+        continuationTaskId: continuationTaskId,
+        createdAt: DateTime.now(),
+      ));
+    } on OutboxFull catch (e) {
+      addSystemNote(e.toString());
+      return null;
+    }
   }
 
   void setDraft(String v) => state = state.copyWith(draft: v);
@@ -218,9 +318,11 @@ class ChatController extends StateNotifier<ChatState> {
   Future<void> send(String text, {String? imagePath}) async {
     final t = text.trim();
     if (t.isEmpty && imagePath == null) return;
+    final id = _requestId();
+    _active.add(id);
     if (state.sending) {
       final prior = state.work;
-      final queued = QueuedMessage(t, imagePath: imagePath);
+      final queued = QueuedMessage(t, imagePath: imagePath, requestId: id);
       state = state.copyWith(
         draft: '',
         queued: [...state.queued, queued],
@@ -233,6 +335,17 @@ class ChatController extends StateNotifier<ChatState> {
           ),
         ],
       );
+      // Shown at once, then made durable before anything is sent: a restart
+      // while this waits must not lose it.
+      if (await _persist(t, imagePath, requestId: id) == null) {
+        _active.remove(id);
+        state = state.copyWith(
+          queued: [...state.queued]..remove(queued),
+          messages: [...state.messages]..removeWhere(
+              (m) => m.role == 'queued' && m.text == (t.isEmpty ? '📷 Photo' : t)),
+        );
+        return;
+      }
       // Put the message on the durable in-memory queue immediately. The
       // advisory classifier may be slow or unavailable, but must never make
       // an image/text submission disappear while the current turn completes.
@@ -244,8 +357,9 @@ class ChatController extends StateNotifier<ChatState> {
           if (index >= 0) {
             q[index] = QueuedMessage(
               t,
-              imagePath: imagePath,
+              imagePath: queued.imagePath,
               continuationTaskId: continuation,
+              requestId: id,
             );
             state = state.copyWith(queued: q);
           }
@@ -253,8 +367,12 @@ class ChatController extends StateNotifier<ChatState> {
       }
       return;
     }
+    if (await _persist(t, imagePath, requestId: id) == null) {
+      _active.remove(id);
+      return;
+    }
     state = state.copyWith(draft: '');
-    await _runTurn(t, imagePath);
+    await _runTurn(t, imagePath, requestId: id);
     await _drainQueue();
   }
 
@@ -266,11 +384,26 @@ class ChatController extends StateNotifier<ChatState> {
       final i = msgs.indexWhere((m) => m.role == 'queued' && m.text == display);
       if (i >= 0) msgs.removeAt(i);
       state = state.copyWith(queued: state.queued.sublist(1), messages: msgs);
-      await _runTurn(
+      final delivered = await _runTurn(
         next.text,
         next.imagePath,
         forcedContinuation: next.continuationTaskId,
+        requestId: next.requestId,
       );
+      if (!delivered) {
+        // Offline: everything behind it stays in the outbox for the replay.
+        for (final rest in state.queued) {
+          if (rest.requestId != null) _active.remove(rest.requestId);
+        }
+        state = state.copyWith(
+          queued: const [],
+          messages: [
+            for (final m in state.messages)
+              m.role == 'queued' ? ChatMessage('outbox', m.text, localImage: m.localImage) : m,
+          ],
+        );
+        break;
+      }
     }
   }
 
@@ -291,16 +424,35 @@ class ChatController extends StateNotifier<ChatState> {
     return null;
   }
 
-  Future<void> _runTurn(
+  /// Returns false only when the message could not reach the Mac and is still
+  /// waiting in the outbox.
+  Future<bool> _runTurn(
     String text,
     String? imagePath, {
     String? forcedContinuation,
+    String? requestId,
+    String? project,
+    bool replay = false,
   }) async {
     final api = _api;
-    if (api == null) return;
+    if (api == null) return true;
+    final id = requestId ?? _requestId();
+    _active.add(id);
+    var delivered = false;
+    Future<void> markDelivered() async {
+      if (delivered) return;
+      delivered = true;
+      await _outbox.remove(id);
+    }
 
+    final display = text.isEmpty ? '📷 Photo' : text;
+    final base = [...state.messages];
+    if (replay) {
+      final i = base.indexWhere((m) => m.role == 'outbox' && m.text == display);
+      if (i >= 0) base.removeAt(i);
+    }
     final seeded = [
-      ...state.messages,
+      ...base,
       ChatMessage(
         'user',
         text.isEmpty ? '📷 Photo' : text,
@@ -335,6 +487,23 @@ class ChatController extends StateNotifier<ChatState> {
     }
 
     var replaced = false;
+    // Not delivered: the message becomes a single "waiting" bubble in place of
+    // its sent bubble + live status, so a later replay doesn't show it twice.
+    bool keepForLater() {
+      final m = [...state.messages];
+      if (liveIdx < m.length && m[liveIdx].role == 'status') m.removeAt(liveIdx);
+      final userIdx = liveIdx - 1;
+      final waiting = ChatMessage('outbox', display, localImage: imagePath);
+      if (userIdx >= 0 && userIdx < m.length && m[userIdx].role == 'user') {
+        m[userIdx] = waiting;
+      } else {
+        m.add(waiting);
+      }
+      state = state.copyWith(messages: m);
+      replaced = true;
+      return false;
+    }
+
     void finish(ChatMessage msg) {
       final m = [...state.messages];
       if (liveIdx < m.length && m[liveIdx].role == 'status') {
@@ -352,8 +521,8 @@ class ChatController extends StateNotifier<ChatState> {
     // updates the row already on screen instead of appending a duplicate.
     final live = <int, RunStep>{};
     String? runId;
-    String? project;
-    final requestId = _requestId();
+    final String? sentProject = project ?? state.workspace;
+    project = null;
     String? continuing = forcedContinuation;
     final priorWork = state.work;
     if (continuing == null && priorWork?.isContinuable == true) {
@@ -384,10 +553,12 @@ class ChatController extends StateNotifier<ChatState> {
         prompt,
         key.sid,
         notify: true,
-        project: state.workspace,
-        requestId: requestId,
+        project: sentProject,
+        requestId: id,
         continueTaskId: continuing,
       )) {
+        // Any frame proves the Mac has the request; it is no longer ours to resend.
+        await markDelivered();
         switch (ev['type']) {
           case 'work':
             final raw = ev['work'];
@@ -489,6 +660,10 @@ class ChatController extends StateNotifier<ChatState> {
             break;
         }
       }
+      if (!delivered) {
+        // The stream closed without a single frame: treat as not sent.
+        return keepForLater();
+      }
       if (!replaced) {
         setLive('Connection interrupted · still working…');
         finish(
@@ -502,10 +677,15 @@ class ChatController extends StateNotifier<ChatState> {
         );
       }
     } catch (e) {
+      if (!delivered && isConnectivityError(e)) {
+        // Never reached the Mac: keep it in the outbox and say so plainly.
+        return keepForLater();
+      }
+      if (!delivered) await markDelivered(); // the server answered; don't resend
       if (!replaced) {
         if (!requestStarted) {
           finish(ChatMessage('error', 'Image upload failed. ${friendlyError(e)}'));
-          return;
+          return true;
         }
         setLive('Connection interrupted · still working…');
         finish(
@@ -514,8 +694,10 @@ class ChatController extends StateNotifier<ChatState> {
         );
       }
     } finally {
+      _active.remove(id);
       if (mounted) state = state.copyWith(sending: false);
     }
+    return true;
   }
 
   /// The live stream dropped before the final frame. The server still finishes

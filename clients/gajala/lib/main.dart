@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'core/chat_controller.dart';
 import 'core/errors.dart';
+import 'core/outbox.dart';
 import 'core/push.dart';
 import 'core/state.dart';
 import 'core/storage.dart';
@@ -32,9 +35,32 @@ class GajalaApp extends ConsumerStatefulWidget {
 }
 
 class _GajalaAppState extends ConsumerState<GajalaApp> {
+  Timer? _outboxTimer;
+  AppLifecycleListener? _lifecycle;
+
+  /// Deliver unsent messages for every conversation, not only the open one.
+  Future<void> _replayOutbox() async {
+    if (ref.read(apiProvider) == null) return;
+    final (:pending, expired: _) = await Outbox.instance.load();
+    final keys = {for (final e in pending) ChatKey(e.command, e.sid)};
+    for (final key in keys) {
+      await ref.read(chatControllerProvider(key).notifier).replayOutbox();
+    }
+  }
+
+  @override
+  void dispose() {
+    _outboxTimer?.cancel();
+    _lifecycle?.dispose();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
+    _outboxTimer = Timer.periodic(
+        const Duration(seconds: 30), (_) => _replayOutbox());
+    _lifecycle = AppLifecycleListener(onResume: _replayOutbox);
     // Tapping a reply notification (foreground, background, or cold launch)
     // deep-links into the chat.
     Push.onOpenChat = (_) {
