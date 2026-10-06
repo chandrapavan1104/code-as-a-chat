@@ -14,11 +14,26 @@ class Storage {
   static const _kTheme = 'theme_mode';
   static const _kFavs = 'fav_skills';
   static const _kSpeak = 'voice_speak_replies';
+  static const _kVoiceName = 'voice_tts_name';
+  static const _kVoiceLocale = 'voice_tts_locale';
 
   static Future<bool> speakReplies() async =>
       (await _s.read(key: _kSpeak)) != 'false';
   static Future<void> setSpeakReplies(bool on) async =>
       _s.write(key: _kSpeak, value: on.toString());
+
+  static Future<({String? name, String? locale})> voiceSelection() async => (
+    name: await _s.read(key: _kVoiceName),
+    locale: await _s.read(key: _kVoiceLocale),
+  );
+
+  static Future<void> setVoiceSelection({
+    required String name,
+    required String locale,
+  }) async {
+    await _s.write(key: _kVoiceName, value: name);
+    await _s.write(key: _kVoiceLocale, value: locale);
+  }
 
   /// Skill tiles pinned to the home screen, in display order.
   /// Empty list = never set, so the dashboard seeds a sensible default.
@@ -39,7 +54,8 @@ class Storage {
   static Future<({String url, String token})?> loadConfig() async {
     final url = await _s.read(key: _kUrl);
     final token = await _s.read(key: _kToken);
-    if (url == null || token == null || url.isEmpty || token.isEmpty) return null;
+    if (url == null || token == null || url.isEmpty || token.isEmpty)
+      return null;
     return (url: url, token: token);
   }
 
@@ -57,7 +73,8 @@ class Storage {
     var sid = await _s.read(key: _kSession);
     if (sid == null) {
       final r = Random();
-      sid = 'app:${List.generate(8, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[r.nextInt(36)]).join()}';
+      sid =
+          'app:${List.generate(8, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[r.nextInt(36)]).join()}';
       await _s.write(key: _kSession, value: sid);
     }
     return sid;

@@ -213,12 +213,12 @@ class ChatController extends StateNotifier<ChatState> {
 
   /// The agent asked this phone for something (location, calendar…). Answer
   /// without blocking the stream, and say in the chat what was shared.
-  Future<void> _answerPhone(GajalaApi api, Map<String, dynamic> ev) async {
+  Future<void> _answerPhone(GajalaApi api, Map<String, dynamic> ev, [PhoneHandler? turnPhone]) async {
     final id = ev['id']?.toString();
     final command = ev['command']?.toString() ?? '';
     if (id == null) return;
     final args = Map<String, dynamic>.from((ev['args'] as Map?) ?? const {});
-    final result = await _phone(command, args, api);
+    final result = await (turnPhone ?? _phone)(command, args, api);
     final ability = PhoneAbilities.instance.byId(command);
     if (mounted) {
       final done = (result['data'] as Map?)?['done']?.toString();
@@ -382,7 +382,7 @@ class ChatController extends StateNotifier<ChatState> {
 
   /// Send a message. If a turn is already running the message is QUEUED and
   /// shown as such, then sent automatically when the current turn finishes.
-  Future<void> send(String text, {String? imagePath}) async {
+  Future<void> send(String text, {String? imagePath, PhoneHandler? phone}) async {
     final t = text.trim();
     if (t.isEmpty && imagePath == null) return;
     final id = _requestId();
@@ -439,7 +439,7 @@ class ChatController extends StateNotifier<ChatState> {
       return;
     }
     state = state.copyWith(draft: '');
-    await _runTurn(t, imagePath, requestId: id);
+    await _runTurn(t, imagePath, requestId: id, phone: phone);
     await _drainQueue();
   }
 
@@ -500,6 +500,7 @@ class ChatController extends StateNotifier<ChatState> {
     String? requestId,
     String? project,
     bool replay = false,
+    PhoneHandler? phone,
   }) async {
     final api = _api;
     if (api == null) return true;
@@ -634,7 +635,7 @@ class ChatController extends StateNotifier<ChatState> {
         await markDelivered();
         switch (ev['type']) {
           case 'phone_request':
-            unawaited(_answerPhone(api, ev));
+            unawaited(_answerPhone(api, ev, phone));
             break;
           case 'work':
             final raw = ev['work'];

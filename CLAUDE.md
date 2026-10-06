@@ -59,6 +59,15 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Hands-free voice completion (October 6).** Voice calls resolve contacts locally,
+ask spoken confirmation, and use Android CALL only after a fresh yes; permission
+prompts require confirmation again. Voice mode listens for follow-ups and cancels
+pending actions on close/background. YouTube Music receives a playback request,
+with success reported only when matching changed playback is observed through
+optional notification access; unsupported/unverified handoffs stay explicit.
+Indian English TTS voices can be previewed and saved; male is preferred only when
+the installed engine supplies gender metadata. Real-phone acceptance is pending.
+
 **Phone actions, Google-Assistant style.** The `device` skill
 (`server/skills/device.py`) parses one short command into a validated
 `action.*` request sent over the phone bridge, so typed chat, voice and
@@ -361,6 +370,14 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **Hands-free calls, music completion, and Indian English voice.**
+  Added local contact disambiguation and spoken call confirmation, permission
+  retry confirmation, bounded listening and lifecycle cancellation. YouTube Music
+  is the default voice music target; playback is verified through media sessions
+  when access is available instead of claiming success after opening search.
+  Per-turn phone handlers preserve voice confirmation for server-planned calls.
+  Added installed en-IN voice preview/selection and regression tests. Device
+  permissions, actual playback, and voice quality still need a phone walkthrough.
 - 2026-10-06 — Fixed `phone`/`device` skills hanging for their full timeout
   when called through plain `/run` (Telegram, widgets): that path passes an
   event sink that never reaches the phone. Skills now use the sink only when

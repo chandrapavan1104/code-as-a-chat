@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- Voice: speech input, and "set an alarm/timer" handed to the clock app -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
     <!-- Phone abilities: each is off until enabled in-app, and only used while
          the owner is chatting. WRITE_CALENDAR is required by the calendar

@@ -55,10 +55,19 @@ void main() {
     });
   });
 
-  test('calls: digits dial locally, names go to Google', () {
+  test('calls: digits dial locally, names stay in the phone coordinator', () {
     expect(parseLocalIntent('call 98765 43210'), const DialNumber('9876543210'));
     expect(parseLocalIntent('dial +1 (415) 555-0100'), const DialNumber('+14155550100'));
-    expect(parseLocalIntent('call mom'), const AskGoogle('call mom'));
+    expect(parseLocalIntent('call mom'), const CallContact('mom'));
+  });
+
+  test('explicit music requests stay local without stealing code requests', () {
+    expect(parseLocalIntent('play Rockstar hindi songs on youtube music'),
+        const PlayMusic('rockstar hindi songs'));
+    expect(parseLocalIntent('play Kun Faya Kun'), const PlayMusic('kun faya kun'));
+    expect(parseLocalIntent('play code example'), isNull);
+    expect(parseLocalIntent('play Kun Faya Kun on spotify'),
+        const PhoneAction('action.play', {'query': 'kun faya kun', 'app': 'spotify'}));
   });
 
   test('navigation and search', () {
