@@ -59,6 +59,16 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Change review on the phone (from OpenClaw's `sessions.diff`).** The Gajala
+chat's "Review changes" button opens `DiffScreen` over
+`GET /api/projects/diff?project=` (`server/project_diff.py`): uncommitted and
+untracked changes of the chat's project, per file with status, +/- counts and
+numbered lines; binary files and renames are labelled. Long-press a line, tap
+another to extend, then "To chat" drops `In \`path\` lines a–b:` plus a diff
+block into the composer, or Copy. Read-only git with optional locks off; each
+file and the whole response are capped by serialized size (≤400 KB) and
+omitted files are counted, not hidden.
+
 **Durable chat outbox (borrowed from OpenClaw's Android app).** Every Gajala
 message, including ones queued behind a running turn, is written to
 `<app support>/outbox/outbox.json` (`lib/core/outbox.dart`) before any network
@@ -295,6 +305,10 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **Review uncommitted changes from Gajala.** New diff endpoint
+  and review screen with line selection that hands exact ranges to the agent.
+  Size caps measure the JSON actually sent (budgeting on raw patch text let a
+  real repo return 1.3 MB). 5 server + 2 app tests.
 - 2026-10-06 — **Durable outbox for Gajala chat.** Messages that cannot reach
   the Mac (Tailscale drop, timeout, app killed mid-send) are kept on the phone
   and delivered automatically with their original request id instead of being

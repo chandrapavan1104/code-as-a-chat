@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
+import 'diff.dart';
 import 'models.dart';
 
 /// Turns Dio's verbose exceptions into a clear, human message.
@@ -345,6 +346,15 @@ class GajalaApi {
       ),
     );
     return r.data['path']?.toString() ?? '';
+  }
+
+  /// Uncommitted changes of [project] (or the active project).
+  Future<ProjectDiff> projectDiff(String? project) async {
+    final r = await _dio.get(
+      '/api/projects/diff',
+      queryParameters: {if (project != null && project.isNotEmpty) 'project': project},
+    );
+    return ProjectDiff.fromJson(Map<String, dynamic>.from(r.data));
   }
 
   Future<Map<String, dynamic>> projects() async =>

@@ -12,6 +12,7 @@ import '../core/theme.dart';
 import '../core/voice.dart';
 import '../widgets/run_trace.dart';
 import '../widgets/chat_content.dart';
+import 'diff_screen.dart';
 import 'voice_sheet.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -228,6 +229,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (replies.isNotEmpty) await Voice.instance.speak(replies.last.text);
   }
 
+  /// Review the project's uncommitted changes; lines sent "to chat" land in
+  /// the composer so they can be edited before sending.
+  Future<void> _reviewChanges() async {
+    final snippet = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => DiffScreen(project: _dir)),
+    );
+    if (snippet == null || !mounted) return;
+    final current = _input.text.trimRight();
+    _input.text = current.isEmpty ? snippet : '$current\n\n$snippet';
+    _input.selection = TextSelection.collapsed(offset: _input.text.length);
+    _chat?.setDraft(_input.text);
+  }
+
   /// Mic in the composer: dictate into the text box so it can be checked
   /// before sending. Tapping again stops early.
   Future<void> _dictate() async {
@@ -369,6 +383,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       appBar: AppBar(
         title: _buildTitle(context),
         actions: [
+          if (widget.command == 'shell')
+            IconButton(
+              tooltip: 'Review changes',
+              icon: const Icon(Icons.difference_outlined),
+              onPressed: _reviewChanges,
+            ),
           if (widget.command == 'shell')
             IconButton(
               tooltip: 'Voice mode',
