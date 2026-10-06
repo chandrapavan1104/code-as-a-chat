@@ -26,7 +26,7 @@ from server.skills.base import Skill
 from server.skills.base import SkillResult
 from server.skills import register, get_skill
 from server.db import store as memory
-from server import config, workspace, brain_health
+from server import config, workspace, brain_health, run_usage
 
 
 # Budget accounting: the user pays for PRODUCTIVE steps only. A step that the
@@ -466,6 +466,9 @@ async def _qwen_chat(system_prompt: str, user_message: str,
     if r.status_code != 200:
         raise RuntimeError(f"qwen (ollama) failed: {r.status_code} {r.text[:200]}")
     data = r.json()
+    run_usage.add("router", payload["model"],
+                  input_tokens=data.get("prompt_eval_count") or 0,
+                  output_tokens=data.get("eval_count") or 0, cost_usd=0.0)
     try:
         from server.db import local_llm_usage_store
         local_llm_usage_store.record(
@@ -499,6 +502,10 @@ async def _openai_chat(system_prompt: str, user_message: str,
     if r.status_code != 200:
         raise RuntimeError(f"openai fallback failed: {r.status_code} {r.text[:200]}")
     data = r.json()
+    usage = data.get("usage") or {}
+    run_usage.add("router", config.OPENAI_SHELL_MODEL,
+                  input_tokens=usage.get("prompt_tokens") or 0,
+                  output_tokens=usage.get("completion_tokens") or 0)
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 
@@ -579,6 +586,14 @@ async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIK
 
     if data.get("is_error"):
         raise RuntimeError(str(data.get("result") or "Claude call failed")[:400])
+    usage = data.get("usage") or {}
+    run_usage.add(
+        "router", model or config.SHELL_MODEL,
+        input_tokens=(usage.get("input_tokens") or 0)
+        + (usage.get("cache_creation_input_tokens") or 0)
+        + (usage.get("cache_read_input_tokens") or 0),
+        output_tokens=usage.get("output_tokens") or 0,
+        cost_usd=data.get("total_cost_usd"))
     return (data.get("result") or "").strip()
 
 
@@ -818,13 +833,14 @@ def _run_step(run_id: str | None, idx: int, tool: str, args: str, result: str,
 
 
 def _run_finish(run_id: str | None, reason: str, reply: str,
-                brains: str = "") -> None:
+                brains: str = "", usage: dict | None = None) -> None:
     if not run_id:
         return
     try:
         from server.db import agent_runs_store
         agent_runs_store.finish(run_id, stop_reason=reason, reply=reply,
-                                workspace=str(workspace.active()), brains=brains)
+                                workspace=str(workspace.active()), brains=brains,
+                                usage=usage)
     except Exception:
         pass
 
@@ -927,6 +943,7 @@ class ShellSkill(Skill):
         # `finish`, so a reply can always be traced back to the steps that
         # produced it — including the ones that went wrong.
         _brains_var.set([])   # fresh per turn; see _BrainLog
+        run_usage.start()     # tokens/cost for this turn only
         run_id = _run_start(session_id, prompt)
         # Announce the trace id up front, not at the end: if the stream drops
         # mid-turn the app can still fetch /api/runs/<id> and show what happened
@@ -964,7 +981,8 @@ class ShellSkill(Skill):
                                    "reason": reason, "brains": _brains.summary()})
             if "error" in _brains.summary() or "unavailable" in _brains.summary():
                 text += f"\n\n({brain_health.fallback_note()})"
-            _run_finish(run_id, reason, text, brains=_brains.summary())
+            _run_finish(run_id, reason, text, brains=_brains.summary(),
+                        usage=run_usage.summary())
             self._remember(session_id, prompt, text, run_id)
             return text
 

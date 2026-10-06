@@ -48,6 +48,13 @@ class ClaudeCodeSkill(CLISubprocessSkill):
         read = usage.get("cache_read_input_tokens") or 0
         return inp + out + created + read, inp + out + created
 
+    def extract_cost(self, stdout: str) -> float | None:
+        try:
+            cost = json.loads(stdout).get("total_cost_usd")
+        except (json.JSONDecodeError, AttributeError):
+            return None
+        return float(cost) if cost is not None else None
+
     def parse_output(self, stdout: str, stderr: str) -> str:
         try:
             data = json.loads(stdout)

@@ -59,6 +59,14 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Per-reply token and cost details (from OpenClaw's message info).** Each
+shell turn tallies every model call it makes — the routing brain (Claude CLI,
+OpenAI, Qwen), nested reviews, and the coding CLIs — in a per-turn ContextVar
+(`server/run_usage.py`), stored as `runs.usage` and returned by
+`/api/runs/{id}`. Gajala's expanded "What it did" strip shows totals, cost
+where the provider reports it (Claude CLI; Qwen = 0) with "+ unpriced calls"
+when some are not priced, and one line per call.
+
 **Optional app lock (from OpenClaw's biometric lock).** Dashboard menu → App
 lock on/off. When on (`lib/core/app_lock.dart`), `AppLockGate` wraps the whole
 navigator, so chats, voice mode and the wake-word sheet are covered; it asks
@@ -334,6 +342,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **Token/cost per reply.** Usage tallied per turn and shown under
+  each reply; cost only where providers state it. 4 server + 2 app tests.
 - 2026-10-06 — **App lock.** Opt-in biometric/PIN lock over the whole app. The
   boot test now uses the secure-storage mock (the gate reads its setting before
   first paint, so a locked app never flashes content). 2 new app tests.

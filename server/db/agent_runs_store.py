@@ -12,6 +12,7 @@ append-only; pruned to the most recent MAX_RUNS turns so it stays a debugging
 aid rather than another database to manage.
 """
 
+import json
 import sqlite3
 import time
 import uuid
@@ -82,6 +83,8 @@ def init() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
         if "brains" not in cols:
             conn.execute("ALTER TABLE runs ADD COLUMN brains TEXT")
+        if "usage" not in cols:   # tokens/cost per turn (JSON), see run_usage
+            conn.execute("ALTER TABLE runs ADD COLUMN usage TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_session "
             "ON runs (session_id, started_at DESC)"
@@ -139,19 +142,21 @@ def add_step(run_id: str, *, idx: int, tool: str, args: str, result: str,
 
 
 def finish(run_id: str, *, stop_reason: str, reply: str = "",
-           workspace: str = "", brains: str = "") -> None:
+           workspace: str = "", brains: str = "", usage: dict | None = None) -> None:
+    usage_json = json.dumps(usage) if usage else None
     with _conn() as conn:
         if workspace:
             conn.execute(
                 "UPDATE runs SET stop_reason = ?, reply = ?, ended_at = ?, "
-                "workspace = ?, brains = ? WHERE id = ?",
-                (stop_reason, reply[:4000], time.time(), workspace, brains, run_id),
+                "workspace = ?, brains = ?, usage = ? WHERE id = ?",
+                (stop_reason, reply[:4000], time.time(), workspace, brains,
+                 usage_json, run_id),
             )
         else:
             conn.execute(
                 "UPDATE runs SET stop_reason = ?, reply = ?, ended_at = ?, "
-                "brains = ? WHERE id = ?",
-                (stop_reason, reply[:4000], time.time(), brains, run_id),
+                "brains = ?, usage = ? WHERE id = ?",
+                (stop_reason, reply[:4000], time.time(), brains, usage_json, run_id),
             )
         conn.commit()
 
@@ -168,6 +173,10 @@ def get(run_id: str) -> dict | None:
             "SELECT * FROM run_steps WHERE run_id = ? ORDER BY idx", (run_id,)
         ).fetchall()
     run = dict(row)
+    try:
+        run["usage"] = json.loads(run["usage"]) if run.get("usage") else None
+    except (TypeError, ValueError):
+        run["usage"] = None
     run["steps"] = [dict(s) for s in steps]
     run["charged_steps"] = sum(1 for s in run["steps"] if s["charged"])
     run["duration_ms"] = int(
