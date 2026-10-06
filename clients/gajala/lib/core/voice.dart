@@ -8,6 +8,7 @@ import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'device_actions.dart';
 import 'storage.dart';
 import 'voice_logic.dart';
 import 'wake_word.dart';
@@ -140,39 +141,20 @@ class VoiceUnavailable implements Exception {
 /// Run a phone-native request as an Android intent. Returns what to say back,
 /// or throws when no app on the phone can handle it.
 Future<String> runLocalIntent(LocalIntent intent) async {
+  final action = intent.deviceAction;
+  if (action != null) {
+    final r = await DeviceActions.instance.run(action.command, action.args);
+    if (r['ok'] == true) {
+      return (r['data'] as Map?)?['done']?.toString() ?? intent.confirmation;
+    }
+    throw PlatformException(code: 'device', message: r['error']?.toString());
+  }
   const newTask = 0x10000000; // FLAG_ACTIVITY_NEW_TASK
   switch (intent) {
-    case SetAlarm(:final hour, :final minute):
-      await AndroidIntent(
-        action: 'android.intent.action.SET_ALARM',
-        arguments: {
-          'android.intent.extra.alarm.HOUR': hour,
-          'android.intent.extra.alarm.MINUTES': minute,
-          'android.intent.extra.alarm.SKIP_UI': true,
-          'android.intent.extra.alarm.MESSAGE': 'Gajala',
-        },
-        flags: const [newTask],
-      ).launch();
-    case SetTimer(:final seconds):
-      await AndroidIntent(
-        action: 'android.intent.action.SET_TIMER',
-        arguments: {
-          'android.intent.extra.alarm.LENGTH': seconds,
-          'android.intent.extra.alarm.SKIP_UI': true,
-          'android.intent.extra.alarm.MESSAGE': 'Gajala',
-        },
-        flags: const [newTask],
-      ).launch();
     case DialNumber(:final number):
       await AndroidIntent(
         action: 'android.intent.action.DIAL',
         data: 'tel:$number',
-        flags: const [newTask],
-      ).launch();
-    case Navigate(:final destination):
-      await AndroidIntent(
-        action: 'android.intent.action.VIEW',
-        data: 'geo:0,0?q=${Uri.encodeComponent(destination)}',
         flags: const [newTask],
       ).launch();
     case WebSearch(:final query):
@@ -183,6 +165,9 @@ Future<String> runLocalIntent(LocalIntent intent) async {
       ).launch();
     case AskGoogle(:final query):
       await _askGoogle(query);
+    // Performed by DeviceActions above.
+    case SetAlarm() || SetTimer() || Navigate() || PhoneAction():
+      break;
   }
   return intent.confirmation;
 }

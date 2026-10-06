@@ -15,6 +15,10 @@
     <uses-permission android:name="android.permission.READ_CALENDAR"/>
     <uses-permission android:name="android.permission.WRITE_CALENDAR"/>
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <!-- Phone actions: direct SMS and Do Not Disturb are off until the owner
+         enables them in Phone abilities (and grants Android's own access). -->
+    <uses-permission android:name="android.permission.SEND_SMS"/>
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
     <!-- "Hey Gajala": the mic may only stay on in the background inside a
          microphone foreground service with a visible notification. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
@@ -71,6 +75,17 @@
             android:name=".GajalaVoiceSessionService"
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <!-- Reads the notifications currently showing, only when the owner asks
+             and only after granting notification access. -->
+        <service
+            android:name=".GajalaNotificationListener"
+            android:exported="true"
+            android:label="Gajala"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
         <!-- Hands-free "Hey Gajala" listener. -->
         <service
             android:name=".WakeWordService"
@@ -147,5 +162,17 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE"/>
         </intent>
+        <!-- Phone actions: find installed apps to open, players for "play …". -->
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
+        </intent>
+        <intent>
+            <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH"/>
+        </intent>
+        <package android:name="com.whatsapp"/>
+        <package android:name="com.spotify.music"/>
+        <package android:name="com.google.android.apps.youtube.music"/>
+        <package android:name="com.google.android.youtube"/>
     </queries>
 </manifest>

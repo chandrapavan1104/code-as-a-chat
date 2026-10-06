@@ -12,7 +12,34 @@ sealed class LocalIntent {
 
   /// What Gajala says back after handing the request to Android.
   String get confirmation;
+
+  /// The same request as a `device` action, performed by DeviceActions (which
+  /// applies saved places, labels and the owner's switches). Null for intents
+  /// that are handled as plain Android intents.
+  ({String command, Map<String, dynamic> args})? get deviceAction => null;
 }
+
+/// A phone action with no special parsing beyond the command itself.
+class PhoneAction extends LocalIntent {
+  final String command;
+  final Map<String, dynamic> args;
+  const PhoneAction(this.command, [this.args = const {}]);
+  @override
+  String get confirmation => 'Done.';
+  @override
+  ({String command, Map<String, dynamic> args}) get deviceAction =>
+      (command: command, args: args);
+  @override
+  bool operator ==(Object other) =>
+      other is PhoneAction && other.command == command && _sameArgs(other.args, args);
+  @override
+  int get hashCode => command.hashCode;
+  @override
+  String toString() => 'PhoneAction($command, $args)';
+}
+
+bool _sameArgs(Map<String, dynamic> a, Map<String, dynamic> b) =>
+    a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
 
 class SetAlarm extends LocalIntent {
   final int hour; // 0-23
@@ -20,6 +47,9 @@ class SetAlarm extends LocalIntent {
   const SetAlarm(this.hour, this.minute);
   @override
   String get confirmation => 'Alarm set for ${spokenTime(hour, minute)}.';
+  @override
+  ({String command, Map<String, dynamic> args}) get deviceAction =>
+      (command: 'action.alarm', args: {'hour': hour, 'minute': minute, 'label': ''});
   @override
   bool operator ==(Object other) => other is SetAlarm && other.hour == hour && other.minute == minute;
   @override
@@ -33,6 +63,9 @@ class SetTimer extends LocalIntent {
   const SetTimer(this.seconds);
   @override
   String get confirmation => 'Timer started for ${spokenDuration(seconds)}.';
+  @override
+  ({String command, Map<String, dynamic> args}) get deviceAction =>
+      (command: 'action.timer', args: {'seconds': seconds, 'label': ''});
   @override
   bool operator ==(Object other) => other is SetTimer && other.seconds == seconds;
   @override
@@ -60,6 +93,9 @@ class Navigate extends LocalIntent {
   const Navigate(this.destination);
   @override
   String get confirmation => 'Getting directions to $destination.';
+  @override
+  ({String command, Map<String, dynamic> args}) get deviceAction =>
+      (command: 'action.navigate', args: {'to': destination});
   @override
   bool operator ==(Object other) => other is Navigate && other.destination == destination;
   @override
@@ -132,11 +168,77 @@ LocalIntent? parseLocalIntent(String utterance, {DateTime? now}) {
   ).firstMatch(t);
   if (nav != null) return Navigate(nav.group(1)!.trim());
 
+  final device = _parseDeviceAction(t);
+  if (device != null) return device;
+
   final search = RegExp(
     r'^(?:search (?:the web |google )?for|google|search the web for|web search)\s+(.+)$',
   ).firstMatch(t);
   if (search != null) return WebSearch(search.group(1)!.trim());
 
+  return null;
+}
+
+const _players = {
+  'spotify': 'spotify',
+  'youtube music': 'youtube_music',
+  'yt music': 'youtube_music',
+  'youtube': 'youtube',
+};
+
+PhoneAction? _parseDeviceAction(String t) {
+  RegExpMatch? m(String p) => RegExp(p).firstMatch(t);
+
+  if (m(r'^(?:pause|stop)(?: the)?(?: music| song| playback)?$') != null) {
+    return const PhoneAction('action.media', {'key': 'pause'});
+  }
+  if (m(r'^(?:resume|unpause|play)(?: the)?(?: music| song)?$') != null) {
+    return const PhoneAction('action.media', {'key': 'play'});
+  }
+  if (m(r'^(?:next|skip)(?: this)?(?: song| track)?$') != null) {
+    return const PhoneAction('action.media', {'key': 'next'});
+  }
+  if (m(r'^(?:previous|last|go back a)(?: song| track)$|^previous$') != null) {
+    return const PhoneAction('action.media', {'key': 'previous'});
+  }
+  if (m(r'^(?:volume up|turn(?: it)? up(?: the volume)?|louder|increase(?: the)? volume)$') != null) {
+    return const PhoneAction('action.volume', {'change': 'up'});
+  }
+  if (m(r'^(?:volume down|turn(?: it)? down(?: the volume)?|quieter|lower(?: the)? volume|decrease(?: the)? volume)$') != null) {
+    return const PhoneAction('action.volume', {'change': 'down'});
+  }
+  if (m(r'^unmute(?: the)?(?: volume| sound| phone)?$') != null) {
+    return const PhoneAction('action.volume', {'change': 'unmute'});
+  }
+  if (m(r'^mute(?: the)?(?: volume| sound| phone)?$') != null) {
+    return const PhoneAction('action.volume', {'change': 'mute'});
+  }
+  final play = m(r'^(?:play|put on|listen to)\s+(.+?)(?:\s+on\s+(spotify|youtube music|yt music|youtube))?$');
+  if (play != null) {
+    return PhoneAction('action.play', {'query': play.group(1)!, 'app': _players[play.group(2)]});
+  }
+  final torch = m(r'^(?:turn|switch) (on|off) (?:the )?(?:flashlight|torch)$|^(?:flashlight|torch)(?: (on|off))?$');
+  if (torch != null) {
+    return PhoneAction('action.flashlight', {'on': (torch.group(1) ?? torch.group(2) ?? 'on') == 'on'});
+  }
+  final dnd = m(r'^(?:turn|switch) (on|off) (?:do not disturb|dnd)$|^(?:do not disturb|dnd)(?: (on|off))?$');
+  if (dnd != null) {
+    return PhoneAction('action.dnd', {'on': (dnd.group(1) ?? dnd.group(2) ?? 'on') == 'on'});
+  }
+  final panel = m(r'^(?:(?:turn|switch) (?:on|off) |open |enable |disable )?(wifi|wi-fi|bluetooth|mobile data|internet|nfc)(?: settings)?$');
+  if (panel != null) {
+    final p = panel.group(1)!;
+    return PhoneAction('action.settings', {
+      'panel': p == 'wi-fi' ? 'wifi' : p == 'mobile data' ? 'internet' : p,
+    });
+  }
+  final camera = m(r'^(?:take a (selfie|photo|picture)|open (?:the )?(front )?camera|(selfie))$');
+  if (camera != null) {
+    final selfie = camera.group(1) == 'selfie' || camera.group(2) != null || camera.group(3) != null;
+    return PhoneAction('action.camera', {'selfie': selfie});
+  }
+  final open = m(r'^(?:open|launch|start)\s+(.+?)(?:\s+app)?$');
+  if (open != null) return PhoneAction('action.open_app', {'name': open.group(1)!});
   return null;
 }
 
