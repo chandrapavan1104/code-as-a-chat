@@ -12,6 +12,7 @@ import 'device_actions.dart';
 import 'storage.dart';
 import 'voice_logic.dart';
 import 'wake_word.dart';
+import 'voice_preferences.dart';
 
 class Voice {
   Voice._();
@@ -19,6 +20,8 @@ class Voice {
 
   final _stt = SpeechToText();
   final _tts = FlutterTts();
+  late final preferences = VoicePreferences(_tts);
+  String? _localeId;
   bool _sttReady = false;
   bool _ttsReady = false;
   Completer<String>? _pending;
@@ -38,6 +41,15 @@ class Voice {
         if (s == SpeechToText.doneStatus) _finish();
       },
     );
+    if (_sttReady) {
+      final locales = await _stt.locales();
+      for (final locale in locales) {
+        if (locale.localeId.replaceAll('_', '-').toLowerCase() == 'en-in') {
+          _localeId = locale.localeId;
+          break;
+        }
+      }
+    }
     return _sttReady;
   }
 
@@ -59,21 +71,35 @@ class Voice {
     await WakeWord.hold();
     _onPartial = onPartial;
     _latest = '';
-    await _stt.listen(
-      onResult: (r) {
-        _latest = r.recognizedWords;
-        _onPartial?.call(_latest);
-        if (r.finalResult) _finish();
+    try {
+      await _stt.listen(
+        localeId: _localeId,
+        onResult: (r) {
+          _latest = r.recognizedWords;
+          _onPartial?.call(_latest);
+          if (r.finalResult) _finish();
+        },
+        listenOptions: SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+          pauseFor: const Duration(seconds: 3),
+          listenFor: const Duration(seconds: 60),
+        ),
+      );
+    } catch (_) {
+      _latest = '';
+      _finish();
+      rethrow;
+    }
+    // A plugin/recognizer must not leave a pending confirmation alive forever.
+    return done.future.timeout(
+      const Duration(seconds: 65),
+      onTimeout: () {
+        unawaited(cancelListening());
+        return '';
       },
-      listenOptions: SpeechListenOptions(
-        partialResults: true,
-        cancelOnError: true,
-        listenMode: ListenMode.dictation,
-        pauseFor: const Duration(seconds: 3),
-        listenFor: const Duration(seconds: 60),
-      ),
     );
-    return done.future;
   }
 
   void _finish({String? error}) {
@@ -86,8 +112,10 @@ class Voice {
     _pending = null;
     _onPartial = null;
     // "no match" / speech timeout just mean silence — not worth an error.
-    if (error != null && _latest.isEmpty &&
-        !error.contains('no_match') && !error.contains('speech_timeout')) {
+    if (error != null &&
+        _latest.isEmpty &&
+        !error.contains('no_match') &&
+        !error.contains('speech_timeout')) {
       p.completeError(VoiceUnavailable('Didn\'t catch that ($error).'));
     } else {
       p.complete(_latest.trim());
@@ -111,6 +139,9 @@ class Voice {
     if (text.isEmpty) return;
     if (!_ttsReady) {
       await _tts.awaitSpeakCompletion(true);
+      final voices = await preferences.available();
+      final selected = await preferences.selected(voices);
+      if (selected != null) await preferences.select(selected);
       _ttsReady = true;
     }
     await _tts.stop();
@@ -141,6 +172,11 @@ class VoiceUnavailable implements Exception {
 /// Run a phone-native request as an Android intent. Returns what to say back,
 /// or throws when no app on the phone can handle it.
 Future<String> runLocalIntent(LocalIntent intent) async {
+  if (intent is DialNumber || intent is CallContact || intent is PlayMusic) {
+    throw const VoiceUnavailable(
+      'Use voice mode for confirmed calling and music playback.',
+    );
+  }
   final action = intent.deviceAction;
   if (action != null) {
     final r = await DeviceActions.instance.run(action.command, action.args);
@@ -151,6 +187,9 @@ Future<String> runLocalIntent(LocalIntent intent) async {
   }
   const newTask = 0x10000000; // FLAG_ACTIVITY_NEW_TASK
   switch (intent) {
+    case CallContact():
+    case PlayMusic():
+      throw const VoiceUnavailable('Use voice mode for this action.');
     case DialNumber(:final number):
       await AndroidIntent(
         action: 'android.intent.action.DIAL',

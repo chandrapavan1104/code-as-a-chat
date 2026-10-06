@@ -74,7 +74,8 @@ class SetTimer extends LocalIntent {
   String toString() => 'SetTimer($seconds)';
 }
 
-/// A number to dial. Named contacts go to [AskGoogle], which resolves them.
+/// A number to dial. Calls are confirmed by [PhoneActions] before Android is
+/// invoked, including numbers that came directly from speech.
 class DialNumber extends LocalIntent {
   final String number;
   const DialNumber(this.number);
@@ -86,6 +87,32 @@ class DialNumber extends LocalIntent {
   int get hashCode => number.hashCode;
   @override
   String toString() => 'DialNumber($number)';
+}
+
+class CallContact extends LocalIntent {
+  final String name;
+  const CallContact(this.name);
+  @override
+  String get confirmation => 'Call $name';
+  @override
+  bool operator ==(Object other) => other is CallContact && other.name == name;
+  @override
+  int get hashCode => name.hashCode;
+  @override
+  String toString() => 'CallContact($name)';
+}
+
+class PlayMusic extends LocalIntent {
+  final String query;
+  const PlayMusic(this.query);
+  @override
+  String get confirmation => 'Playing $query.';
+  @override
+  bool operator ==(Object other) => other is PlayMusic && other.query == query;
+  @override
+  int get hashCode => query.hashCode;
+  @override
+  String toString() => 'PlayMusic($query)';
 }
 
 class Navigate extends LocalIntent {
@@ -146,6 +173,20 @@ LocalIntent? parseLocalIntent(String utterance, {DateTime? now}) {
   final google = RegExp(r'^(?:ask|hey|ok|okay) google[, ]+(.+)$').firstMatch(t);
   if (google != null) return AskGoogle(google.group(1)!.trim());
 
+  final play = RegExp(
+    r'^(?:play|put on|listen to)\s+(.+?)(?:\s+on\s+(spotify|youtube music|yt music|youtube))?$',
+  ).firstMatch(t);
+  if (play != null && !_gajalaDomain.hasMatch(play.group(1)!)) {
+    final app = play.group(2);
+    if (app == null || app == 'youtube music' || app == 'yt music') {
+      return PlayMusic(play.group(1)!.trim());
+    }
+    return PhoneAction('action.play', {
+      'query': play.group(1)!.trim(),
+      'app': _players[app],
+    });
+  }
+
   if (_gajalaDomain.hasMatch(t)) return null;
 
   final timer = _parseTimer(t);
@@ -159,7 +200,7 @@ LocalIntent? parseLocalIntent(String utterance, {DateTime? now}) {
     final target = call.group(1)!.trim();
     final digits = target.replaceAll(RegExp(r'[\s\-().]'), '');
     if (RegExp(r'^\+?\d{3,15}$').hasMatch(digits)) return DialNumber(digits);
-    return AskGoogle('call $target');
+    return CallContact(target);
   }
 
   final nav = RegExp(

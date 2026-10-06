@@ -15,6 +15,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var pendingAssist = false
     private var pendingEnable: MethodChannel.Result? = null
     private var device: DeviceActions? = null
+    private var phoneActions: VoiceActions? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +41,8 @@ class MainActivity : FlutterFragmentActivity() {
         // Swiping Gajala away mid-voice-turn kills the Dart side that would have
         // released its mic hold; don't leave hands-free paused forever.
         if (isFinishing) WakeWordService.hold(false)
+        phoneActions?.cancelPending()
+        phoneActions = null
         super.onDestroy()
     }
 
@@ -78,6 +81,10 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+        phoneActions = VoiceActions(this)
+        MethodChannel(messenger, "gajala/phone").setMethodCallHandler { call, result ->
+            if (phoneActions?.handle(call, result) != true) result.notImplemented()
         }
     }
 
@@ -133,9 +140,12 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (device?.onPermissionResult(requestCode) == true) return
-        if (requestCode != WAKEWORD_PERMISSIONS) return
-        pendingEnable?.let(::finishEnable)
-        pendingEnable = null
+        if (requestCode == WAKEWORD_PERMISSIONS) {
+            pendingEnable?.let(::finishEnable)
+            pendingEnable = null
+            return
+        }
+        phoneActions?.onPermissionResult(requestCode, grantResults)
     }
 
     private fun isAssist(intent: Intent?): Boolean =
