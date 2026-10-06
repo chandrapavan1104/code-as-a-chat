@@ -2,6 +2,8 @@ package com.codeasachat.gajala
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationManager
+import android.os.Build
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -41,7 +43,7 @@ class VoiceActions(private val activity: Activity) {
             "call" -> callNumber(call.argument<String>("number"), result)
             "playMusic" -> playMusic(call.argument<String>("query"), call.argument<String>("package"), result)
             "musicApps" -> result.success(musicApps())
-            "musicAccess" -> result.success(mapOf("enabled" to hasMusicAccess()))
+            "musicAccess" -> result.success(musicAccess())
             "openMusicAccess" -> {
                 try {
                     activity.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -206,9 +208,11 @@ class VoiceActions(private val activity: Activity) {
                 return
             }
         }
-        if (!hasMusicAccess()) {
+        val access = musicAccess()
+        if (access["sessionReadable"] != true) {
             result.success(mapOf("status" to "requested", "package" to targetPackage, "query" to text,
-                "message" to "Playback requested; enable music verification to confirm it started."))
+                "access" to access,
+                "message" to "Playback requested but unverified. ${access["message"]}"))
             return
         }
         verifyPlaybackAsync(manager, targetPackage, text, beforeToken, beforeTitle, beforeArtist, result)
@@ -267,11 +271,39 @@ class VoiceActions(private val activity: Activity) {
         manager?.getActiveSessions(component)?.firstOrNull { it.packageName == packageName }
     } catch (_: SecurityException) { null }
 
-    private fun hasMusicAccess(): Boolean = try {
-        mediaManager()?.getActiveSessions(
-            ComponentName(activity, GajalaNotificationListener::class.java)
-        ) != null
-    } catch (_: Throwable) { false }
+    // Permission approval and media-session availability are distinct facts.
+    private fun musicAccess(): Map<String, Any?> {
+        val component = ComponentName(activity, GajalaNotificationListener::class.java)
+        val enabled: Boolean? = try {
+            if (Build.VERSION.SDK_INT >= 27) {
+                (activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                    .isNotificationListenerAccessGranted(component)
+            } else {
+                Settings.Secure.getString(activity.contentResolver, "enabled_notification_listeners")
+                    .orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component }
+            }
+        } catch (_: Exception) { null }
+        var error: String? = null
+        val sessions = try {
+            val manager = mediaManager()
+            if (manager == null) error = "Media service unavailable"
+            manager?.getActiveSessions(component)
+        } catch (e: Exception) {
+            error = e.javaClass.simpleName
+            null
+        }
+        val readable = sessions != null
+        val message = when {
+            readable -> "Notification access is working. Playback can be checked."
+            enabled == true -> "Notification access is enabled, but Android music sessions are unavailable ($error). No additional permission is needed."
+            enabled == false -> "Notification access is off for Gajala. Enable it in Android settings to verify playback."
+            else -> "Gajala could not check notification access. This does not mean permission was denied."
+        }
+        return mapOf("enabled" to enabled, "sessionReadable" to readable,
+            "listenerConnected" to (GajalaNotificationListener.instance != null),
+            "activePlayers" to sessions?.map { it.packageName }?.distinct(),
+            "error" to error, "message" to message)
+    }
 
     private fun musicApps(): List<Map<String, String>> {
         val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)

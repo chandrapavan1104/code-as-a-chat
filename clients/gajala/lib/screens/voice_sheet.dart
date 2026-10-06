@@ -21,6 +21,7 @@ import '../core/phone_actions.dart';
 import '../core/device_actions.dart';
 import '../core/phone_abilities.dart';
 import '../widgets/voice_picker.dart';
+import '../widgets/music_access_tile.dart';
 import '../core/wake_word.dart';
 import 'chat_screen.dart';
 
@@ -670,27 +671,7 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
       child: Column(
         children: [
           VoicePicker(preferences: Voice.instance.preferences),
-          ListTile(
-            leading: const Icon(Icons.music_note),
-            title: const Text('YouTube Music playback access'),
-            subtitle: const Text(
-              'One-time Android notification access lets Gajala control and verify music. This uses Android notification access; reading notifications remains a separate Phone abilities switch.',
-            ),
-            onTap: () async {
-              try {
-                await const MethodChannel(
-                  'gajala/phone',
-                ).invokeMethod('openMusicAccess');
-              } catch (e) {
-                if (context.mounted)
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Could not open music settings: $e'),
-                    ),
-                  );
-              }
-            },
-          ),
+          const MusicAccessTile(),
           SwitchListTile(
             title: const Text('Speak replies'),
             value: widget.speakReplies,

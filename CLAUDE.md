@@ -59,6 +59,10 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+Playback diagnostics now distinguish notification-access approval from Android
+media-session availability, expose the reason in voice settings, and recheck on
+resume. A failed session query no longer claims permission is missing.
+
 **Hands-free voice completion (October 6).** Voice calls resolve contacts locally,
 ask spoken confirmation, and use Android CALL only after a fresh yes; permission
 prompts require confirmation again. Voice mode listens for follow-ups and cancels
@@ -370,6 +374,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — Fixed misleading music-permission diagnostics: check Android
+  notification approval directly and report session-read errors separately.
+  Voice settings show live status and refresh after returning from Android.
+  Bare “Gajala,” prefixes now retain local voice routing. Phone verification
+  remains pending; no claim that permissions alone ensure music playback.
 - 2026-10-06 — **Hands-free calls, music completion, and Indian English voice.**
   Added local contact disambiguation and spoken call confirmation, permission
   retry confirmation, bounded listening and lifecycle cancellation. YouTube Music
