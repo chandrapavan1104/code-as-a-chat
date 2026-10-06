@@ -1170,7 +1170,8 @@ class ShellSkill(Skill):
                         tool_args, session_id=session_id, source_prompt=prompt,
                         work_context=kwargs.get("work_context") or "",
                         # Only a live app stream can carry a question to the phone.
-                        on_event=on_event if kwargs.get("phone_stream") else None)
+                        on_event=on_event if kwargs.get("phone_stream") else None,
+                        phone_stream=bool(kwargs.get("phone_stream")))
                 except Exception as exc:
                     raw_result = SkillResult(
                         "failed", f"ERROR running {tool_name}: {exc}")

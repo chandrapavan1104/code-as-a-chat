@@ -168,6 +168,13 @@ _WAIT = {"action.calendar_add": 120, "action.sms_send": 60, "action.compose": 60
          "action.call": 60}
 
 
+def _phone_channel(kwargs: dict):
+    """The event sink only reaches the phone on an app /run/stream turn. Plain
+    /run (Telegram, widgets) also passes a sink, but it goes nowhere: using it
+    would wait out the full timeout instead of failing fast."""
+    return kwargs.get("on_event") if kwargs.get("phone_stream") else None
+
+
 class DeviceSkill(Skill):
     name = "device"
     description = "Do things on your phone: alarms, timers, music, apps, messages, flashlight…"
@@ -192,7 +199,7 @@ class DeviceSkill(Skill):
             return SkillResult("failed", str(exc))
         try:
             answer = await phone_bridge.request(
-                kwargs.get("on_event"), command, args, timeout=_WAIT.get(command, 30))
+                _phone_channel(kwargs), command, args, timeout=_WAIT.get(command, 30))
         except phone_bridge.PhoneUnavailable as exc:
             return SkillResult("failed", str(exc), data={"command": command})
         if not answer.get("ok"):
