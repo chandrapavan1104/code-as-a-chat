@@ -26,6 +26,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen>
     with WidgetsBindingObserver {
   final _input = TextEditingController();
+  final _inputFocus = FocusNode();
   final _scroll = ScrollController();
   String? _installId;         // stable per-install id
   String? _sid;               // per-directory conversation id (installId::dir)
@@ -174,6 +175,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     if (Push.activeSession == _sid) Push.activeSession = null;
+    _inputFocus.dispose();
     super.dispose();
   }
 
@@ -227,6 +229,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final msgs = ref.read(chatControllerProvider(key)).messages.skip(before);
     final replies = msgs.where((m) => m.role == 'bot');
     if (replies.isNotEmpty) await Voice.instance.speak(replies.last.text);
+  }
+
+  /// A choice tapped on a question card is sent as the next message.
+  Future<void> _answer(String text) async {
+    _input.text = text;
+    await _send();
   }
 
   /// Review the project's uncommitted changes; lines sent "to chat" land in
@@ -358,6 +366,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         : ref.watch(chatControllerProvider(_key!));
     final msgs = chat.messages;
     final sending = chat.sending;
+    final lastBot = msgs.lastIndexWhere((m) => m.role == 'bot');
+    final answered = lastBot >= 0 &&
+        msgs.skip(lastBot + 1).any((m) => const {'user', 'queued', 'outbox'}.contains(m.role));
+    final openQuestion =
+        lastBot >= 0 && msgs[lastBot].ask != null && !answered ? lastBot : -1;
 
     // Auto-scroll only when something new arrives (not on every rebuild).
     if (msgs.length != _lastMsgCount) {
@@ -405,7 +418,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             itemCount: msgs.length,
             itemBuilder: (_, i) => _Bubble(msgs[i], imgHeaders,
                 api: ref.read(apiProvider),
-                onMove: sending ? null : _moveAndAsk),
+                onMove: sending ? null : _moveAndAsk,
+                // Only the newest unanswered question can be answered.
+                onAnswer: i == openQuestion && !sending ? _answer : null,
+                onOther: i == openQuestion && !sending
+                    ? () => _inputFocus.requestFocus()
+                    : null),
           ),
         ),
         if (widget.command == 'shell' && chat.work != null)
@@ -457,6 +475,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               Expanded(
                 child: TextField(
                   controller: _input,
+                  focusNode: _inputFocus,
                   minLines: 1, maxLines: 6,
                   // Enter inserts a newline; the button sends (mobile standard).
                   keyboardType: TextInputType.multiline,
@@ -534,7 +553,10 @@ class _Bubble extends StatelessWidget {
   final GajalaApi? api;
   final Map<String, String>? imgHeaders;   // auth headers for /api/file images
   final void Function(String dir)? onMove;  // confirm-to-move action
-  const _Bubble(this.m, this.imgHeaders, {this.onMove, this.api});
+  final void Function(String answer)? onAnswer; // tap a question-card choice
+  final VoidCallback? onOther;
+  const _Bubble(this.m, this.imgHeaders,
+      {this.onMove, this.api, this.onAnswer, this.onOther});
   @override
   Widget build(BuildContext context) {
     if (m.role == 'status') {
@@ -665,6 +687,10 @@ class _Bubble extends StatelessWidget {
                 onPressed: () => onMove!(m.moveTo!),
               ),
             ],
+            if (m.ask != null) ...[
+              const SizedBox(height: 10),
+              _AskCardView(m.ask!, onAnswer: onAnswer, onOther: onOther),
+            ],
           ],
         ),
       ),
@@ -697,6 +723,76 @@ class _Bubble extends StatelessWidget {
 /// A reply restored from chat history knows its run id but not its steps.
 /// Fetches the trace the first time you open it, so scrolling old history stays
 /// cheap.
+/// The agent's multiple-choice question. Single choice sends on tap; multi
+/// choice collects ticks and sends them together. Disabled once answered.
+class _AskCardView extends StatefulWidget {
+  final AskCard card;
+  final void Function(String answer)? onAnswer;
+  final VoidCallback? onOther;
+  const _AskCardView(this.card, {this.onAnswer, this.onOther});
+  @override
+  State<_AskCardView> createState() => _AskCardViewState();
+}
+
+class _AskCardViewState extends State<_AskCardView> {
+  final Set<String> _picked = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final card = widget.card;
+    final live = widget.onAnswer != null;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: GajalaColors.accent.withValues(alpha: live ? .10 : .04),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: GajalaColors.accent.withValues(alpha: live ? .45 : .15)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(card.question, style: const TextStyle(fontWeight: FontWeight.w600)),
+        if (card.multi && live)
+          Text('Pick any, then Send',
+              style: TextStyle(fontSize: 11, color: context.pal.textDim)),
+        const SizedBox(height: 6),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final o in card.options)
+            card.multi
+                ? FilterChip(
+                    label: Text(o),
+                    selected: _picked.contains(o),
+                    onSelected: live
+                        ? (v) => setState(() => v ? _picked.add(o) : _picked.remove(o))
+                        : null,
+                  )
+                : ActionChip(
+                    label: Text(o),
+                    onPressed: live ? () => widget.onAnswer!(o) : null,
+                  ),
+          if (live)
+            ActionChip(
+              avatar: const Icon(Icons.edit_outlined, size: 16),
+              label: const Text('Other…'),
+              onPressed: widget.onOther,
+            ),
+        ]),
+        if (card.multi && live) ...[
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(
+              onPressed: _picked.isEmpty
+                  ? null
+                  : () => widget.onAnswer!(
+                      [for (final o in card.options) if (_picked.contains(o)) o].join(', ')),
+              child: const Text('Send'),
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
 class _LazyTrace extends ConsumerStatefulWidget {
   final String runId;
   const _LazyTrace(this.runId);

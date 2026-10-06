@@ -201,6 +201,11 @@ DECISION RULES:
   reached (quota, session limit, rate limit, 429), do NOT call "auth" and do NOT
   retry that engine. Tell the user which engine is out of quota and when it
   resets, exactly as the tool reported, and offer another engine.
+- ASKING THE USER TO CHOOSE: only when you cannot continue without the user
+  picking between 2-6 concrete options, end your reply with
+  [[ask:{"question":"<short question>","options":["<a>","<b>"],"multi":false}]]
+  (valid JSON, short option labels; "multi":true if several may be picked).
+  The app shows tappable choices. Do not use it for open-ended questions.
 - NEVER CLAIM A SWITCH YOU DID NOT MAKE. Reading a session with "sessions show"
   does not move this chat. To work in another project call "projects"; to carry
   on a specific past session call "sessions" with "continue <id> [message]".
@@ -953,6 +958,8 @@ class ShellSkill(Skill):
             # Completion review or model fallback can replace the composed
             # response; keep every file/image emitted by a tool reachable.
             text = self._attach_images(text, images)
+            from server import ask_cards
+            text = ask_cards.normalize(text)
             await _emit(on_event, {"type": "completion", "status": status,
                                    "reason": reason, "brains": _brains.summary()})
             if "error" in _brains.summary() or "unavailable" in _brains.summary():

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
-from server import config, fcm, orchestrator, workspace
+from server import ask_cards, config, fcm, orchestrator, workspace
 from server.db import store as memory
 from server.db import (agent_runs_store, capability_store, cli_runs_store, deployment_store,
                        errors_store, night_queue_store, notifications_store,
@@ -175,7 +175,7 @@ async def _push_reply(session_id: str, command: str, result: str) -> None:
     try:
         await fcm.push_all(
             config.AGENT_NAME,
-            _preview(result),
+            _preview(ask_cards.as_plain_text(result)),
             data={"type": "chat_reply", "session_id": session_id, "command": command},
         )
     except Exception:
@@ -230,8 +230,9 @@ async def toggle_skill(skill_name: str, request: SkillToggleRequest):
 async def run(body: RunRequest, background_tasks: BackgroundTasks):
     work, created = _accept_work(body)
     if work and not created:
-        return {"command": body.command, "result": work.get("result") or
-                "This request is already being handled.",
+        # /run serves plain-text clients (Telegram, widgets): no ask cards.
+        return {"command": body.command, "result": ask_cards.as_plain_text(
+                    work.get("result") or "This request is already being handled."),
                 "workspace": work.get("project") or body.project,
                 "work": work, "deduplicated": True}
     completion = {}
@@ -264,7 +265,7 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
             )
         # `workspace` lets the app follow project switches made *during* the turn
         # (e.g. the agent used the projects tool) so its header + thread stay synced.
-        return {"command": body.command, "result": result,
+        return {"command": body.command, "result": ask_cards.as_plain_text(result),
                 "workspace": ws_name, "work": work}
     except Exception as exc:
         if work:

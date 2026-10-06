@@ -59,6 +59,14 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Question cards (from OpenClaw's native question cards).** When the shell
+needs the owner to pick between 2–6 concrete options it ends the reply with
+`[[ask:{"question","options","multi"}]]`; `server/ask_cards.py` keeps one valid
+card and drops malformed ones. Gajala renders it as tappable chips (multi:
+tick then Send; "Other…" focuses the composer); only the newest unanswered
+card is live. `/run` (Telegram, widgets) and push previews get a numbered
+plain-text list instead.
+
 **Phone abilities for the Mac agent (from OpenClaw's Android "node").** The
 `phone` skill can ask the owner's phone for location, calendar events
 (today/tomorrow/week, read-only), contact lookup by name, a photo the owner
@@ -318,6 +326,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — **Question cards in chat.** The agent can ask a multiple-choice
+  question that the owner answers with one tap. 5 server + 3 app tests.
 - 2026-10-06 — **Phone abilities.** The agent can read location, calendar,
   contacts, a photo or battery from the phone mid-chat, each owner-enabled and
   noted in the chat. device_calendar pinned to 4.x (3.9 uses removed

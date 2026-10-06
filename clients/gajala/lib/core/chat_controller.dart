@@ -8,6 +8,7 @@
 // half-typed draft — so leaving and coming back shows the exact same state.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
@@ -28,6 +29,24 @@ final _imgMarker = RegExp(r'\[image:\s*([^\]]+?)\s*\]');
     return '';
   }).trim();
   return (clean, urls);
+}
+
+/// Pulls an "[[ask:{…}]]" question card out of a reply → (clean text, card).
+/// The server already validated it; anything unparsable is just dropped.
+final _askMarker = RegExp(r'\[\[ask:(\{.*?\})\]\]', dotAll: true);
+(String, AskCard?) splitAsk(String raw) {
+  AskCard? card;
+  final clean = raw.replaceAllMapped(_askMarker, (m) {
+    try {
+      final j = jsonDecode(m.group(1)!) as Map<String, dynamic>;
+      final options = [for (final o in (j['options'] as List? ?? const [])) '$o'];
+      if ((j['question'] ?? '').toString().isNotEmpty && options.length >= 2) {
+        card = AskCard(j['question'].toString(), options, multi: j['multi'] == true);
+      }
+    } catch (_) {}
+    return '';
+  }).trim();
+  return (clean, card);
 }
 
 /// Pulls a "[[move:dir]]" confirm-to-move marker out of a reply → (clean, dir).
@@ -227,9 +246,11 @@ class ChatController extends StateNotifier<ChatState> {
         final history = await api.chatHistory(key.sid);
         loaded = history.map((m) {
           if (m.role != 'bot') return m;
-          final (clean, urls) = splitImages(m.text, api);
-          if (urls.isEmpty) return m;
-          return ChatMessage('bot', clean, remoteImages: urls);
+          final (imgClean, urls) = splitImages(m.text, api);
+          final (clean, ask) = splitAsk(imgClean);
+          if (urls.isEmpty && ask == null) return m;
+          return ChatMessage('bot', clean, remoteImages: urls, ask: ask,
+              runId: m.runId);
         }).toList();
       } catch (_) {
         /* fall through to welcome */
@@ -667,7 +688,8 @@ class ChatController extends StateNotifier<ChatState> {
               api,
             );
             final (moveClean, moveTo) = splitMove(imgClean);
-            final (clean, switchedTo) = splitSwitch(moveClean);
+            final (switchClean, switchedTo) = splitSwitch(moveClean);
+            final (clean, ask) = splitAsk(switchClean);
             final ordered = live.keys.toList()..sort();
             finish(
               ChatMessage(
@@ -675,6 +697,7 @@ class ChatController extends StateNotifier<ChatState> {
                 clean.isEmpty && urls.isNotEmpty
                     ? ''
                     : (clean.isEmpty ? '(no result)' : clean),
+                ask: ask,
                 remoteImages: urls,
                 moveTo: moveTo,
                 runId: runId,

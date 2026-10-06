@@ -352,6 +352,14 @@ class AppNotification {
   );
 }
 
+/// A multiple-choice question the agent attached to a reply ([[ask:{…}]]).
+class AskCard {
+  final String question;
+  final List<String> options;
+  final bool multi;
+  const AskCard(this.question, this.options, {this.multi = false});
+}
+
 class ChatMessage {
   final String role; // user | bot | error | status
   String text; // mutable so a live 'status' bubble can accumulate steps
@@ -367,9 +375,11 @@ class ChatMessage {
   final String? project; // where the turn ran
   final String? stopLabel; // why it stopped
   final bool hitStepLimit;
+  final AskCard? ask; // choices to tap, when the agent asked a question
   ChatMessage(
     this.role,
     this.text, {
+    this.ask,
     this.localImage,
     List<String>? remoteImages,
     this.moveTo,
