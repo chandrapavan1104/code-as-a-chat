@@ -34,6 +34,27 @@ void main() {
     expect(RunTrace.fromJson({'steps': []}).usage, isNull);
   });
 
+  testWidgets('collapsed trace still shows failed steps', (tester) async {
+    final failed = RunTrace.fromJson({
+      'id': 'r2',
+      'duration_ms': 2000,
+      'steps': [
+        {'idx': 1, 'tool': 'claude', 'args': 'a', 'result': 'ok', 'ok': 1, 'charged': 1},
+        {'idx': 2, 'tool': 'firebase', 'args': 'deploy', 'result': 'ERROR', 'ok': 0, 'charged': 1},
+      ],
+    });
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(Brightness.dark),
+      home: Scaffold(body: RunTraceStrip.fromTrace(failed)),
+    ));
+    expect(find.text(' · 1 failed'), findsOneWidget);
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(Brightness.dark),
+      home: Scaffold(body: RunTraceStrip.fromTrace(trace)),
+    ));
+    expect(find.textContaining('failed'), findsNothing);
+  });
+
   testWidgets('expanded trace shows tokens, cost and each model call', (tester) async {
     await tester.pumpWidget(MaterialApp(
       theme: buildTheme(Brightness.dark),

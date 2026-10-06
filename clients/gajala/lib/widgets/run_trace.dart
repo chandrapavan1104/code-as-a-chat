@@ -64,6 +64,9 @@ class _RunTraceStripState extends State<RunTraceStrip> {
     if (old.live && !widget.live) _open = false;
   }
 
+  // Kept visible when collapsed, so a turn with failures never looks clean.
+  int get _failed => widget.steps.where((s) => !s.ok).length;
+
   String get _summary {
     final n = widget.steps.length;
     final parts = <String>[n == 1 ? '1 step' : '$n steps'];
@@ -134,6 +137,12 @@ class _RunTraceStripState extends State<RunTraceStrip> {
                       fontSize: 12.5,
                       fontWeight: FontWeight.w500)),
             ),
+            if (!widget.live && _failed > 0)
+              Text(' · $_failed failed',
+                  style: const TextStyle(
+                      color: GajalaColors.danger,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600)),
           ]),
         ),
       );

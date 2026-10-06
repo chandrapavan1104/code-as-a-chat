@@ -342,6 +342,9 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — Collapsed run traces show "· N failed" in red, so a turn with
+  failed steps no longer looks clean until expanded (from OpenClaw's
+  "Worked for…" row). 1 app test.
 - 2026-10-06 — **Token/cost per reply.** Usage tallied per turn and shown under
   each reply; cost only where providers state it. 4 server + 2 app tests.
 - 2026-10-06 — **App lock.** Opt-in biometric/PIN lock over the whole app. The
