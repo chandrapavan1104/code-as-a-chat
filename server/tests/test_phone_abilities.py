@@ -18,7 +18,7 @@ def _phone_answering(answer: dict, frames: list):
 
 
 def _run(prompt, on_event):
-    return asyncio.run(phone.PhoneSkill().run(prompt, on_event=on_event))
+    return asyncio.run(phone.PhoneSkill().run(prompt, on_event=on_event, phone_stream=True))
 
 
 def test_location_round_trip():

@@ -40,6 +40,13 @@ def _parse(prompt: str) -> tuple[str, dict] | None:
     return name, {}
 
 
+def _phone_channel(kwargs: dict):
+    """The event sink only reaches the phone on an app /run/stream turn. Plain
+    /run (Telegram, widgets) also passes a sink, but it goes nowhere: using it
+    would wait out the full timeout instead of failing fast."""
+    return kwargs.get("on_event") if kwargs.get("phone_stream") else None
+
+
 class PhoneSkill(Skill):
     name = "phone"
     description = "Read from your phone: location, calendar, contacts, a photo, status"
@@ -61,7 +68,7 @@ class PhoneSkill(Skill):
         command, timeout = _COMMANDS[name]
         try:
             answer = await phone_bridge.request(
-                kwargs.get("on_event"), command, args, timeout=timeout)
+                _phone_channel(kwargs), command, args, timeout=timeout)
         except phone_bridge.PhoneUnavailable as exc:
             return SkillResult("failed", str(exc), data={"command": command})
         if not answer.get("ok"):

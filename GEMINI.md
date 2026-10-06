@@ -361,6 +361,10 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-06 — Fixed `phone`/`device` skills hanging for their full timeout
+  when called through plain `/run` (Telegram, widgets): that path passes an
+  event sink that never reaches the phone. Skills now use the sink only when
+  the turn is marked `phone_stream`, so they fail fast with a clear message.
 - 2026-10-06 — **Google-Assistant-style phone actions.** New `device` skill and
   phone module for alarms, timers, music, media keys, volume, apps, messages,
   direct SMS, calls, calendar events, flashlight, settings panels, navigation

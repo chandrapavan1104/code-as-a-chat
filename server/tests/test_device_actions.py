@@ -61,7 +61,7 @@ def _run(prompt, answer, frames):
         if ev.get("type") == "phone_request":
             frames.append(ev)
             asyncio.get_running_loop().call_later(0.01, phone_bridge.deliver, ev["id"], answer)
-    return asyncio.run(device.DeviceSkill().run(prompt, on_event=on_event))
+    return asyncio.run(device.DeviceSkill().run(prompt, on_event=on_event, phone_stream=True))
 
 
 def test_round_trip_reports_what_the_phone_did():
@@ -86,3 +86,24 @@ def test_bad_command_never_reaches_the_phone():
     frames = []
     out = _run("alarm whenever", {"ok": True}, frames)
     assert out.status == "failed" and frames == []
+
+
+def test_plain_run_fails_fast_instead_of_waiting_for_the_phone():
+    """Regression: /run passes an event sink that never reaches the phone; the
+    request used to hang for the full 30 s timeout."""
+    import time
+    from fastapi.testclient import TestClient
+    from server import config, main, orchestrator
+    orchestrator.init()   # TestClient skips the app lifespan that normally does this
+    start = time.monotonic()
+    r = TestClient(main.app).post("/run", json={"command": "device", "prompt": "alarm 6:30 am"},
+                                  headers={"X-API-Token": config.API_TOKEN})
+    assert time.monotonic() - start < 3
+    assert "talking to Gajala in the app" in r.json()["result"]
+
+
+def test_sink_without_app_stream_is_not_used():
+    async def sink(ev):
+        raise AssertionError("must not send to a sink that does not reach the phone")
+    out = asyncio.run(device.DeviceSkill().run("flashlight on", on_event=sink))
+    assert out.status == "failed" and "talking to Gajala in the app" in out.message
