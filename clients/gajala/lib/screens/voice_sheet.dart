@@ -86,6 +86,8 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
   bool _handedOff = false;
   int _generation = 0;
   Timer? _followUp;
+  ChatController? _voiceLog;
+  String? _voiceLogId;
   static const _phone = MethodChannel('gajala/phone');
 
   @override
@@ -98,11 +100,11 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
     WidgetsBinding.instance.addPostFrameCallback((_) => _turn());
   }
 
-  Future<ChatKey> _shellKey(GajalaApi api) async {
+  Future<ChatKey> _shellKey(GajalaApi? api) async {
     final install = await ref.read(sessionIdProvider.future);
     if (_dir == null) {
       try {
-        _dir = (await api.projects())['current_name']?.toString();
+        _dir = (await api?.projects())?['current_name']?.toString();
       } catch (_) {
         /* default thread */
       }
@@ -147,16 +149,27 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
 
   Future<String> _askPhone(String question, int generation) async {
     if (!_active(generation)) return '';
-    setState(() {
-      _phase = _Phase.speaking;
-      _partial = question;
-    });
-    // Safety confirmations are always spoken, even when ordinary replies are muted.
-    await Voice.instance.speak(question);
-    if (!_active(generation)) return '';
-    setState(() => _phase = _Phase.listening);
+    var log = _voiceLog;
+    var id = _voiceLogId;
+    final ownsLog = log == null || id == null;
+    if (ownsLog) {
+      final key = await _shellKey(ref.read(apiProvider));
+      if (!_active(generation)) return '';
+      log = ref.read(chatControllerProvider(key).notifier);
+      id = await log!.beginLocalVoiceTurn(question, role: 'assistant');
+    } else {
+      await log!.appendLocalVoiceMessage(id, 'assistant', question);
+    }
     try {
-      return await Voice.instance
+      if (!_active(generation)) return '';
+      setState(() {
+        _phase = _Phase.speaking;
+        _partial = question;
+      });
+      await Voice.instance.speak(question);
+      if (!_active(generation)) return '';
+      setState(() => _phase = _Phase.listening);
+      final answer = await Voice.instance
           .listen(
             onPartial: (p) {
               if (_active(generation)) setState(() => _partial = p);
@@ -169,8 +182,15 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
               return '';
             },
           );
+      await log!.appendLocalVoiceMessage(
+        id!,
+        answer.isEmpty ? 'assistant' : 'user',
+        answer.isEmpty ? 'No confirmation was received.' : answer,
+      );
+      return answer;
     } finally {
       await Voice.instance.cancelListening();
+      if (ownsLog) await log!.finishLocalVoiceTurn(id!);
       if (_active(generation)) setState(() => _phase = _Phase.thinking);
     }
   }
@@ -234,7 +254,53 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
     }
   }
 
+  Future<void> _appendVoiceLog(String role, String text) async {
+    final log = _voiceLog;
+    final id = _voiceLogId;
+    if (log != null && id != null)
+      await log.appendLocalVoiceMessage(id, role, text);
+  }
+
   Future<_Exchange> _answer(String heard, int generation) async {
+    final local = parseLocalIntent(heard) != null;
+    if (local) {
+      final key = await _shellKey(ref.read(apiProvider));
+      if (!mounted) return _Exchange(heard, 'Voice session ended.', 'Phone');
+      _voiceLog = ref.read(chatControllerProvider(key).notifier);
+      _voiceLogId = await _voiceLog!.beginLocalVoiceTurn(heard);
+    }
+    try {
+      if (!_active(generation)) {
+        const message = 'Voice session ended before the action started.';
+        await _appendVoiceLog('assistant', message);
+        return _Exchange(heard, message, 'Phone');
+      }
+      final exchange = await _answerUnlogged(heard, generation);
+      if (exchange.via == 'Offline' && mounted) {
+        final key = await _shellKey(ref.read(apiProvider));
+        if (mounted) {
+          _voiceLog = ref.read(chatControllerProvider(key).notifier);
+          _voiceLogId = await _voiceLog!.beginLocalVoiceTurn(heard);
+        }
+      }
+      await _appendVoiceLog('assistant', exchange.reply);
+      return exchange;
+    } catch (error) {
+      await _appendVoiceLog(
+        'assistant',
+        'Voice action did not complete: $error',
+      );
+      rethrow;
+    } finally {
+      final log = _voiceLog;
+      final id = _voiceLogId;
+      _voiceLog = null;
+      _voiceLogId = null;
+      if (log != null && id != null) await log.finishLocalVoiceTurn(id);
+    }
+  }
+
+  Future<_Exchange> _answerUnlogged(String heard, int generation) async {
     final local = parseLocalIntent(heard);
     if (local != null) {
       try {

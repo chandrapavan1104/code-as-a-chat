@@ -59,6 +59,16 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+Local voice commands now have a durable on-phone transcript journal and are
+shown in the same project chat, including spoken confirmation exchanges and
+outcomes. Completed logs sync through an idempotent storage-only API; reconnect
+never replays calls/music. Interrupted turns remain visible, and offline logs
+are retained without the command outbox expiry. Named-contact confirmation
+speaks the name once; number suffixes are used for ambiguous contact selection.
+Music requests visibly launch the targeted app with the original query again,
+with a best-effort search fallback and no unverified playback success claim.
+Real-phone behavior remains an acceptance check.
+
 Playback diagnostics now distinguish notification-access approval from Android
 media-session availability, expose the reason in voice settings, and recheck on
 resume. A failed session query no longer claims permission is missing.
@@ -374,6 +384,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-07 — Reworked voice regressions: journal direct phone/offline turns in
+  chat and sync logs without rerunning actions, including confirmation replies.
+  Calls to saved contacts ask by name without reciting the full number twice.
+  Restored visible music-app query handoff, removed the silent transport-only
+  path and package-resolution precheck, and retained honest fallback status.
 - 2026-10-06 — Fixed misleading music-permission diagnostics: check Android
   notification approval directly and report session-read errors separately.
   Voice settings show live status and refresh after returning from Android.

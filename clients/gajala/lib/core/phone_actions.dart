@@ -56,6 +56,14 @@ class PhoneActions {
           handedOff: true,
         );
       }
+      if (status == 'searched') {
+        return PhoneActionResult(
+          _nativeMessage(
+            result,
+            'Opened YouTube Music search for ${intent.query}; playback is not verified.',
+          ),
+        );
+      }
       if (status == 'unsupported') {
         return PhoneActionResult(
           _nativeMessage(
@@ -139,12 +147,10 @@ class PhoneActions {
   }
 
   Future<PhoneActionResult> _callNumber(String number) =>
-      _confirmAndCall(number, number);
+      _confirmAndCall(number, _spokenNumber(number));
 
   Future<PhoneActionResult> _confirmAndCall(String number, String name) async {
-    final confirmed = await _confirm(
-      'Call $name, number ${_spokenNumber(number)}? Say yes or no.',
-    );
+    final confirmed = await _confirm('Call $name? Say yes or no.');
     if (!confirmed) return const PhoneActionResult('Okay, I will not call.');
     if (!isActive()) return const PhoneActionResult('Voice session ended.');
     Map<String, dynamic> result;
@@ -155,7 +161,7 @@ class PhoneActions {
     }
     if (_status(result) == 'permission_granted_retry') {
       final retry = await _confirm(
-        'Permission is ready. Call $name, number ${_spokenNumber(number)}? Say yes or no.',
+        'Permission is ready. Call $name? Say yes or no.',
       );
       if (!retry || !isActive())
         return const PhoneActionResult('Okay, I will not call.');

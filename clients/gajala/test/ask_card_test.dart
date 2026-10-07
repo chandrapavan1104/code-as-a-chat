@@ -1,3 +1,4 @@
+import 'package:gajala/core/voice_journal.dart';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -57,13 +58,13 @@ void main() {
     final api = CardApi();
 
     final chat = ChatController(api, const ChatKey('shell', 'a::general'),
-        outbox: Outbox(dir: () async => dir));
+        voiceJournal: VoiceJournal(dir: () async => dir), outbox: Outbox(dir: () async => dir));
     await chat.send('build');
     expect(chat.state.messages.last.text, 'Ready.');
     expect(chat.state.messages.last.ask?.options, ['Debug', 'Release']);
 
     final reloaded = ChatController(api, const ChatKey('shell', 'b::general'),
-        outbox: Outbox(dir: () async => dir));
+        voiceJournal: VoiceJournal(dir: () async => dir), outbox: Outbox(dir: () async => dir));
     await reloaded.ensureLoaded();
     expect(reloaded.state.messages.last.ask?.question, 'Which build?');
   });

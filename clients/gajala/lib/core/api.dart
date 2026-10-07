@@ -94,9 +94,27 @@ class GajalaApi {
             // Restored history keeps its link to the agent's trace, so you can
             // still see what a reply did after an app restart.
             runId: t['run_id']?.toString(),
+            localRequestId: t['local_request_id']?.toString(),
           ),
         )
         .toList();
+  }
+
+  /// Stores a transcript created entirely on the phone. This endpoint only
+  /// appends history; it never routes the text to an agent or executes it.
+  Future<void> storeLocalChatTurn(
+    String sessionId,
+    String requestId,
+    List<Map<String, String>> messages,
+  ) async {
+    await _dio.post(
+      '/api/chat/local-turn',
+      data: {
+        'session_id': sessionId,
+        'request_id': requestId,
+        'messages': messages,
+      },
+    );
   }
 
   Future<String> run(
@@ -316,9 +334,7 @@ class GajalaApi {
   /// offline voice without waiting out the chat stream's long timeouts.
   Future<bool> reachable() async {
     try {
-      final r = await _dio
-          .get('/health')
-          .timeout(const Duration(seconds: 5));
+      final r = await _dio.get('/health').timeout(const Duration(seconds: 5));
       return r.statusCode == 200;
     } catch (_) {
       return false;
@@ -356,7 +372,9 @@ class GajalaApi {
   Future<ProjectDiff> projectDiff(String? project) async {
     final r = await _dio.get(
       '/api/projects/diff',
-      queryParameters: {if (project != null && project.isNotEmpty) 'project': project},
+      queryParameters: {
+        if (project != null && project.isNotEmpty) 'project': project,
+      },
     );
     return ProjectDiff.fromJson(Map<String, dynamic>.from(r.data));
   }
