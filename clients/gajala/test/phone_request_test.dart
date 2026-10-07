@@ -1,3 +1,4 @@
+import 'package:gajala/core/voice_journal.dart';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -55,7 +56,7 @@ void main() {
   ) => ChatController(
     api,
     const ChatKey('shell', 'app:test::general'),
-    outbox: Outbox(dir: () async => dir),
+    voiceJournal: VoiceJournal(dir: () async => dir), outbox: Outbox(dir: () async => dir),
     phone: (command, args, _) async {
       asked.add(command);
       return answer;

@@ -20,6 +20,7 @@ import 'outbox.dart';
 import 'device_actions.dart';
 import 'phone_abilities.dart';
 import 'state.dart';
+import 'voice_journal.dart';
 
 /// Pulls "[image: /path]" markers out of an agent reply → (clean text, urls).
 final _imgMarker = RegExp(r'\[image:\s*([^\]]+?)\s*\]');
@@ -40,9 +41,15 @@ final _askMarker = RegExp(r'\[\[ask:(\{.*?\})\]\]', dotAll: true);
   final clean = raw.replaceAllMapped(_askMarker, (m) {
     try {
       final j = jsonDecode(m.group(1)!) as Map<String, dynamic>;
-      final options = [for (final o in (j['options'] as List? ?? const [])) '$o'];
+      final options = [
+        for (final o in (j['options'] as List? ?? const [])) '$o',
+      ];
       if ((j['question'] ?? '').toString().isNotEmpty && options.length >= 2) {
-        card = AskCard(j['question'].toString(), options, multi: j['multi'] == true);
+        card = AskCard(
+          j['question'].toString(),
+          options,
+          multi: j['multi'] == true,
+        );
       }
     } catch (_) {}
     return '';
@@ -188,32 +195,50 @@ class ChatState {
   );
 }
 
-typedef PhoneHandler = Future<Map<String, dynamic>> Function(
-    String command, Map<String, dynamic> args, GajalaApi api);
+typedef PhoneHandler =
+    Future<Map<String, dynamic>> Function(
+      String command,
+      Map<String, dynamic> args,
+      GajalaApi api,
+    );
 
 /// `action.*` = do something on the phone; anything else = read from it.
 Future<Map<String, dynamic>> _defaultPhone(
-        String command, Map<String, dynamic> args, GajalaApi api) =>
-    command.startsWith('action.')
-        ? DeviceActions.instance.run(command, args)
-        : PhoneAbilities.instance.handle(command, args, api);
+  String command,
+  Map<String, dynamic> args,
+  GajalaApi api,
+) => command.startsWith('action.')
+    ? DeviceActions.instance.run(command, args)
+    : PhoneAbilities.instance.handle(command, args, api);
 
 class ChatController extends StateNotifier<ChatState> {
   final GajalaApi? _api;
   final ChatKey key;
   final Outbox _outbox;
+  final VoiceJournal _voiceJournal;
   final PhoneHandler _phone;
   // Request ids queued in memory or currently being sent; a replay skips them.
   final Set<String> _active = {};
+  final Set<String> _syncingVoice = {};
   bool _replaying = false;
-  ChatController(this._api, this.key, {Outbox? outbox, PhoneHandler? phone})
-    : _outbox = outbox ?? Outbox.instance,
-      _phone = phone ?? _defaultPhone,
-      super(const ChatState());
+  ChatController(
+    this._api,
+    this.key, {
+    Outbox? outbox,
+    PhoneHandler? phone,
+    VoiceJournal? voiceJournal,
+  }) : _outbox = outbox ?? Outbox.instance,
+       _voiceJournal = voiceJournal ?? VoiceJournal.instance,
+       _phone = phone ?? _defaultPhone,
+       super(const ChatState());
 
   /// The agent asked this phone for something (location, calendar…). Answer
   /// without blocking the stream, and say in the chat what was shared.
-  Future<void> _answerPhone(GajalaApi api, Map<String, dynamic> ev, [PhoneHandler? turnPhone]) async {
+  Future<void> _answerPhone(
+    GajalaApi api,
+    Map<String, dynamic> ev, [
+    PhoneHandler? turnPhone,
+  ]) async {
     final id = ev['id']?.toString();
     final command = ev['command']?.toString() ?? '';
     if (id == null) return;
@@ -222,16 +247,19 @@ class ChatController extends StateNotifier<ChatState> {
     final ability = PhoneAbilities.instance.byId(command);
     if (mounted) {
       final done = (result['data'] as Map?)?['done']?.toString();
-      final note = ChatMessage('system', result['ok'] == true
-          ? (done != null
-              ? '📱 $done'
-              : command == 'action.notifications'
+      final note = ChatMessage(
+        'system',
+        result['ok'] == true
+            ? (done != null
+                  ? '📱 $done'
+                  : command == 'action.notifications'
                   ? '🔔 Read your notifications'
                   : ability?.chatNote ?? 'Shared $command with Gajala')
-          : command.startsWith('action.')
-              ? '📱 Could not do that on the phone: ${result['error']}'
-              : 'Gajala asked for ${ability?.title.toLowerCase() ?? command}: '
-                  '${result['error']}');
+            : command.startsWith('action.')
+            ? '📱 Could not do that on the phone: ${result['error']}'
+            : 'Gajala asked for ${ability?.title.toLowerCase() ?? command}: '
+                  '${result['error']}',
+      );
       // Above the live bubble, so it reads question → what was shared → reply.
       final m = [...state.messages];
       final live = m.lastIndexWhere((x) => x.role == 'status');
@@ -240,7 +268,9 @@ class ChatController extends StateNotifier<ChatState> {
     }
     try {
       await api.phoneResult(id, result);
-    } catch (_) {/* the turn timed out or ended; nothing is waiting */}
+    } catch (_) {
+      /* the turn timed out or ended; nothing is waiting */
+    }
   }
 
   /// Acknowledge the one-shot workspace signal. The screen calls this once it
@@ -256,16 +286,24 @@ class ChatController extends StateNotifier<ChatState> {
     final api = _api;
     List<ChatMessage> loaded = const [];
     AssistantWork? restoredWork;
+    var historyLoaded = false;
     if (api != null) {
       try {
         final history = await api.chatHistory(key.sid);
+        historyLoaded = true;
         loaded = history.map((m) {
           if (m.role != 'bot') return m;
           final (imgClean, urls) = splitImages(m.text, api);
           final (clean, ask) = splitAsk(imgClean);
           if (urls.isEmpty && ask == null) return m;
-          return ChatMessage('bot', clean, remoteImages: urls, ask: ask,
-              runId: m.runId);
+          return ChatMessage(
+            'bot',
+            clean,
+            remoteImages: urls,
+            ask: ask,
+            runId: m.runId,
+            localRequestId: m.localRequestId,
+          );
         }).toList();
       } catch (_) {
         /* fall through to welcome */
@@ -283,15 +321,150 @@ class ChatController extends StateNotifier<ChatState> {
         }
       }
     }
+    final archivedIds = loaded.map((m) => m.localRequestId).whereType<String>().toSet();
+    for (final id in archivedIds) { await _voiceJournal.markSynced(id); }
+    final localTurns = await _restoreLocalVoiceTurns();
+    final localMessages = [
+      for (final turn in localTurns)
+        if (!historyLoaded || !turn.synced)
+          for (final message in turn.messages)
+            ChatMessage(
+              message.role == 'user' ? 'user' : 'bot',
+              message.content,
+              localRequestId: turn.id,
+            ),
+    ];
+    // A local voice callback can append while network history is loading. Keep
+    // anything added since this load began rather than replacing live state.
+    final liveMessages = state.messages;
+    final restoredMessages = [...loaded, ...localMessages];
+    final mergedMessages = _containsMessageSequence(restoredMessages, liveMessages)
+        ? restoredMessages
+        : [...restoredMessages, ...liveMessages];
     state = state.copyWith(
       loaded: true,
       work: restoredWork,
-      messages: loaded.isNotEmpty
-          ? loaded
+      messages: mergedMessages.isNotEmpty
+          ? mergedMessages
           : [if (welcome != null) ChatMessage('bot', welcome)],
     );
     await _showUnsent();
     unawaited(replayOutbox());
+  }
+
+  bool _containsMessageSequence(
+    List<ChatMessage> haystack,
+    List<ChatMessage> needle,
+  ) {
+    if (needle.isEmpty) return true;
+    for (var start = 0; start + needle.length <= haystack.length; start++) {
+      var matches = true;
+      for (var offset = 0; offset < needle.length; offset++) {
+        final left = haystack[start + offset];
+        final right = needle[offset];
+        if (left.role != right.role || left.text != right.text) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) return true;
+    }
+    return false;
+  }
+
+  Future<List<VoiceJournalTurn>> _restoreLocalVoiceTurns() async {
+    final turns = await _voiceJournal.load(sessionId: key.sid);
+    for (final turn in turns.where(
+      (turn) => !turn.completed && !_voiceJournal.isActive(turn.id),
+    )) {
+      await _voiceJournal.append(
+        turn.id,
+        'assistant',
+        'This phone voice conversation was interrupted before it finished.',
+      );
+      await _voiceJournal.finish(turn.id);
+    }
+    final restored = await _voiceJournal.load(sessionId: key.sid);
+    for (final turn in restored.where(
+      (turn) => turn.completed && !turn.synced,
+    )) {
+      unawaited(_syncLocalVoiceTurn(turn));
+    }
+    return restored;
+  }
+
+  /// Starts a durable, phone-only voice transcript and immediately shows the
+  /// user message in this conversation. It never calls /run.
+  Future<String> beginLocalVoiceTurn(
+    String text, {
+    String role = 'user',
+  }) async {
+    if (role != 'user' && role != 'assistant') {
+      throw ArgumentError.value(role, 'role', 'must be user or assistant');
+    }
+    final id = _requestId();
+    await _voiceJournal.begin(id, key.sid, text, role: role);
+    if (mounted) {
+      state = state.copyWith(
+        messages: [
+          ...state.messages,
+          ChatMessage(role == 'user' ? 'user' : 'bot', text, localRequestId: id),
+        ],
+      );
+    }
+    return id;
+  }
+
+  /// Appends one message after it is safely on disk. Voice uses `assistant`;
+  /// chat renders that server-compatible role as a normal bot bubble.
+  Future<void> appendLocalVoiceMessage(
+    String id,
+    String role,
+    String text,
+  ) async {
+    if (role != 'user' && role != 'assistant') {
+      throw ArgumentError.value(role, 'role', 'must be user or assistant');
+    }
+    await _voiceJournal.append(id, role, text);
+    if (mounted) {
+      state = state.copyWith(
+        messages: [
+          ...state.messages,
+          ChatMessage(role == 'user' ? 'user' : 'bot', text, localRequestId: id),
+        ],
+      );
+    }
+  }
+
+  /// Completes the local record before returning. Network archival runs in the
+  /// background so dialing, media, and other phone actions are never delayed.
+  Future<void> finishLocalVoiceTurn(String id) async {
+    await _voiceJournal.finish(id);
+    final turn = (await _voiceJournal.load(
+      sessionId: key.sid,
+    )).where((candidate) => candidate.id == id).firstOrNull;
+    if (turn != null) unawaited(_syncLocalVoiceTurn(turn));
+  }
+
+  Future<void> _syncLocalVoiceTurn(VoiceJournalTurn turn) async {
+    final api = _api;
+    if (api == null ||
+        turn.synced ||
+        !turn.completed ||
+        !_syncingVoice.add(turn.id)) {
+      return;
+    }
+    try {
+      await api.storeLocalChatTurn(turn.sessionId, turn.id, [
+        for (final message in turn.messages)
+          message.toJson().cast<String, String>(),
+      ]);
+      await _voiceJournal.markSynced(turn.id);
+    } catch (_) {
+      // The retained journal is the retry queue; replayOutbox/ensureLoaded retry.
+    } finally {
+      _syncingVoice.remove(turn.id);
+    }
   }
 
   /// Unsent messages from an earlier app session, shown as waiting bubbles.
@@ -300,16 +473,23 @@ class ChatController extends StateNotifier<ChatState> {
     final mine = pending.where(_isMine).toList();
     final lost = expired.where(_isMine).length;
     if (mine.isEmpty && lost == 0) return;
-    state = state.copyWith(messages: [
-      ...state.messages,
-      for (final e in mine)
-        ChatMessage('outbox', e.text.isEmpty ? '📷 Photo' : e.text,
-            localImage: e.imagePath),
-      if (lost > 0)
-        ChatMessage('system',
+    state = state.copyWith(
+      messages: [
+        ...state.messages,
+        for (final e in mine)
+          ChatMessage(
+            'outbox',
+            e.text.isEmpty ? '📷 Photo' : e.text,
+            localImage: e.imagePath,
+          ),
+        if (lost > 0)
+          ChatMessage(
+            'system',
             '$lost unsent message${lost == 1 ? '' : 's'} older than 48 hours '
-            'could not be delivered and were dropped.'),
-    ]);
+                'could not be delivered and were dropped.',
+          ),
+      ],
+    );
   }
 
   bool _isMine(OutboxEntry e) => e.command == key.command && e.sid == key.sid;
@@ -320,6 +500,9 @@ class ChatController extends StateNotifier<ChatState> {
     if (_replaying || state.sending || _api == null || !mounted) return;
     _replaying = true;
     try {
+      for (final turn in await _voiceJournal.load(sessionId: key.sid)) {
+        if (turn.completed && !turn.synced) await _syncLocalVoiceTurn(turn);
+      }
       final (:pending, expired: _) = await _outbox.load();
       for (final e in pending.where(_isMine)) {
         if (!mounted || state.sending) break;
@@ -340,19 +523,25 @@ class ChatController extends StateNotifier<ChatState> {
     await _drainQueue();
   }
 
-  Future<OutboxEntry?> _persist(String text, String? imagePath,
-      {required String requestId, String? continuationTaskId}) async {
+  Future<OutboxEntry?> _persist(
+    String text,
+    String? imagePath, {
+    required String requestId,
+    String? continuationTaskId,
+  }) async {
     try {
-      return await _outbox.add(OutboxEntry(
-        requestId: requestId,
-        command: key.command,
-        sid: key.sid,
-        text: text,
-        imagePath: imagePath,
-        project: state.workspace,
-        continuationTaskId: continuationTaskId,
-        createdAt: DateTime.now(),
-      ));
+      return await _outbox.add(
+        OutboxEntry(
+          requestId: requestId,
+          command: key.command,
+          sid: key.sid,
+          text: text,
+          imagePath: imagePath,
+          project: state.workspace,
+          continuationTaskId: continuationTaskId,
+          createdAt: DateTime.now(),
+        ),
+      );
     } on OutboxFull catch (e) {
       addSystemNote(e.toString());
       return null;
@@ -382,7 +571,11 @@ class ChatController extends StateNotifier<ChatState> {
 
   /// Send a message. If a turn is already running the message is QUEUED and
   /// shown as such, then sent automatically when the current turn finishes.
-  Future<void> send(String text, {String? imagePath, PhoneHandler? phone}) async {
+  Future<void> send(
+    String text, {
+    String? imagePath,
+    PhoneHandler? phone,
+  }) async {
     final t = text.trim();
     if (t.isEmpty && imagePath == null) return;
     final id = _requestId();
@@ -408,8 +601,11 @@ class ChatController extends StateNotifier<ChatState> {
         _active.remove(id);
         state = state.copyWith(
           queued: [...state.queued]..remove(queued),
-          messages: [...state.messages]..removeWhere(
-              (m) => m.role == 'queued' && m.text == (t.isEmpty ? '📷 Photo' : t)),
+          messages: [...state.messages]
+            ..removeWhere(
+              (m) =>
+                  m.role == 'queued' && m.text == (t.isEmpty ? '📷 Photo' : t),
+            ),
         );
         return;
       }
@@ -466,7 +662,9 @@ class ChatController extends StateNotifier<ChatState> {
           queued: const [],
           messages: [
             for (final m in state.messages)
-              m.role == 'queued' ? ChatMessage('outbox', m.text, localImage: m.localImage) : m,
+              m.role == 'queued'
+                  ? ChatMessage('outbox', m.text, localImage: m.localImage)
+                  : m,
           ],
         );
         break;
@@ -530,7 +728,8 @@ class ChatController extends StateNotifier<ChatState> {
     ];
     // Located on every use, not remembered: notes (e.g. "shared your
     // location") are inserted above it mid-turn and shift its position.
-    int liveIndex(List<ChatMessage> m) => m.lastIndexWhere((x) => x.role == 'status');
+    int liveIndex(List<ChatMessage> m) =>
+        m.lastIndexWhere((x) => x.role == 'status');
     state = state.copyWith(messages: seeded, sending: true);
 
     void setLive(String s) {
@@ -565,7 +764,9 @@ class ChatController extends StateNotifier<ChatState> {
       final m = [...state.messages];
       final liveIdx = liveIndex(m);
       if (liveIdx >= 0) m.removeAt(liveIdx);
-      final userIdx = m.lastIndexWhere((x) => x.role == 'user' && x.text == display);
+      final userIdx = m.lastIndexWhere(
+        (x) => x.role == 'user' && x.text == display,
+      );
       final waiting = ChatMessage('outbox', display, localImage: imagePath);
       if (userIdx >= 0 && userIdx < m.length && m[userIdx].role == 'user') {
         m[userIdx] = waiting;
@@ -760,10 +961,13 @@ class ChatController extends StateNotifier<ChatState> {
         // Never reached the Mac: keep it in the outbox and say so plainly.
         return keepForLater();
       }
-      if (!delivered) await markDelivered(); // the server answered; don't resend
+      if (!delivered)
+        await markDelivered(); // the server answered; don't resend
       if (!replaced) {
         if (!requestStarted) {
-          finish(ChatMessage('error', 'Image upload failed. ${friendlyError(e)}'));
+          finish(
+            ChatMessage('error', 'Image upload failed. ${friendlyError(e)}'),
+          );
           return true;
         }
         setLive('Connection interrupted · still working…');

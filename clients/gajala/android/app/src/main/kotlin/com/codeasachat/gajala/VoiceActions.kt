@@ -178,35 +178,40 @@ class VoiceActions(private val activity: Activity) {
         val targetPackage = packageName?.takeIf { it.isNotBlank() } ?: YOUTUBE_MUSIC
         val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
             putExtra(android.app.SearchManager.QUERY, text)
-            putExtra(MediaStore.EXTRA_MEDIA_FOCUS, MediaStore.Audio.Media.ENTRY_CONTENT_TYPE)
+            putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             setPackage(targetPackage)
-        }
-        val target = intent.resolveActivity(activity.packageManager)
-        if (target == null) {
-            result.success(mapOf("status" to "unsupported", "message" to "No installed music app supports playback search."))
-            return
         }
         val manager = mediaManager()
         val before = activeMedia(manager, targetPackage)
         val beforeToken = before?.sessionToken
         val beforeTitle = before?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
         val beforeArtist = before?.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
-        var sentDirect = false
-        before?.takeIf {
-            (it.playbackState?.actions ?: 0L) and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L
-        }?.transportControls?.let {
-            try { it.playFromSearch(text, null); sentDirect = true } catch (_: Throwable) { }
-        }
-        if (!sentDirect) {
-            try {
-                activity.startActivity(intent)
-            } catch (missing: android.content.ActivityNotFoundException) {
-                result.success(mapOf("status" to "unsupported", "message" to "Music app cannot start playback search."))
-                return
-            } catch (security: SecurityException) {
-                result.success(mapOf("status" to "unsupported", "message" to "Music app rejected playback search."))
+        try {
+            // Launch the handoff even when a readable media session is already
+            // active. A transport-only playFromSearch call can disappear into
+            // the background and gives the owner no visible query to act on.
+            activity.startActivity(intent)
+        } catch (_: android.content.ActivityNotFoundException) {
+            if (targetPackage == YOUTUBE_MUSIC && openYouTubeMusicSearch(text)) {
+                result.success(mapOf("status" to "searched", "package" to targetPackage,
+                    "query" to text,
+                    "message" to "Opened YouTube Music and searched for $text. Playback was not verified."))
                 return
             }
+            result.success(mapOf("status" to "unsupported", "package" to targetPackage,
+                "query" to text, "message" to "Music app cannot start playback search."))
+            return
+        } catch (_: SecurityException) {
+            if (targetPackage == YOUTUBE_MUSIC && openYouTubeMusicSearch(text)) {
+                result.success(mapOf("status" to "searched", "package" to targetPackage,
+                    "query" to text,
+                    "message" to "Opened YouTube Music and searched for $text. Playback was not verified."))
+                return
+            }
+            result.success(mapOf("status" to "unsupported", "package" to targetPackage,
+                "query" to text, "message" to "Music app rejected playback search."))
+            return
         }
         val access = musicAccess()
         if (access["sessionReadable"] != true) {
@@ -216,6 +221,20 @@ class VoiceActions(private val activity: Activity) {
             return
         }
         verifyPlaybackAsync(manager, targetPackage, text, beforeToken, beforeTitle, beforeArtist, result)
+    }
+
+    /** Try a package-targeted search fallback; installed app support varies.
+     * A successful dispatch is never evidence that audio began. */
+    private fun openYouTubeMusicSearch(query: String): Boolean = try {
+        activity.startActivity(Intent(Intent.ACTION_SEARCH).apply {
+            setPackage(YOUTUBE_MUSIC)
+            putExtra(android.app.SearchManager.QUERY, query)
+        })
+        true
+    } catch (_: android.content.ActivityNotFoundException) {
+        false
+    } catch (_: SecurityException) {
+        false
     }
 
     private fun verifyPlaybackAsync(manager: MediaSessionManager?, packageName: String,

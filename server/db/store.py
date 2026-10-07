@@ -8,6 +8,8 @@ its own scheme without collisions.
 Storage path: ~/.codeasachat/conversations.db
 """
 
+import hashlib
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -48,6 +50,21 @@ def _init() -> None:
         cols = {r[1] for r in c.execute("PRAGMA table_info(conversations)")}
         if "run_id" not in cols:
             c.execute("ALTER TABLE conversations ADD COLUMN run_id TEXT")
+        if "local_request_id" not in cols:
+            c.execute(
+                "ALTER TABLE conversations ADD COLUMN local_request_id TEXT")
+        # Receipts make client-reported (on-device) turns safe to retry. They
+        # deliberately live outside conversations: these turns did not run an
+        # agent and therefore have no synthetic run/trace record.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS local_turn_receipts (
+                request_id    TEXT PRIMARY KEY,
+                session_id    TEXT NOT NULL,
+                payload_hash  TEXT NOT NULL,
+                message_count INTEGER NOT NULL,
+                created_at    REAL NOT NULL
+            )
+        """)
         c.commit()
 
 
@@ -67,19 +84,67 @@ def append_turn(session_id: str, role: str, content: str,
         c.commit()
 
 
+class LocalTurnConflict(ValueError):
+    """A request id was reused for different local-turn content."""
+
+
+def append_local_turn(session_id: str, request_id: str,
+                      messages: list[dict[str, str]]) -> bool:
+    """Atomically append an on-device exchange once.
+
+    Returns True for the first insert and False for an identical retry. The
+    timestamp is assigned here, never accepted from the client.
+    """
+    canonical = json.dumps(
+        {"session_id": session_id, "messages": messages},
+        ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    )
+    payload_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _conn() as c:
+        c.execute("BEGIN IMMEDIATE")
+        existing = c.execute(
+            "SELECT session_id, payload_hash FROM local_turn_receipts "
+            "WHERE request_id = ?", (request_id,),
+        ).fetchone()
+        if existing:
+            if existing != (session_id, payload_hash):
+                raise LocalTurnConflict(
+                    "request_id was already used for a different local turn")
+            return False
+        for message in messages:
+            c.execute(
+                "INSERT INTO conversations "
+                "(session_id, role, content, ts, run_id, local_request_id) "
+                "VALUES (?, ?, ?, ?, NULL, ?)",
+                (session_id, message["role"], message["content"], now,
+                 request_id),
+            )
+        c.execute(
+            "INSERT INTO local_turn_receipts "
+            "(request_id, session_id, payload_hash, message_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (request_id, session_id, payload_hash, len(messages), now),
+        )
+        c.commit()
+    return True
+
+
 def get_recent(session_id: str, n: int = 5) -> list[dict]:
     """Return up to `n` *turn pairs* (so up to 2n rows), chronological order."""
     if not session_id or n <= 0:
         return []
     with _conn() as c:
         rows = c.execute(
-            "SELECT role, content, ts, run_id FROM conversations "
+            "SELECT role, content, ts, run_id, local_request_id "
+            "FROM conversations "
             "WHERE session_id = ? "
             "ORDER BY ts DESC LIMIT ?",
             (session_id, n * 2),
         ).fetchall()
     return [
-        {"role": r[0], "content": r[1], "ts": r[2], "run_id": r[3]}
+        {"role": r[0], "content": r[1], "ts": r[2], "run_id": r[3],
+         "local_request_id": r[4]}
         for r in reversed(rows)
     ]
 

@@ -1,3 +1,4 @@
+import 'package:gajala/core/voice_journal.dart';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -120,7 +121,7 @@ void main() {
     test('offline send is kept, then delivered once with the same request id',
         () async {
       final api = FlakyApi();
-      final chat = ChatController(api, _key, outbox: outbox);
+      final chat = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
       await chat.send('deploy status');
 
       expect(chat.state.messages.last.role, 'outbox');
@@ -140,7 +141,7 @@ void main() {
 
     test('a server error is not kept for resending', () async {
       final api = FlakyApi()..rejectWith500 = true;
-      final chat = ChatController(api, _key, outbox: outbox);
+      final chat = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
       // An HTTP error means the Mac saw the request; the existing recovery
       // then polls history for a reply, which this test does not wait out.
       chat.send('hello');
@@ -151,10 +152,10 @@ void main() {
 
     test('unsent messages survive an app restart and send on reopen', () async {
       final api = FlakyApi();
-      await ChatController(api, _key, outbox: outbox).send('remember me');
+      await ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir)).send('remember me');
 
       api.online = true;
-      final reopened = ChatController(api, _key, outbox: outbox);
+      final reopened = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
       await reopened.ensureLoaded();
       // ensureLoaded kicks off the replay without awaiting it.
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -165,7 +166,7 @@ void main() {
 
     test('messages behind an undeliverable one stay waiting in order', () async {
       final api = FlakyApi();
-      final chat = ChatController(api, _key, outbox: outbox);
+      final chat = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
       await chat.send('first');
       await chat.send('second');
       expect(chat.state.messages.map((m) => m.role), ['outbox', 'outbox']);

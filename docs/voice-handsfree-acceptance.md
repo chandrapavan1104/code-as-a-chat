@@ -10,7 +10,7 @@ After installing the October 6 build:
    voice. Gender is shown only if Android reports it. Install en-IN voice data
    through Android TTS settings if none appears.
 2. Say “call PSS”. Grant Contacts/Phone permissions if asked. Check that the
-   correct contact and number are spoken. Say “no”; no call should start.
+   correct contact name is spoken (without reciting the full number). Say “no”; no call should start.
 3. Repeat with a consenting test contact and say “yes”. Android should place
    the call without a dial-button tap. A newly granted call permission must
    trigger another spoken confirmation. Ambiguous contacts need a spoken choice.
@@ -20,7 +20,11 @@ After installing the October 6 build:
    request, not a browser search. Enable optional playback verification in voice
    settings and check the actual track/album in YouTube Music. If the app or
    account cannot play, Gajala must say it could not verify playback.
-6. Ask an ordinary question, then ask another after the answer without tapping
+6. After a call/music request, open the project chat. Verify the command,
+   confirmation, your spoken answer, and result are present. Restart the app
+   offline and confirm logs remain. Reconnect and confirm logs sync once without
+   placing another call or issuing another playback command.
+7. Ask an ordinary question, then ask another after the answer without tapping
    the microphone. Try flashlight/volume controls in the same conversation.
    Say “stop” to close voice mode.
 

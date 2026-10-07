@@ -415,6 +415,7 @@ class ChatMessage {
   // What the agent did to produce this reply. Kept on the message so the trace
   // survives the live bubble being replaced — it used to be discarded there.
   final String? runId;
+  final String? localRequestId;
   final List<RunStep> steps;
   final String? project; // where the turn ran
   final String? stopLabel; // why it stopped
@@ -428,6 +429,7 @@ class ChatMessage {
     List<String>? remoteImages,
     this.moveTo,
     this.runId,
+    this.localRequestId,
     List<RunStep>? steps,
     this.project,
     this.stopLabel,

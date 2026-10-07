@@ -15,6 +15,7 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
+from typing import Literal
 import psutil
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -44,6 +45,28 @@ _CODAUR_STALE_FALLBACK_SECONDS = 120
 
 
 # ── chat history (so the app's chat persists, synced with Gajala's memory) ─────
+
+class LocalChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=40_000)
+
+
+class LocalChatTurn(BaseModel):
+    session_id: str = Field(min_length=1, max_length=512)
+    request_id: str = Field(min_length=1, max_length=128)
+    messages: list[LocalChatMessage] = Field(min_length=1, max_length=32)
+
+
+@router.post("/chat/local-turn")
+def append_local_chat_turn(body: LocalChatTurn):
+    """Persist a client-handled exchange without invoking an agent or tools."""
+    messages = [message.model_dump() for message in body.messages]
+    try:
+        stored = memory.append_local_turn(
+            body.session_id, body.request_id, messages)
+    except memory.LocalTurnConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"stored": stored, "message_count": len(messages)}
 
 @router.get("/chat")
 def chat_history(session_id: str, limit: int = 50):
