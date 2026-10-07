@@ -20,6 +20,7 @@ Notes:
 import asyncio
 import os
 import shutil
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -79,22 +80,30 @@ async def _sleep() -> str:
     return "Mac going to sleep." if rc == 0 else f"[mac] sleep failed: {err or out}"
 
 
+# How long a remote wake keeps the display on. The lock screen switches the
+# display off ~10 s after a wake that no keyboard has touched yet, and the old
+# 1-second assertion let that happen mid-password (pmset log, 2026-10-06/07:
+# woken 13:28:01, keys from Universal Control 13:28:09, display off 13:28:12).
+WAKE_HOLD_SECONDS = 60
+
+
 async def _wake() -> str:
-    # Assert user activity for a moment, which wakes the (display-)slept Mac.
-    # This is the closest thing to a remote "unlock": it returns you to the
-    # desktop when no password is required after sleep (or you're within the
-    # grace window). macOS blocks typing a password into a *truly* locked screen
-    # for security, so a password-locked screen still needs Touch ID / the
-    # keyboard at the Mac itself.
-    rc, out, err = await _run(["caffeinate", "-u", "-t", "1"])
-    if rc == 0:
-        return ("Mac display woken 🌅\n"
-                "Unlocked if no password is required after sleep (or within the "
-                "grace window). A password-locked screen still needs Touch ID / "
-                "password at the Mac. Tip: System Settings → Lock Screen → "
-                "'Require password after sleep begins: 5 minutes' makes a quick "
-                "wake a real unlock.")
-    return f"[mac] wake failed: {err or out}"
+    # Declare the user active (wakes the display) and keep the display from
+    # idling for WAKE_HOLD_SECONDS, so there is time to reach a keyboard and type
+    # the password. Detached: the phone gets its answer now, not in a minute.
+    # macOS still requires the password / Touch ID itself on a locked screen.
+    try:
+        subprocess.Popen(
+            ["caffeinate", "-d", "-u", "-t", str(WAKE_HOLD_SECONDS)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as exc:
+        return f"[mac] wake failed: {exc}"
+    return (f"Mac display woken 🌅 and kept on for {WAKE_HOLD_SECONDS} s so you "
+            "can type the password.\n"
+            "Unlocked if no password is required after sleep (or within the "
+            "grace window); otherwise the Mac still asks for its password / "
+            "Touch ID.")
 
 
 async def _say(text: str) -> str:
