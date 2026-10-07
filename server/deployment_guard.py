@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 from server.db import deployment_store, night_queue_store
@@ -52,14 +53,22 @@ def _restart(runtime_path: str) -> tuple[bool, str]:
     return loaded.returncode == 0, (result.stderr or loaded.stderr).strip()
 
 
-def _request(url: str, token: str | None = None) -> bool:
+def _probe(url: str, token: str | None = None) -> str:
+    """'ok', or why not ('HTTP 502', 'timeout', 'refused', ...)."""
     headers = {"X-API-Token": token} if token else {}
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
                                     timeout=5) as response:
-            return response.status == 200
-    except Exception:
-        return False
+            return "ok" if response.status == 200 else f"HTTP {response.status}"
+    except urllib.error.HTTPError as exc:
+        return f"HTTP {exc.code}"
+    except Exception as exc:  # timeout, connection refused, DNS, TLS
+        reason = getattr(exc, "reason", exc)
+        return f"{type(reason).__name__}: {reason}"[:120]
+
+
+def _request(url: str, token: str | None = None) -> bool:
+    return _probe(url, token) == "ok"
 
 
 def _tailscale_health_url() -> str | None:
@@ -80,15 +89,22 @@ def _healthy(repo: str, tries: int = 10) -> tuple[bool, str]:
     token_path = os.path.expanduser("~/.codeasachat/api_token")
     token = open(token_path).read().strip() if os.path.exists(token_path) else ""
     public = _tailscale_health_url()
+    failing: dict[str, str] = {}
     for _ in range(tries):
-        local = _request("http://127.0.0.1:8000/health")
-        system = _request("http://127.0.0.1:8000/api/system", token)
-        skills = _request("http://127.0.0.1:8000/api/skills", token)
-        tailnet = True if not public else _request(public)
-        if local and system and skills and tailnet:
+        checks = {
+            "localhost": _probe("http://127.0.0.1:8000/health"),
+            "/api/system": _probe("http://127.0.0.1:8000/api/system", token),
+            "/api/skills": _probe("http://127.0.0.1:8000/api/skills", token),
+            "tailscale": _probe(public) if public else "ok",
+        }
+        failing = {name: why for name, why in checks.items() if why != "ok"}
+        if not failing:
             return True, "localhost, authenticated APIs, and Tailscale are healthy"
         time.sleep(2)
-    return False, "health verification failed (localhost/API/Tailscale)"
+    # Say which check failed and how: "health verification failed" alone made
+    # two rollbacks (#48, #56) impossible to diagnose.
+    detail = "; ".join(f"{name}: {why}" for name, why in failing.items())
+    return False, f"health verification failed (localhost/API/Tailscale) — {detail}"
 
 
 def _notify(title: str, body: str, ref_id: int | None) -> None:
