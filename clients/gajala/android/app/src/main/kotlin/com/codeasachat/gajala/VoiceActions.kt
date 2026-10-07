@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.NotificationManager
 import android.os.Build
+import android.os.Bundle
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -176,9 +177,10 @@ class VoiceActions(private val activity: Activity) {
             return
         }
         val targetPackage = packageName?.takeIf { it.isNotBlank() } ?: YOUTUBE_MUSIC
+        val extras = searchExtras(text)
         val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
             putExtra(android.app.SearchManager.QUERY, text)
-            putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+            putExtras(extras)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             setPackage(targetPackage)
         }
@@ -217,10 +219,11 @@ class VoiceActions(private val activity: Activity) {
         if (access["sessionReadable"] != true) {
             result.success(mapOf("status" to "requested", "package" to targetPackage, "query" to text,
                 "access" to access,
-                "message" to "Playback requested but unverified. ${access["message"]}"))
+                "message" to "Opened the search, but Gajala cannot start playback without notification " +
+                    "access (it plays through the app's media session). ${access["message"]}"))
             return
         }
-        verifyPlaybackAsync(manager, targetPackage, text, beforeToken, beforeTitle, beforeArtist, result)
+        verifyPlaybackAsync(manager, targetPackage, text, extras, beforeToken, beforeTitle, beforeArtist, result)
     }
 
     /** Try a package-targeted search fallback; installed app support varies.
@@ -237,8 +240,27 @@ class VoiceActions(private val activity: Activity) {
         false
     }
 
+    /**
+     * Play-from-search extras. "X by Y" becomes a song request (title + artist),
+     * anything else stays an unstructured query, as Android's media guidance
+     * defines them.
+     */
+    private fun searchExtras(query: String): Bundle {
+        val extras = Bundle()
+        val songBy = Regex("^(.+?)\\s+by\\s+(.+)$", RegexOption.IGNORE_CASE).find(query.trim())
+        if (songBy != null) {
+            extras.putString(MediaStore.EXTRA_MEDIA_FOCUS, MediaStore.Audio.Media.ENTRY_CONTENT_TYPE)
+            extras.putString(MediaStore.EXTRA_MEDIA_TITLE, songBy.groupValues[1].trim())
+            extras.putString(MediaStore.EXTRA_MEDIA_ARTIST, songBy.groupValues[2].trim())
+        } else {
+            extras.putString(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+        }
+        return extras
+    }
+
     private fun verifyPlaybackAsync(manager: MediaSessionManager?, packageName: String,
-                                    query: String, beforeToken: android.media.session.MediaSession.Token?,
+                                    query: String, extras: Bundle,
+                                    beforeToken: android.media.session.MediaSession.Token?,
                                     beforeTitle: String, beforeArtist: String,
                                     result: MethodChannel.Result) {
         if (manager == null) {
@@ -249,6 +271,7 @@ class VoiceActions(private val activity: Activity) {
         val handler = Handler(Looper.getMainLooper())
         verifyHandler = handler
         val started = System.currentTimeMillis()
+        var nudged = false
         val check = object : Runnable {
             override fun run() {
                 if (disposed) return
@@ -269,6 +292,17 @@ class VoiceActions(private val activity: Activity) {
                     verifyRunnable = null
                     result.success(mapOf("status" to "playing", "package" to packageName,
                         "title" to title, "artist" to artist, "message" to "Playback verified."))
+                } else if (current != null && !nudged &&
+                    System.currentTimeMillis() - started >= NUDGE_AFTER_MS) {
+                    // The launch intent only opens YouTube Music's search
+                    // results. Assistant plays through the app's media
+                    // session (onPlayFromSearch), which must start playback
+                    // immediately, so ask the session directly.
+                    nudged = true
+                    try {
+                        current.transportControls.playFromSearch(query, extras)
+                    } catch (_: Exception) { /* verification below reports it */ }
+                    handler.postDelayed(this, VERIFY_INTERVAL_MS)
                 } else if (System.currentTimeMillis() - started >= VERIFY_MS) {
                     verifyRunnable = null
                     result.success(mapOf("status" to "unverified", "package" to packageName,
@@ -356,7 +390,8 @@ class VoiceActions(private val activity: Activity) {
         const val CALL_PERMISSION = 7312
         const val MAX_CONTACTS = 8
         const val YOUTUBE_MUSIC = "com.google.android.apps.youtube.music"
-        private const val VERIFY_MS = 5000L
+        private const val VERIFY_MS = 9000L          // room for the session nudge to start audio
+        private const val NUDGE_AFTER_MS = 1500L     // let the launched app create its session
         private const val VERIFY_INTERVAL_MS = 250L
         private val GENERIC_MUSIC_WORDS = setOf("play", "music", "song", "songs", "track", "tracks", "listen", "hindi", "please")
         private val EMERGENCY_NUMBERS = setOf("911", "112", "999", "100", "101", "102", "108")
