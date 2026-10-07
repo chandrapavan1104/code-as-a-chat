@@ -384,6 +384,14 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-07 — **YouTube Music actually plays.** The MEDIA_PLAY_FROM_SEARCH
+  intent only opened YouTube Music's search results. Android's media guidance
+  delivers play-from-search through the app's MediaSession
+  (`onPlayFromSearch`, which must start playback immediately), so after the
+  visible launch `VoiceActions.playMusic` now calls
+  `transportControls.playFromSearch` on YouTube Music's session (needs the
+  existing notification access) and keeps verifying the matching track.
+  "X by Y" is sent as a structured song request (title + artist).
 - 2026-10-07 — **Remote wake keeps the display on for 60 s.** The Mac had to
   be unlocked twice: Wake asserted user activity for 1 s, then the lock screen
   turned the display off ~10 s later, mid-password (pmset log: woken 13:28:01,
