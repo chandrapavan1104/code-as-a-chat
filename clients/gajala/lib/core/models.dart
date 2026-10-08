@@ -440,6 +440,7 @@ class ChatMessage {
 
 class AssistantWork {
   final String id, status, summary, nextAction, blocker;
+  final String command;
   final int revision;
   const AssistantWork({
     required this.id,
@@ -448,6 +449,7 @@ class AssistantWork {
     required this.nextAction,
     required this.blocker,
     required this.revision,
+    this.command = '',
   });
 
   bool get isActive => const {
@@ -466,6 +468,7 @@ class AssistantWork {
 
   factory AssistantWork.fromJson(Map<String, dynamic> j) => AssistantWork(
     id: j['id']?.toString() ?? '',
+    command: j['command']?.toString() ?? '',
     status: j['status']?.toString() ?? 'accepted',
     summary: j['summary']?.toString() ?? '',
     nextAction: j['next_action']?.toString() ?? '',

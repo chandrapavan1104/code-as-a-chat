@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,7 +17,7 @@ import 'diff_screen.dart';
 import 'voice_sheet.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
-  final String command;   // 'shell' = Gajala agent; else a specific skill
+  final String command; // 'shell' = Gajala agent; else a specific skill
   final String title;
   const ChatScreen({super.key, this.command = 'shell', this.title = 'Gajala'});
   @override
@@ -28,19 +29,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   final _input = TextEditingController();
   final _inputFocus = FocusNode();
   final _scroll = ScrollController();
-  String? _installId;         // stable per-install id
-  String? _sid;               // per-directory conversation id (installId::dir)
-  XFile? _pending;   // image picked but not yet sent
-  String? _dir;               // active project name (for the header)
-  String _model = 'auto';     // pinned coding engine
-  String? _lastUserText;      // last thing the user typed (to resend on "move")
-  int _lastMsgCount = 0;      // to auto-scroll only when something new lands
+  String? _installId; // stable per-install id
+  String? _sid; // per-directory conversation id (installId::dir)
+  XFile? _pending; // image picked but not yet sent
+  String? _dir; // active project name (for the header)
+  String _model = 'auto'; // pinned coding engine
+  String? _lastUserText; // last thing the user typed (to resend on "move")
+  int _lastMsgCount = 0; // to auto-scroll only when something new lands
   // Re-entrancy guard: following a workspace signal swaps which controller the
   // screen watches, which rebuilds — this stops that rebuild starting another
   // follow before the first has finished.
   bool _followingWorkspace = false;
+  Timer? _researchPoll;
+  bool _foreground = true;
   bool _dictating = false;
-  bool _dictated = false;     // this draft came from the mic → speak the reply
+  bool _dictated = false; // this draft came from the mic → speak the reply
 
   /// The conversation this screen is showing. State lives in the controller so
   /// it survives navigating away (a running turn keeps running and stays visible).
@@ -57,6 +60,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _bootstrap();
+    _researchPoll = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_foreground && mounted) _chat?.refreshBackgroundResearch();
+    });
   }
 
   /// Resolve the install id + active directory/model, then open THAT
@@ -65,10 +71,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _bootstrap() async {
     _installId = await ref.read(sessionIdProvider.future);
     if (widget.command != 'shell') {
-      setState(() => _sid = _sidFor(null));    // per-engine thread (persisted)
+      setState(() => _sid = _sidFor(null)); // per-engine thread (persisted)
       Push.activeSession = _sid;
       await _chat?.ensureLoaded(welcome: _welcome);
       _restoreDraft();
+      unawaited(_chat?.refreshBackgroundResearch());
       return;
     }
     final api = ref.read(apiProvider);
@@ -79,7 +86,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         final results = await Future.wait([api.projects(), api.model()]);
         dir = results[0]['current_name']?.toString();
         model = results[1]['engine']?.toString() ?? 'auto';
-      } catch (_) {/* header stays blank */}
+      } catch (_) {
+        /* header stays blank */
+      }
     }
     if (!mounted) return;
     setState(() {
@@ -90,6 +99,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     Push.activeSession = _sid;
     await _chat?.ensureLoaded(welcome: _welcome);
     _restoreDraft();
+    unawaited(_chat?.refreshBackgroundResearch());
   }
 
   /// Put back the half-typed message you left in this conversation.
@@ -139,7 +149,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     try {
       final proj = await api.projects();
       await _syncWorkspace(proj['current_name']?.toString(), reload: true);
-    } catch (_) {/* keep showing the current thread */}
+    } catch (_) {
+      /* keep showing the current thread */
+    }
   }
 
   /// Swap the visible conversation to another directory's thread.
@@ -161,7 +173,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final api = ref.read(apiProvider);
     if (api != null) {
       try {
-        await api.switchProject(dir);   // keep server workspace in lock-step
+        await api.switchProject(dir); // keep server workspace in lock-step
       } catch (_) {}
     }
     await _switchConversation(dir);
@@ -173,6 +185,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   @override
   void dispose() {
+    _researchPoll?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     if (Push.activeSession == _sid) Push.activeSession = null;
     _inputFocus.dispose();
@@ -182,9 +195,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Only "viewing" this chat while it's on top AND the app is foregrounded.
+    _foreground = state == AppLifecycleState.resumed;
     if (state == AppLifecycleState.resumed) {
+      _chat?.refreshBackgroundResearch();
       Push.activeSession = _sid;
-      _refreshWorkspace();   // catch a project switch made while we were away
+      _refreshWorkspace(); // catch a project switch made while we were away
       _chat?.replayOutbox(); // the connection may be back
     } else if (Push.activeSession == _sid) {
       Push.activeSession = null;
@@ -196,12 +211,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _pickImage() async {
     try {
       final x = await ImagePicker().pickImage(
-          source: ImageSource.gallery, maxWidth: 2000, imageQuality: 85);
+        source: ImageSource.gallery,
+        maxWidth: 2000,
+        imageQuality: 85,
+      );
       if (x != null) setState(() => _pending = x);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not pick image: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not pick image: $e')));
       }
     }
   }
@@ -260,9 +279,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final prefix = _input.text.trim().isEmpty ? '' : '${_input.text.trim()} ';
     setState(() => _dictating = true);
     try {
-      final heard = await Voice.instance.listen(onPartial: (p) {
-        if (mounted) _input.text = '$prefix$p';
-      });
+      final heard = await Voice.instance.listen(
+        onPartial: (p) {
+          if (mounted) _input.text = '$prefix$p';
+        },
+      );
       if (!mounted) return;
       _input.text = '$prefix$heard'.trim();
       _input.selection = TextSelection.collapsed(offset: _input.text.length);
@@ -270,7 +291,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       if (heard.isNotEmpty) _dictated = true;
     } on VoiceUnavailable catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.message)));
       }
     } finally {
       if (mounted) setState(() => _dictating = false);
@@ -286,8 +309,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       if (!_scroll.hasClients) return;
       final target = _scroll.position.maxScrollExtent;
       if (animate) {
-        _scroll.animateTo(target,
-            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+        _scroll.animateTo(
+          target,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
       } else {
         _scroll.jumpTo(target);
       }
@@ -301,7 +327,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
   }
 
-  static String _modelLabel(String e) => e == 'auto' ? 'auto' : e[0].toUpperCase() + e.substring(1);
+  static String _modelLabel(String e) =>
+      e == 'auto' ? 'auto' : e[0].toUpperCase() + e.substring(1);
 
   Widget _buildTitle(BuildContext context) {
     // Skill-specific chats keep a plain title; the Gajala agent chat shows the
@@ -313,15 +340,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(mainAxisSize: MainAxisSize.min, children: [
-            Text(widget.title),
-            const SizedBox(width: 3),
-            const Icon(Icons.expand_more, size: 18),
-          ]),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(widget.title),
+              const SizedBox(width: 3),
+              const Icon(Icons.expand_more, size: 18),
+            ],
+          ),
           Text(
-            _dir == null ? 'tap to set context' : '$_dir · ${_modelLabel(_model)}',
+            _dir == null
+                ? 'tap to set context'
+                : '$_dir · ${_modelLabel(_model)}',
             style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w400, color: context.pal.textDim),
+              fontSize: 11,
+              fontWeight: FontWeight.w400,
+              color: context.pal.textDim,
+            ),
           ),
         ],
       ),
@@ -336,7 +371,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       isScrollControlled: true,
       backgroundColor: context.pal.surface,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
       builder: (_) => _ContextSheet(
         api: api,
         currentDir: _dir,
@@ -367,10 +403,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final msgs = chat.messages;
     final sending = chat.sending;
     final lastBot = msgs.lastIndexWhere((m) => m.role == 'bot');
-    final answered = lastBot >= 0 &&
-        msgs.skip(lastBot + 1).any((m) => const {'user', 'queued', 'outbox'}.contains(m.role));
-    final openQuestion =
-        lastBot >= 0 && msgs[lastBot].ask != null && !answered ? lastBot : -1;
+    final answered =
+        lastBot >= 0 &&
+        msgs
+            .skip(lastBot + 1)
+            .any((m) => const {'user', 'queued', 'outbox'}.contains(m.role));
+    final openQuestion = lastBot >= 0 && msgs[lastBot].ask != null && !answered
+        ? lastBot
+        : -1;
 
     // Auto-scroll only when something new arrives (not on every rebuild).
     if (msgs.length != _lastMsgCount) {
@@ -410,101 +450,170 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             ),
         ],
       ),
-      body: Column(children: [
-        Expanded(
-          child: ListView.builder(
-            controller: _scroll,
-            padding: const EdgeInsets.all(12),
-            itemCount: msgs.length,
-            itemBuilder: (_, i) => _Bubble(msgs[i], imgHeaders,
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              controller: _scroll,
+              padding: const EdgeInsets.all(12),
+              itemCount: msgs.length,
+              itemBuilder: (_, i) => _Bubble(
+                msgs[i],
+                imgHeaders,
                 api: ref.read(apiProvider),
                 onMove: sending ? null : _moveAndAsk,
                 // Only the newest unanswered question can be answered.
                 onAnswer: i == openQuestion && !sending ? _answer : null,
                 onOther: i == openQuestion && !sending
                     ? () => _inputFocus.requestFocus()
-                    : null),
+                    : null,
+              ),
+            ),
           ),
-        ),
-        if (widget.command == 'shell' && chat.work != null)
-          _WorkCard(chat.work!, onStop: chat.work!.isActive && sending
-              ? () => _chat?.stopWork() : null),
-        Container(
-          decoration: BoxDecoration(
-            color: context.pal.bg,
-            border: Border(top: BorderSide(color: context.pal.border)),
-          ),
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            if (_pending != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 8, left: 4),
-                  child: Stack(clipBehavior: Clip.none, children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Image.file(File(_pending!.path),
-                          width: 64, height: 64, fit: BoxFit.cover),
+          if (chat.backgroundResearch.isNotEmpty)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 160),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    for (final job in chat.backgroundResearch)
+                      _WorkCard(
+                        job,
+                        onStop: () async {
+                          try {
+                            await _chat?.cancelBackgroundResearch(job.id);
+                          } catch (_) {
+                            if (mounted)
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Could not stop research. Try again when connected.',
+                                  ),
+                                ),
+                              );
+                          }
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          if (widget.command == 'shell' && chat.work != null)
+            _WorkCard(
+              chat.work!,
+              onStop: chat.work!.isActive && sending
+                  ? () => _chat?.stopWork()
+                  : null,
+            ),
+          Container(
+            decoration: BoxDecoration(
+              color: context.pal.bg,
+              border: Border(top: BorderSide(color: context.pal.border)),
+            ),
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_pending != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 8, left: 4),
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.file(
+                              File(_pending!.path),
+                              width: 64,
+                              height: 64,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          Positioned(
+                            top: -8,
+                            right: -8,
+                            child: GestureDetector(
+                              onTap: () => setState(() => _pending = null),
+                              child: CircleAvatar(
+                                radius: 11,
+                                backgroundColor: context.pal.surfaceAlt,
+                                child: Icon(
+                                  Icons.close,
+                                  size: 14,
+                                  color: context.pal.text,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    Positioned(
-                      top: -8, right: -8,
-                      child: GestureDetector(
-                        onTap: () => setState(() => _pending = null),
-                        child: CircleAvatar(
-                          radius: 11, backgroundColor: context.pal.surfaceAlt,
-                          child: Icon(Icons.close, size: 14, color: context.pal.text),
+                  ),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        Icons.add_photo_alternate_outlined,
+                        color: context.pal.textDim,
+                      ),
+                      onPressed: sending ? null : _pickImage,
+                      tooltip: 'Attach image',
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _dictating
+                            ? Icons.stop_circle_outlined
+                            : Icons.mic_none,
+                        color: _dictating
+                            ? GajalaColors.danger
+                            : context.pal.textDim,
+                      ),
+                      onPressed: _dictate,
+                      tooltip: _dictating ? 'Stop dictation' : 'Dictate',
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _input,
+                        focusNode: _inputFocus,
+                        minLines: 1,
+                        maxLines: 6,
+                        // Enter inserts a newline; the button sends (mobile standard).
+                        keyboardType: TextInputType.multiline,
+                        textInputAction: TextInputAction.newline,
+                        onChanged: (v) => _chat?.setDraft(v),
+                        decoration: InputDecoration(
+                          hintText: _dictating
+                              ? 'Listening…'
+                              : sending
+                              ? 'Send again to queue…'
+                              : 'Message or /command…',
                         ),
                       ),
                     ),
-                  ]),
+                    const SizedBox(width: 8),
+                    // Stays enabled while a turn runs — a second message queues.
+                    CircleAvatar(
+                      backgroundColor: GajalaColors.accent,
+                      child: IconButton(
+                        icon: Icon(
+                          sending ? Icons.playlist_add : Icons.send,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                        onPressed: _send,
+                        tooltip: sending ? 'Queue message' : 'Send',
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              IconButton(
-                icon: Icon(Icons.add_photo_alternate_outlined, color: context.pal.textDim),
-                onPressed: sending ? null : _pickImage,
-                tooltip: 'Attach image',
-              ),
-              IconButton(
-                icon: Icon(_dictating ? Icons.stop_circle_outlined : Icons.mic_none,
-                    color: _dictating ? GajalaColors.danger : context.pal.textDim),
-                onPressed: _dictate,
-                tooltip: _dictating ? 'Stop dictation' : 'Dictate',
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _input,
-                  focusNode: _inputFocus,
-                  minLines: 1, maxLines: 6,
-                  // Enter inserts a newline; the button sends (mobile standard).
-                  keyboardType: TextInputType.multiline,
-                  textInputAction: TextInputAction.newline,
-                  onChanged: (v) => _chat?.setDraft(v),
-                  decoration: InputDecoration(
-                    hintText: _dictating
-                        ? 'Listening…'
-                        : sending
-                        ? 'Send again to queue…'
-                        : 'Message or /command…',
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Stays enabled while a turn runs — a second message queues.
-              CircleAvatar(
-                backgroundColor: GajalaColors.accent,
-                child: IconButton(
-                  icon: Icon(sending ? Icons.playlist_add : Icons.send,
-                      color: Colors.white, size: 20),
-                  onPressed: _send,
-                  tooltip: sending ? 'Queue message' : 'Send',
-                ),
-              ),
-            ]),
-          ]),
-        ),
-      ]),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -517,7 +626,8 @@ class _WorkCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final failed = work.status == 'failed' || work.status == 'recovering';
-    final detail = work.blocker.isNotEmpty ? work.blocker
+    final detail = work.blocker.isNotEmpty
+        ? work.blocker
         : (work.nextAction.isNotEmpty ? work.nextAction : work.summary);
     final color = failed ? GajalaColors.danger : GajalaColors.accent;
     return Container(
@@ -529,21 +639,44 @@ class _WorkCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color.withValues(alpha: .35)),
       ),
-      child: Row(children: [
-        Icon(work.status == 'completed' ? Icons.check_circle_outline
-            : failed ? Icons.error_outline : Icons.pending_outlined,
-            size: 18, color: color),
-        const SizedBox(width: 9),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(work.status.replaceAll('_', ' ').toUpperCase(),
-              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700,
-                  color: color)),
-          if (detail.isNotEmpty)
-            Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: context.pal.textDim)),
-        ])),
-        if (onStop != null) TextButton(onPressed: onStop, child: const Text('Stop')),
-      ]),
+      child: Row(
+        children: [
+          Icon(
+            work.status == 'completed'
+                ? Icons.check_circle_outline
+                : failed
+                ? Icons.error_outline
+                : Icons.pending_outlined,
+            size: 18,
+            color: color,
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${work.command == 'research' ? 'RESEARCH · ' : ''}${work.status.replaceAll('_', ' ').toUpperCase()}',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    color: color,
+                  ),
+                ),
+                if (detail.isNotEmpty)
+                  Text(
+                    detail,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: context.pal.textDim),
+                  ),
+              ],
+            ),
+          ),
+          if (onStop != null)
+            TextButton(onPressed: onStop, child: const Text('Stop')),
+        ],
+      ),
     );
   }
 }
@@ -551,12 +684,18 @@ class _WorkCard extends StatelessWidget {
 class _Bubble extends StatelessWidget {
   final ChatMessage m;
   final GajalaApi? api;
-  final Map<String, String>? imgHeaders;   // auth headers for /api/file images
-  final void Function(String dir)? onMove;  // confirm-to-move action
+  final Map<String, String>? imgHeaders; // auth headers for /api/file images
+  final void Function(String dir)? onMove; // confirm-to-move action
   final void Function(String answer)? onAnswer; // tap a question-card choice
   final VoidCallback? onOther;
-  const _Bubble(this.m, this.imgHeaders,
-      {this.onMove, this.api, this.onAnswer, this.onOther});
+  const _Bubble(
+    this.m,
+    this.imgHeaders, {
+    this.onMove,
+    this.api,
+    this.onAnswer,
+    this.onOther,
+  });
   @override
   Widget build(BuildContext context) {
     if (m.role == 'status') {
@@ -580,19 +719,42 @@ class _Bubble extends StatelessWidget {
           decoration: BoxDecoration(
             color: GajalaColors.userBubble.withValues(alpha: .35),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: context.pal.textDim.withValues(alpha: .4)),
+            border: Border.all(
+              color: context.pal.textDim.withValues(alpha: .4),
+            ),
           ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text(m.text, style: TextStyle(color: context.pal.text.withValues(alpha: .75))),
-            const SizedBox(height: 3),
-            Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(offline ? Icons.cloud_off : Icons.schedule,
-                  size: 11, color: context.pal.textDim),
-              const SizedBox(width: 4),
-              Text(offline ? 'waiting for connection · sends automatically' : 'queued',
-                  style: TextStyle(fontSize: 10.5, color: context.pal.textDim)),
-            ]),
-          ]),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                m.text,
+                style: TextStyle(
+                  color: context.pal.text.withValues(alpha: .75),
+                ),
+              ),
+              const SizedBox(height: 3),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    offline ? Icons.cloud_off : Icons.schedule,
+                    size: 11,
+                    color: context.pal.textDim,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    offline
+                        ? 'waiting for connection · sends automatically'
+                        : 'queued',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: context.pal.textDim,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -606,8 +768,10 @@ class _Bubble extends StatelessWidget {
               color: context.pal.surfaceAlt,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Text(m.text,
-                style: TextStyle(fontSize: 11.5, color: context.pal.textDim)),
+            child: Text(
+              m.text,
+              style: TextStyle(fontSize: 11.5, color: context.pal.textDim),
+            ),
           ),
         ),
       );
@@ -616,7 +780,8 @@ class _Bubble extends StatelessWidget {
     final isError = m.role == 'error';
     final hasText = m.text.trim().isNotEmpty;
     final radius = BorderRadius.only(
-      topLeft: const Radius.circular(16), topRight: const Radius.circular(16),
+      topLeft: const Radius.circular(16),
+      topRight: const Radius.circular(16),
       bottomLeft: Radius.circular(isUser ? 16 : 4),
       bottomRight: Radius.circular(isUser ? 4 : 16),
     );
@@ -625,7 +790,9 @@ class _Bubble extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .82),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * .82,
+        ),
         decoration: BoxDecoration(
           color: isUser ? GajalaColors.userBubble : context.pal.botBubble,
           borderRadius: radius,
@@ -643,9 +810,11 @@ class _Bubble extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 320),
-                    child: Image.file(File(m.localImage!),
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, _, _) => const SizedBox()),
+                    child: Image.file(
+                      File(m.localImage!),
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) => const SizedBox(),
+                    ),
                   ),
                 ),
               ),
@@ -657,27 +826,45 @@ class _Bubble extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 320),
-                    child: Image.network(url,
-                        headers: imgHeaders, fit: BoxFit.contain,
-                        loadingBuilder: (c, w, p) => p == null
-                            ? w
-                            : const SizedBox(
-                                height: 120,
-                                child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
-                        errorBuilder: (_, _, _) => Text('[image unavailable]',
-                            style: TextStyle(color: context.pal.textDim))),
+                    child: Image.network(
+                      url,
+                      headers: imgHeaders,
+                      fit: BoxFit.contain,
+                      loadingBuilder: (c, w, p) => p == null
+                          ? w
+                          : const SizedBox(
+                              height: 120,
+                              child: Center(
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            ),
+                      errorBuilder: (_, _, _) => Text(
+                        '[image unavailable]',
+                        style: TextStyle(color: context.pal.textDim),
+                      ),
+                    ),
                   ),
                 ),
               ),
             if (hasText)
-              ChatContent(text: m.text, api: isUser ? null : api,
-                  style: TextStyle(
-                      color: isError ? GajalaColors.danger : context.pal.text, height: 1.35)),
+              ChatContent(
+                text: m.text,
+                api: isUser ? null : api,
+                style: TextStyle(
+                  color: isError ? GajalaColors.danger : context.pal.text,
+                  height: 1.35,
+                ),
+              ),
             if (m.moveTo != null && onMove != null) ...[
               const SizedBox(height: 8),
               TextButton.icon(
                 style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 2,
+                  ),
                   backgroundColor: GajalaColors.accent.withValues(alpha: 0.15),
                   foregroundColor: GajalaColors.accent,
                   visualDensity: VisualDensity.compact,
@@ -701,20 +888,24 @@ class _Bubble extends StatelessWidget {
     // history carries only its run id and fetches on demand.
     if (isUser) return bubble;
     if (m.steps.isNotEmpty) {
-      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        bubble,
-        RunTraceStrip(
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          bubble,
+          RunTraceStrip(
             steps: m.steps,
             project: m.project,
             stopLabel: m.stopLabel,
-            hitStepLimit: m.hitStepLimit),
-      ]);
+            hitStepLimit: m.hitStepLimit,
+          ),
+        ],
+      );
     }
     if (m.runId != null && m.runId!.isNotEmpty) {
-      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        bubble,
-        _LazyTrace(m.runId!),
-      ]);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [bubble, _LazyTrace(m.runId!)],
+      );
     }
     return bubble;
   }
@@ -746,49 +937,69 @@ class _AskCardViewState extends State<_AskCardView> {
       decoration: BoxDecoration(
         color: GajalaColors.accent.withValues(alpha: live ? .10 : .04),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: GajalaColors.accent.withValues(alpha: live ? .45 : .15)),
+        border: Border.all(
+          color: GajalaColors.accent.withValues(alpha: live ? .45 : .15),
+        ),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(card.question, style: const TextStyle(fontWeight: FontWeight.w600)),
-        if (card.multi && live)
-          Text('Pick any, then Send',
-              style: TextStyle(fontSize: 11, color: context.pal.textDim)),
-        const SizedBox(height: 6),
-        Wrap(spacing: 6, runSpacing: 6, children: [
-          for (final o in card.options)
-            card.multi
-                ? FilterChip(
-                    label: Text(o),
-                    selected: _picked.contains(o),
-                    onSelected: live
-                        ? (v) => setState(() => v ? _picked.add(o) : _picked.remove(o))
-                        : null,
-                  )
-                : ActionChip(
-                    label: Text(o),
-                    onPressed: live ? () => widget.onAnswer!(o) : null,
-                  ),
-          if (live)
-            ActionChip(
-              avatar: const Icon(Icons.edit_outlined, size: 16),
-              label: const Text('Other…'),
-              onPressed: widget.onOther,
-            ),
-        ]),
-        if (card.multi && live) ...[
-          const SizedBox(height: 6),
-          Align(
-            alignment: Alignment.centerRight,
-            child: FilledButton(
-              onPressed: _picked.isEmpty
-                  ? null
-                  : () => widget.onAnswer!(
-                      [for (final o in card.options) if (_picked.contains(o)) o].join(', ')),
-              child: const Text('Send'),
-            ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            card.question,
+            style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          if (card.multi && live)
+            Text(
+              'Pick any, then Send',
+              style: TextStyle(fontSize: 11, color: context.pal.textDim),
+            ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final o in card.options)
+                card.multi
+                    ? FilterChip(
+                        label: Text(o),
+                        selected: _picked.contains(o),
+                        onSelected: live
+                            ? (v) => setState(
+                                () => v ? _picked.add(o) : _picked.remove(o),
+                              )
+                            : null,
+                      )
+                    : ActionChip(
+                        label: Text(o),
+                        onPressed: live ? () => widget.onAnswer!(o) : null,
+                      ),
+              if (live)
+                ActionChip(
+                  avatar: const Icon(Icons.edit_outlined, size: 16),
+                  label: const Text('Other…'),
+                  onPressed: widget.onOther,
+                ),
+            ],
+          ),
+          if (card.multi && live) ...[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _picked.isEmpty
+                    ? null
+                    : () => widget.onAnswer!(
+                        [
+                          for (final o in card.options)
+                            if (_picked.contains(o)) o,
+                        ].join(', '),
+                      ),
+                child: const Text('Send'),
+              ),
+            ),
+          ],
         ],
-      ]),
+      ),
     );
   }
 }
@@ -829,14 +1040,17 @@ class _LazyTraceState extends ConsumerState<_LazyTrace> {
         onPressed: _load,
         icon: _loading
             ? const SizedBox(
-                width: 12, height: 12,
-                child: CircularProgressIndicator(strokeWidth: 2))
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
             : const Icon(Icons.chevron_right, size: 16),
         label: const Text('What it did'),
         style: TextButton.styleFrom(
-            foregroundColor: context.pal.textDim,
-            visualDensity: VisualDensity.compact,
-            textStyle: const TextStyle(fontSize: 12.5)),
+          foregroundColor: context.pal.textDim,
+          visualDensity: VisualDensity.compact,
+          textStyle: const TextStyle(fontSize: 12.5),
+        ),
       ),
     );
   }
@@ -855,35 +1069,55 @@ class _StatusBubble extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .82),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * .82,
+        ),
         decoration: BoxDecoration(
           color: context.pal.botBubble,
           borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(16), topRight: Radius.circular(16),
-            bottomLeft: Radius.circular(4), bottomRight: Radius.circular(16),
+            topLeft: Radius.circular(16),
+            topRight: Radius.circular(16),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(16),
           ),
         ),
-        child: Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 3, right: 10),
-            child: SizedBox(
-              width: 13, height: 13,
-              child: CircularProgressIndicator(strokeWidth: 2, color: context.pal.textDim),
-            ),
-          ),
-          Flexible(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              for (final l in lines)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 1),
-                  child: Text(l,
-                      style: TextStyle(
-                          color: context.pal.textDim, fontSize: 13,
-                          fontStyle: FontStyle.italic, height: 1.3)),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 3, right: 10),
+              child: SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: context.pal.textDim,
                 ),
-            ]),
-          ),
-        ]),
+              ),
+            ),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final l in lines)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 1),
+                      child: Text(
+                        l,
+                        style: TextStyle(
+                          color: context.pal.textDim,
+                          fontSize: 13,
+                          fontStyle: FontStyle.italic,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -896,11 +1130,12 @@ class _ContextSheet extends StatefulWidget {
   final String? currentDir;
   final String currentModel;
   final void Function(String? dir, String? model) onChanged;
-  const _ContextSheet(
-      {required this.api,
-      required this.currentDir,
-      required this.currentModel,
-      required this.onChanged});
+  const _ContextSheet({
+    required this.api,
+    required this.currentDir,
+    required this.currentModel,
+    required this.onChanged,
+  });
   @override
   State<_ContextSheet> createState() => _ContextSheetState();
 }
@@ -910,9 +1145,10 @@ class _ContextSheetState extends State<_ContextSheet> {
   List<Map<String, dynamic>> _sessions = [];
   String? _dir;
   late String _model;
-  Map<String, String> _engineModels = {};   // engine → pinned model ('' = default)
-  Map<String, String> _engineBackups = {};   // engine → backup model ('' = none)
-  Map<String, List<String>> _presets = {};   // engine → selectable models
+  Map<String, String> _engineModels =
+      {}; // engine → pinned model ('' = default)
+  Map<String, String> _engineBackups = {}; // engine → backup model ('' = none)
+  Map<String, List<String>> _presets = {}; // engine → selectable models
   List<String> _engines = const ['auto', 'claude', 'codex', 'gemini', 'qwen'];
   bool _busy = false;
 
@@ -934,19 +1170,29 @@ class _ContextSheetState extends State<_ContextSheet> {
         _projects = List<Map<String, dynamic>>.from(proj['projects'] ?? []);
         _dir = proj['current_name']?.toString() ?? _dir;
         _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []);
-        _engineModels = (mdl['models'] as Map?)
-                ?.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())) ??
+        _engineModels =
+            (mdl['models'] as Map?)?.map(
+              (k, v) => MapEntry(k.toString(), (v ?? '').toString()),
+            ) ??
             {};
-        _engineBackups = (mdl['backup_models'] as Map?)
-                ?.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())) ??
+        _engineBackups =
+            (mdl['backup_models'] as Map?)?.map(
+              (k, v) => MapEntry(k.toString(), (v ?? '').toString()),
+            ) ??
             {};
-        _engines = (mdl['options'] as List?)?.map((e) => e.toString()).toList() ??
+        _engines =
+            (mdl['options'] as List?)?.map((e) => e.toString()).toList() ??
             _engines;
-        _presets = (mdl['presets'] as Map?)?.map((k, v) =>
-                MapEntry(k.toString(), List<String>.from(v ?? const []))) ??
+        _presets =
+            (mdl['presets'] as Map?)?.map(
+              (k, v) =>
+                  MapEntry(k.toString(), List<String>.from(v ?? const [])),
+            ) ??
             {};
       });
-    } catch (_) {/* leave lists empty */}
+    } catch (_) {
+      /* leave lists empty */
+    }
   }
 
   /// Pin a model for the currently selected engine.
@@ -956,10 +1202,14 @@ class _ContextSheetState extends State<_ContextSheet> {
     try {
       final now = await widget.api.setEngineModel(engine, model);
       if (mounted) {
-        setState(() => _engineModels =
-            now.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())));
+        setState(
+          () => _engineModels = now.map(
+            (k, v) => MapEntry(k.toString(), (v ?? '').toString()),
+          ),
+        );
       }
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -971,10 +1221,14 @@ class _ContextSheetState extends State<_ContextSheet> {
     try {
       final now = await widget.api.setEngineBackup(engine, backup);
       if (mounted) {
-        setState(() => _engineBackups =
-            now.map((k, v) => MapEntry(k.toString(), (v ?? '').toString())));
+        setState(
+          () => _engineBackups = now.map(
+            (k, v) => MapEntry(k.toString(), (v ?? '').toString()),
+          ),
+        );
       }
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -992,7 +1246,8 @@ class _ContextSheetState extends State<_ContextSheet> {
           _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []);
         });
       }
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -1004,7 +1259,8 @@ class _ContextSheetState extends State<_ContextSheet> {
       final now = await widget.api.setModel(engine);
       widget.onChanged(null, now);
       if (mounted) setState(() => _model = now);
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -1016,8 +1272,11 @@ class _ContextSheetState extends State<_ContextSheet> {
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.only(
-            left: 16, right: 16, top: 14,
-            bottom: 16 + MediaQuery.of(context).viewInsets.bottom),
+          left: 16,
+          right: 16,
+          top: 14,
+          bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1025,15 +1284,20 @@ class _ContextSheetState extends State<_ContextSheet> {
             children: [
               Center(
                 child: Container(
-                  width: 36, height: 4, margin: const EdgeInsets.only(bottom: 14),
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 14),
                   decoration: BoxDecoration(
-                      color: pal.textDim, borderRadius: BorderRadius.circular(2)),
+                    color: pal.textDim,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
               _sectionLabel(context, 'MODEL'),
               const SizedBox(height: 8),
               Wrap(
-                spacing: 8, runSpacing: 8,
+                spacing: 8,
+                runSpacing: 8,
                 children: _engines.map((e) {
                   final on = e == _model;
                   return ChoiceChip(
@@ -1051,27 +1315,35 @@ class _ContextSheetState extends State<_ContextSheet> {
                 style: TextStyle(fontSize: 11.5, color: pal.textDim),
               ),
               // Per-engine model picker — only meaningful once an engine is pinned.
-              if (_model != 'auto' && (_presets[_model]?.isNotEmpty ?? false)) ...[
+              if (_model != 'auto' &&
+                  (_presets[_model]?.isNotEmpty ?? false)) ...[
                 const SizedBox(height: 16),
-                _sectionLabel(context,
-                    '${_ChatScreenState._modelLabel(_model).toUpperCase()} MODEL'),
+                _sectionLabel(
+                  context,
+                  '${_ChatScreenState._modelLabel(_model).toUpperCase()} MODEL',
+                ),
                 const SizedBox(height: 8),
                 Wrap(
-                  spacing: 8, runSpacing: 8,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
                     for (final m in ['default', ...?_presets[_model]])
-                      Builder(builder: (_) {
-                        final cur = _engineModels[_model] ?? '';
-                        final on = m == 'default' ? cur.isEmpty : cur == m;
-                        return ChoiceChip(
-                          label: Text(m),
-                          selected: on,
-                          onSelected: _busy
-                              ? null
-                              : (_) => _pinEngineModel(
-                                  _model, m == 'default' ? '' : m),
-                        );
-                      }),
+                      Builder(
+                        builder: (_) {
+                          final cur = _engineModels[_model] ?? '';
+                          final on = m == 'default' ? cur.isEmpty : cur == m;
+                          return ChoiceChip(
+                            label: Text(m),
+                            selected: on,
+                            onSelected: _busy
+                                ? null
+                                : (_) => _pinEngineModel(
+                                    _model,
+                                    m == 'default' ? '' : m,
+                                  ),
+                          );
+                        },
+                      ),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -1085,21 +1357,26 @@ class _ContextSheetState extends State<_ContextSheet> {
                 _sectionLabel(context, 'BACKUP MODEL (IF PRIMARY FAILS)'),
                 const SizedBox(height: 8),
                 Wrap(
-                  spacing: 8, runSpacing: 8,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
                     for (final m in ['none', ...?_presets[_model]])
-                      Builder(builder: (_) {
-                        final cur = _engineBackups[_model] ?? '';
-                        final on = m == 'none' ? cur.isEmpty : cur == m;
-                        return ChoiceChip(
-                          label: Text(m),
-                          selected: on,
-                          onSelected: _busy
-                              ? null
-                              : (_) => _pinEngineBackup(
-                                  _model, m == 'none' ? '' : m),
-                        );
-                      }),
+                      Builder(
+                        builder: (_) {
+                          final cur = _engineBackups[_model] ?? '';
+                          final on = m == 'none' ? cur.isEmpty : cur == m;
+                          return ChoiceChip(
+                            label: Text(m),
+                            selected: on,
+                            onSelected: _busy
+                                ? null
+                                : (_) => _pinEngineBackup(
+                                    _model,
+                                    m == 'none' ? '' : m,
+                                  ),
+                          );
+                        },
+                      ),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -1120,24 +1397,37 @@ class _ContextSheetState extends State<_ContextSheet> {
                     child: InkWell(
                       onTap: () {
                         Clipboard.setData(
-                            ClipboardData(text: s['resume_cmd'].toString()));
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                            content: Text('Copied ${s['engine']} resume command')));
+                          ClipboardData(text: s['resume_cmd'].toString()),
+                        );
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Copied ${s['engine']} resume command',
+                            ),
+                          ),
+                        );
                       },
                       child: Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                            color: pal.surfaceAlt,
-                            borderRadius: BorderRadius.circular(8)),
-                        child: Row(children: [
-                          Expanded(
-                            child: Text(s['resume_cmd'].toString(),
+                          color: pal.surfaceAlt,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                s['resume_cmd'].toString(),
                                 style: const TextStyle(
-                                    fontFamily: 'monospace', fontSize: 12)),
-                          ),
-                          Icon(Icons.copy, size: 16, color: pal.textDim),
-                        ]),
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                            Icon(Icons.copy, size: 16, color: pal.textDim),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -1147,12 +1437,15 @@ class _ContextSheetState extends State<_ContextSheet> {
               const SizedBox(height: 4),
               ConstrainedBox(
                 constraints: BoxConstraints(
-                    maxHeight: MediaQuery.of(context).size.height * 0.35),
+                  maxHeight: MediaQuery.of(context).size.height * 0.35,
+                ),
                 child: _projects.isEmpty
                     ? Padding(
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Text('No projects found.',
-                            style: TextStyle(color: pal.textDim)),
+                        child: Text(
+                          'No projects found.',
+                          style: TextStyle(color: pal.textDim),
+                        ),
                       )
                     : ListView(
                         shrinkWrap: true,
@@ -1163,12 +1456,17 @@ class _ContextSheetState extends State<_ContextSheet> {
                             dense: true,
                             contentPadding: EdgeInsets.zero,
                             leading: Icon(
-                                active ? Icons.folder : Icons.folder_outlined,
-                                color: active ? GajalaColors.accent : pal.textDim,
-                                size: 20),
+                              active ? Icons.folder : Icons.folder_outlined,
+                              color: active ? GajalaColors.accent : pal.textDim,
+                              size: 20,
+                            ),
                             title: Text(name),
                             trailing: active
-                                ? const Icon(Icons.check, color: GajalaColors.accent, size: 18)
+                                ? const Icon(
+                                    Icons.check,
+                                    color: GajalaColors.accent,
+                                    size: 18,
+                                  )
                                 : null,
                             onTap: () => _switchDir(name),
                           );
@@ -1182,10 +1480,13 @@ class _ContextSheetState extends State<_ContextSheet> {
     );
   }
 
-  Widget _sectionLabel(BuildContext context, String t) => Text(t,
-      style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.6,
-          color: context.pal.textDim));
+  Widget _sectionLabel(BuildContext context, String t) => Text(
+    t,
+    style: TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.6,
+      color: context.pal.textDim,
+    ),
+  );
 }

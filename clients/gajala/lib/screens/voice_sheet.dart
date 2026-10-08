@@ -24,6 +24,7 @@ import '../widgets/voice_picker.dart';
 import '../widgets/music_access_tile.dart';
 import '../core/wake_word.dart';
 import 'chat_screen.dart';
+import 'wake_enrollment_screen.dart';
 
 /// Open the voice sheet over whatever is on screen.
 bool _sheetOpen = false;
@@ -237,7 +238,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
         setState(() => _phase = _Phase.speaking);
         await Voice.instance.speak(exchange.reply);
       }
-      if (_handedOff) {
+      if (_handedOff || !_foreground) {
         if (mounted) Navigator.of(context).pop();
         return;
       }
@@ -738,6 +739,16 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
         children: [
           VoicePicker(preferences: Voice.instance.preferences),
           const MusicAccessTile(),
+          ListTile(
+            leading: const Icon(Icons.record_voice_over),
+            title: const Text('Teach Hey Gajala my pronunciation'),
+            subtitle: const Text(
+              'Record short samples on this phone to tune wake sensitivity.',
+            ),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const WakeEnrollmentScreen()),
+            ),
+          ),
           SwitchListTile(
             title: const Text('Speak replies'),
             value: widget.speakReplies,

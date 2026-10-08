@@ -59,6 +59,21 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+Substantial public research now uses immediate durable background jobs, with
+30-minute default/60-minute maximum runtime, stop/restart recovery, and a later
+reply linked to the original question in the same chat. Research cards refresh
+while chat is visible. Attachment jobs preserve refs and wait for explicit
+provider-handoff approval. YouTube Music now offers optional package-scoped
+Accessibility control to search/select a matching song or collection and press
+Play, followed by media-session verification. Other apps are excluded; phone
+UI compatibility remains unverified. Wake-word enrollment records five positive
+clips, two negatives, and a holdout locally to choose a bounded safe sensitivity
+profile. Clips are memory-only; this calibrates the existing detector rather
+than retraining weights or authenticating a speaker. Mac Lock uses macOS's actual
+lock shortcut and reports fallback honestly; widget tool failures no longer show
+success. Wake keeps the display awake for a minute but macOS still requires its
+normal password/Touch ID when locked.
+
 Local voice commands now have a durable on-phone transcript journal and are
 shown in the same project chat, including spoken confirmation exchanges and
 outcomes. Completed logs sync through an idempotent storage-only API; reconnect
@@ -384,6 +399,12 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-08 — Reworked long research into durable background execution and
+  original-chat result delivery, with cancel/restart recovery and bounded runtime.
+  Added optional YouTube Music semantic UI control, actual playback verification,
+  and on-phone wake-word sample calibration. Corrected Mac lock semantics,
+  widget false-success reporting, and exposed Wake in the Mac screen. Real-phone
+  music UI, recordings, and Mac Accessibility permission remain acceptance checks.
 - 2026-10-07 — **YouTube Music actually plays.** The MEDIA_PLAY_FROM_SEARCH
   intent only opened YouTube Music's search results. Android's media guidance
   delivers play-from-search through the app's MediaSession

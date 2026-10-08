@@ -31,3 +31,18 @@ After installing the October 6 build:
 YouTube Music playback remains dependent on its installed app, account, and
 Android support. Notification access enables media-session verification; the
 separate Phone abilities notification-reading switch remains independent.
+
+## October 8 additions
+
+- Enable Gajala YouTube Music control under Android Accessibility through voice
+  settings. Try Rockstar, DSP, Thaman and Telugu songs. Check the selected result
+  and audible playback; an unmatched page must stop with an honest status.
+- Open Teach Hey Gajala and record the eight prompted clips in your normal voice.
+  Samples stay in memory. Cancel/background during capture or evaluation; previous
+  calibration must remain. Verify real wake detections and reset if false wakes rise.
+- Ask a substantial sourced research question, leave the app, and return later.
+  The research card should show progress and the final reply reference the original
+  question once. Stop cancels the worker. A timeout or failure must leave a reply.
+- Test Mac Lock and Wake manually when convenient. A denied Mac Accessibility
+  shortcut must report display-sleep fallback rather than claim a verified lock.
+  Wake opens the display; normal macOS authentication still applies.

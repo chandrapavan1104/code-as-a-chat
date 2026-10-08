@@ -161,6 +161,7 @@ class ChatState {
   /// blinks).
   final String? workspace;
   final AssistantWork? work;
+  final List<AssistantWork> backgroundResearch;
   const ChatState({
     this.messages = const [],
     this.sending = false,
@@ -169,6 +170,7 @@ class ChatState {
     this.loaded = false,
     this.workspace,
     this.work,
+    this.backgroundResearch = const [],
   });
 
   ChatState copyWith({
@@ -183,6 +185,7 @@ class ChatState {
     // call sites unchanged.
     bool clearWorkspace = false,
     AssistantWork? work,
+    List<AssistantWork>? backgroundResearch,
     bool clearWork = false,
   }) => ChatState(
     messages: messages ?? this.messages,
@@ -192,6 +195,7 @@ class ChatState {
     loaded: loaded ?? this.loaded,
     workspace: clearWorkspace ? null : (workspace ?? this.workspace),
     work: clearWork ? null : (work ?? this.work),
+    backgroundResearch: backgroundResearch ?? this.backgroundResearch,
   );
 }
 
@@ -221,6 +225,7 @@ class ChatController extends StateNotifier<ChatState> {
   final Set<String> _active = {};
   final Set<String> _syncingVoice = {};
   bool _replaying = false;
+  bool _refreshingResearch = false;
   ChatController(
     this._api,
     this.key, {
@@ -311,7 +316,7 @@ class ChatController extends StateNotifier<ChatState> {
       if (key.command == 'shell') {
         try {
           for (final item in await api.assistantWork(key.sid)) {
-            if (item.isActive) {
+            if (item.isActive && item.command != 'research') {
               restoredWork = item;
               break;
             }
@@ -321,8 +326,13 @@ class ChatController extends StateNotifier<ChatState> {
         }
       }
     }
-    final archivedIds = loaded.map((m) => m.localRequestId).whereType<String>().toSet();
-    for (final id in archivedIds) { await _voiceJournal.markSynced(id); }
+    final archivedIds = loaded
+        .map((m) => m.localRequestId)
+        .whereType<String>()
+        .toSet();
+    for (final id in archivedIds) {
+      await _voiceJournal.markSynced(id);
+    }
     final localTurns = await _restoreLocalVoiceTurns();
     final localMessages = [
       for (final turn in localTurns)
@@ -338,7 +348,8 @@ class ChatController extends StateNotifier<ChatState> {
     // anything added since this load began rather than replacing live state.
     final liveMessages = state.messages;
     final restoredMessages = [...loaded, ...localMessages];
-    final mergedMessages = _containsMessageSequence(restoredMessages, liveMessages)
+    final mergedMessages =
+        _containsMessageSequence(restoredMessages, liveMessages)
         ? restoredMessages
         : [...restoredMessages, ...liveMessages];
     state = state.copyWith(
@@ -408,7 +419,11 @@ class ChatController extends StateNotifier<ChatState> {
       state = state.copyWith(
         messages: [
           ...state.messages,
-          ChatMessage(role == 'user' ? 'user' : 'bot', text, localRequestId: id),
+          ChatMessage(
+            role == 'user' ? 'user' : 'bot',
+            text,
+            localRequestId: id,
+          ),
         ],
       );
     }
@@ -430,7 +445,11 @@ class ChatController extends StateNotifier<ChatState> {
       state = state.copyWith(
         messages: [
           ...state.messages,
-          ChatMessage(role == 'user' ? 'user' : 'bot', text, localRequestId: id),
+          ChatMessage(
+            role == 'user' ? 'user' : 'bot',
+            text,
+            localRequestId: id,
+          ),
         ],
       );
     }
@@ -557,6 +576,63 @@ class ChatController extends StateNotifier<ChatState> {
   String _requestId() =>
       '${key.sid}:${DateTime.now().microsecondsSinceEpoch}:'
       '${Random.secure().nextInt(1 << 32)}';
+
+  /// Background jobs keep running independently of this screen and /run stream.
+  Future<void> refreshBackgroundResearch() async {
+    final api = _api;
+    if (api == null ||
+        key.command != 'shell' ||
+        !mounted ||
+        state.sending ||
+        _refreshingResearch)
+      return;
+    _refreshingResearch = true;
+    try {
+      final jobs = (await api.assistantWork(
+        key.sid,
+      )).where((w) => w.command == 'research').toList();
+      if (!mounted || state.sending) return;
+      state = state.copyWith(
+        backgroundResearch: jobs
+            .where(
+              (w) => const {
+                'accepted',
+                'working',
+                'recovering',
+                'waiting_for_user',
+              }.contains(w.status),
+            )
+            .toList(),
+      );
+      if (jobs.isEmpty) return;
+      final history = await api.chatHistory(key.sid, limit: 200);
+      if (!mounted || state.sending) return;
+      final seen = state.messages
+          .map((m) => m.localRequestId)
+          .whereType<String>()
+          .toSet();
+      final fresh = history
+          .where(
+            (m) =>
+                m.localRequestId?.startsWith('research-result:') == true &&
+                !seen.contains(m.localRequestId),
+          )
+          .toList();
+      if (fresh.isNotEmpty)
+        state = state.copyWith(messages: [...state.messages, ...fresh]);
+    } catch (_) {
+      // A disconnected phone does not stop the server job; retry on next poll.
+    } finally {
+      _refreshingResearch = false;
+    }
+  }
+
+  Future<void> cancelBackgroundResearch(String id) async {
+    final api = _api;
+    if (api == null) return;
+    await api.cancelResearch(id);
+    await refreshBackgroundResearch();
+  }
 
   Future<void> stopWork() async {
     final api = _api;

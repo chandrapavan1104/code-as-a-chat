@@ -73,7 +73,22 @@ def init() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_assistant_task_requests_task
                 ON assistant_task_requests(task_id);
+            CREATE TABLE IF NOT EXISTS assistant_research (
+                task_id         TEXT PRIMARY KEY,
+                request_id      TEXT NOT NULL,
+                engine          TEXT NOT NULL,
+                workspace       TEXT NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                attachment_refs TEXT NOT NULL DEFAULT '[]',
+                created_at      REAL NOT NULL
+            );
         """)
+        research_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(assistant_research)")
+        }
+        if "request_id" not in research_cols:
+            conn.execute(
+                "ALTER TABLE assistant_research ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
         # Older deployments stored only the latest request on the task row.
         # Preserve that identity when introducing the append-only request map.
         conn.execute(
@@ -204,7 +219,8 @@ def update(task_id: str, *, status: str | None = None, summary: str | None = Non
            result: str | None = None, blocker: str | None = None,
            next_action: str | None = None, run_id: str | None = None,
            project: str | None = None, event: str = "updated",
-           payload: dict | None = None) -> dict | None:
+           payload: dict | None = None,
+           unless_cancelled: bool = False) -> dict | None:
     init()
     values = {
         "status": status, "summary": summary, "result": result,
@@ -215,13 +231,16 @@ def update(task_id: str, *, status: str | None = None, summary: str | None = Non
     args = [value for value in values.values() if value is not None]
     fields.append("updated_at=?")
     args.extend([time.time(), task_id])
+    where = "id=? AND status!='cancelled'" if unless_cancelled else "id=?"
     with _conn() as conn:
-        conn.execute(f"UPDATE assistant_tasks SET {', '.join(fields)} WHERE id=?", args)
-        conn.execute(
-            "INSERT INTO assistant_task_events (task_id, kind, payload, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (task_id, event, json.dumps(payload or {}), time.time()),
-        )
+        cursor = conn.execute(
+            f"UPDATE assistant_tasks SET {', '.join(fields)} WHERE {where}", args)
+        if cursor.rowcount:
+            conn.execute(
+                "INSERT INTO assistant_task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, event, json.dumps(payload or {}), time.time()),
+            )
         conn.commit()
         return _row(conn.execute(
             "SELECT * FROM assistant_tasks WHERE id = ?", (task_id,)
@@ -254,6 +273,73 @@ def list_for_session(session_id: str, *, limit: int = 20) -> list[dict]:
             "ORDER BY updated_at DESC LIMIT ?", (session_id, max(1, min(limit, 100))),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def configure_research(task_id: str, *, request_id: str, engine: str, workspace: str,
+                       timeout_seconds: int,
+                       attachment_refs: list[str] | None = None) -> dict:
+    """Persist everything needed to resume read-only research after restart."""
+    init()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO assistant_research "
+            "(task_id, request_id, engine, workspace, timeout_seconds, attachment_refs, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, request_id, engine, workspace, timeout_seconds,
+             json.dumps(attachment_refs or []), time.time()),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM assistant_research WHERE task_id=?", (task_id,)
+        ).fetchone()
+    result = dict(row)
+    result["attachment_refs"] = json.loads(result["attachment_refs"])
+    return result
+
+
+def get_research(task_id: str) -> dict | None:
+    init()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM assistant_research WHERE task_id=?", (task_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result["attachment_refs"] = json.loads(result["attachment_refs"])
+    return result
+
+
+def recoverable_research() -> list[dict]:
+    """Research accepted or interrupted before a terminal outcome."""
+    init()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT r.* FROM assistant_research r JOIN assistant_tasks t "
+            "ON t.id=r.task_id WHERE t.status IN "
+            "('accepted', 'working', 'recovering') ORDER BY t.created_at"
+        ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["attachment_refs"] = json.loads(item["attachment_refs"])
+        results.append(item)
+    return results
+
+
+def research_records() -> list[dict]:
+    """All research metadata, used to reconcile terminal chat receipts."""
+    init()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM assistant_research ORDER BY created_at"
+        ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["attachment_refs"] = json.loads(item["attachment_refs"])
+        results.append(item)
+    return results
 
 
 def recover_orphans() -> int:

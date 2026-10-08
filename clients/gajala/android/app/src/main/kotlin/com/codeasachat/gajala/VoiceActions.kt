@@ -45,6 +45,15 @@ class VoiceActions(private val activity: Activity) {
             "playMusic" -> playMusic(call.argument<String>("query"), call.argument<String>("package"), result)
             "musicApps" -> result.success(musicApps())
             "musicAccess" -> result.success(musicAccess())
+            "openMusicControlAccess" -> {
+                try {
+                    activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    result.success(mapOf("status" to "requested"))
+                } catch (_: android.content.ActivityNotFoundException) {
+                    result.success(mapOf("status" to "unsupported",
+                        "message" to "This phone has no accessibility settings."))
+                }
+            }
             "openMusicAccess" -> {
                 try {
                     activity.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -84,6 +93,7 @@ class VoiceActions(private val activity: Activity) {
 
     fun cancelPending() {
         pending = null
+        YouTubeMusicAccessibilityService.cancel()
         verifyRunnable?.let { verifyHandler?.removeCallbacks(it) }
         verifyRunnable = null
         verifyHandler = null
@@ -189,6 +199,27 @@ class VoiceActions(private val activity: Activity) {
         val beforeToken = before?.sessionToken
         val beforeTitle = before?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
         val beforeArtist = before?.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+        if (targetPackage == YOUTUBE_MUSIC &&
+            YouTubeMusicAccessibilityService.isEnabled(activity) &&
+            YouTubeMusicAccessibilityService.start(text) { outcome ->
+                if (disposed) return@start
+                when (outcome) {
+                    YouTubeMusicAccessibilityService.Outcome.SELECTED ->
+                        verifyPlaybackAsync(manager, targetPackage, text, extras,
+                            beforeToken, beforeTitle, beforeArtist, result, allowSessionNudge = false)
+                    YouTubeMusicAccessibilityService.Outcome.SEARCHED ->
+                        result.success(mapOf("status" to "searched", "package" to targetPackage,
+                            "query" to text,
+                            "message" to "Searched YouTube Music, but no safe matching song result was selected. Playback was not verified."))
+                    YouTubeMusicAccessibilityService.Outcome.FAILED ->
+                        result.success(mapOf("status" to "unsupported", "package" to targetPackage,
+                            "query" to text, "message" to "YouTube Music could not be opened for controlled playback."))
+                    YouTubeMusicAccessibilityService.Outcome.CANCELLED ->
+                        result.success(mapOf("status" to "cancelled", "package" to targetPackage,
+                            "query" to text, "message" to "YouTube Music playback was cancelled."))
+                }
+            }
+        ) return
         try {
             // Launch the handoff even when a readable media session is already
             // active. A transport-only playFromSearch call can disappear into
@@ -262,7 +293,8 @@ class VoiceActions(private val activity: Activity) {
                                     query: String, extras: Bundle,
                                     beforeToken: android.media.session.MediaSession.Token?,
                                     beforeTitle: String, beforeArtist: String,
-                                    result: MethodChannel.Result) {
+                                    result: MethodChannel.Result,
+                                    allowSessionNudge: Boolean = true) {
         if (manager == null) {
             result.success(mapOf("status" to "unverified", "package" to packageName,
                 "message" to "Playback was requested but no media session is available."))
@@ -292,7 +324,7 @@ class VoiceActions(private val activity: Activity) {
                     verifyRunnable = null
                     result.success(mapOf("status" to "playing", "package" to packageName,
                         "title" to title, "artist" to artist, "message" to "Playback verified."))
-                } else if (current != null && !nudged &&
+                } else if (allowSessionNudge && current != null && !nudged &&
                     System.currentTimeMillis() - started >= NUDGE_AFTER_MS) {
                     // The launch intent only opens YouTube Music's search
                     // results. Assistant plays through the app's media
@@ -353,6 +385,8 @@ class VoiceActions(private val activity: Activity) {
             else -> "Gajala could not check notification access. This does not mean permission was denied."
         }
         return mapOf("enabled" to enabled, "sessionReadable" to readable,
+            "musicControlEnabled" to YouTubeMusicAccessibilityService.isEnabled(activity),
+            "musicControlConnected" to (YouTubeMusicAccessibilityService.startProbe()),
             "listenerConnected" to (GajalaNotificationListener.instance != null),
             "activePlayers" to sessions?.map { it.packageName }?.distinct(),
             "error" to error, "message" to message)

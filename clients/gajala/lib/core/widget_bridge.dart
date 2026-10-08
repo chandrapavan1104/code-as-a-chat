@@ -104,6 +104,16 @@ Future<void> _setMacStatus(String s) async {
   );
 }
 
+/// `/run` returns tool failures as a normal JSON response so chat clients can
+/// display the explanation. A widget has no reply bubble, so it must inspect
+/// that result instead of treating every HTTP 200 as success.
+String? macActionFailure(Object? data) {
+  if (data is! Map) return 'Invalid response from Mac';
+  final result = data['result']?.toString().trim() ?? '';
+  if (result.isEmpty) return 'No response from Mac';
+  return result.startsWith('[mac]') ? result : null;
+}
+
 /// Fire a mac quick action (lock / wake) in the background and reflect the
 /// outcome on the widget's status line.
 Future<void> _macAction(
@@ -119,7 +129,13 @@ Future<void> _macAction(
       return;
     }
     // No session_id → this quick action stays out of chat history.
-    await dio.post('/run', data: {'command': 'mac', 'prompt': action});
+    final response =
+        await dio.post('/run', data: {'command': 'mac', 'prompt': action});
+    final failure = macActionFailure(response.data);
+    if (failure != null) {
+      await _setMacStatus('Failed — ${failure.replaceFirst('[mac] ', '')}');
+      return;
+    }
     await _setMacStatus('$ok · ${_clock()}');
   } catch (_) {
     await _setMacStatus('Failed — tap to retry');

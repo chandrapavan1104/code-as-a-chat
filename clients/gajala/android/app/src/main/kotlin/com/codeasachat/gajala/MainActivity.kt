@@ -16,6 +16,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var pendingEnable: MethodChannel.Result? = null
     private var device: DeviceActions? = null
     private var phoneActions: VoiceActions? = null
+    private var wakeEnrollment: WakeEnrollment? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,6 +34,7 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onPause() {
+        wakeEnrollment?.cancel()
         if (visible === this) visible = null
         super.onPause()
     }
@@ -77,6 +79,27 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 "resume" -> {
                     WakeWordService.hold(false)
+                    result.success(null)
+                }
+                "enrollmentCapture" -> {
+                    val enrollment = wakeEnrollment ?: WakeEnrollment(this).also { wakeEnrollment = it }
+                    enrollment.capture(result)
+                }
+                "enrollmentCancel" -> {
+                    wakeEnrollment?.cancel()
+                    result.success(null)
+                }
+                "enrollmentModelDir" -> result.success(
+                    (wakeEnrollment ?: WakeEnrollment(this).also { wakeEnrollment = it }).modelDir())
+                "enrollmentSave" -> {
+                    val args = call.arguments as Map<*, *>
+                    (wakeEnrollment ?: WakeEnrollment(this).also { wakeEnrollment = it }).save(
+                        (args["threshold"] as Number).toDouble(),
+                        (args["boost"] as Number).toDouble())
+                    result.success(null)
+                }
+                "enrollmentReset" -> {
+                    (wakeEnrollment ?: WakeEnrollment(this).also { wakeEnrollment = it }).reset()
                     result.success(null)
                 }
                 else -> result.notImplemented()

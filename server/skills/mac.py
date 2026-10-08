@@ -67,12 +67,28 @@ def _chat_id(session_id: str | None) -> int | None:
 # ── actions ───────────────────────────────────────────────────────────────────
 
 async def _lock() -> str:
-    rc, out, err = await _run(["pmset", "displaysleepnow"])
+    # Use macOS's real Lock Screen shortcut. `pmset displaysleepnow` only turns
+    # off the display and depends on a separate password-after-sleep setting,
+    # so reporting it as a successful lock can leave the desktop unlocked.
+    rc, out, err = await _run([
+        "osascript", "-e",
+        'tell application "System Events" to key code 12 using '
+        '{control down, command down}',
+    ])
     if rc == 0:
-        return ("Mac locked (display asleep).\n"
-                "Tip: System Settings → Lock Screen → 'Require password "
-                "immediately after sleep' makes this a true lock.")
-    return f"[mac] lock failed: {err or out}"
+        return "Mac locked."
+
+    # Keep the older action as a useful fallback, but describe it honestly.
+    # This commonly needs an Accessibility grant for the launchd Python process.
+    sleep_rc, sleep_out, sleep_err = await _run(["pmset", "displaysleepnow"])
+    if sleep_rc == 0:
+        why = (err or out).strip()
+        detail = f" ({why})" if why else ""
+        return ("[mac] explicit lock was denied; display put to sleep instead"
+                f"{detail}. Grant Accessibility access to Code-as-a-Chat, or "
+                "set System Settings → Lock Screen → Require password "
+                "immediately after sleep.")
+    return f"[mac] lock failed: {(sleep_err or sleep_out or err or out).strip()}"
 
 
 async def _sleep() -> str:

@@ -136,15 +136,15 @@ def get_recent(session_id: str, n: int = 5) -> list[dict]:
         return []
     with _conn() as c:
         rows = c.execute(
-            "SELECT role, content, ts, run_id, local_request_id "
+            "SELECT id, role, content, ts, run_id, local_request_id "
             "FROM conversations "
             "WHERE session_id = ? "
             "ORDER BY ts DESC LIMIT ?",
             (session_id, n * 2),
         ).fetchall()
     return [
-        {"role": r[0], "content": r[1], "ts": r[2], "run_id": r[3],
-         "local_request_id": r[4]}
+        {"id": r[0], "role": r[1], "content": r[2], "ts": r[3],
+         "run_id": r[4], "local_request_id": r[5]}
         for r in reversed(rows)
     ]
 
