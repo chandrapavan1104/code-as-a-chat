@@ -15,6 +15,9 @@ class _MusicAccessTileState extends State<MusicAccessTile>
   bool? enabled;
   bool musicControlEnabled = false;
   bool musicControlConnected = false;
+  String? lastPlaybackDiagnostics;
+  String directProbeMessage =
+      'Direct YouTube Music control has not been checked.';
   @override
   void initState() {
     super.initState();
@@ -43,6 +46,29 @@ class _MusicAccessTileState extends State<MusicAccessTile>
         enabled = result?['enabled'] as bool?;
         musicControlEnabled = result?['musicControlEnabled'] == true;
         musicControlConnected = result?['musicControlConnected'] == true;
+        lastPlaybackDiagnostics = result?['lastPlaybackDiagnostics']
+            ?.toString();
+        final probe = result?['directProbe'];
+        if (probe is Map) {
+          final stage = probe['stage']?.toString() ?? 'unknown';
+          final reason =
+              probe['reason']?.toString() ?? 'No probe details available.';
+          final connected = probe['browserConnected'] == true;
+          final searchState = probe['playFromSearchSupported'];
+          final search = searchState == true
+              ? 'play-from-search advertised'
+              : searchState == false
+              ? 'play-from-search not advertised'
+              : 'play-from-search unknown';
+          final browse = probe['browseSearch']?.toString() ?? 'unknown';
+          directProbeMessage =
+              '$stage · ${connected ? 'browser connected' : 'browser unavailable'} · '
+              '$search · '
+              'catalog search: $browse. $reason';
+        } else {
+          directProbeMessage =
+              'Direct YouTube Music capability details are unavailable.';
+        }
         message =
             result?['message'] as String? ??
             'Playback access could not be checked.';
@@ -99,6 +125,30 @@ class _MusicAccessTileState extends State<MusicAccessTile>
           icon: const Icon(Icons.refresh),
         ),
       ),
+      ListTile(
+        leading: const Icon(Icons.sensors_outlined),
+        title: const Text('YouTube Music direct-control probe'),
+        subtitle: Text(directProbeMessage),
+      ),
+      if (lastPlaybackDiagnostics != null)
+        TextButton(
+          onPressed: () => showDialog<void>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Last playback attempt'),
+              content: SingleChildScrollView(
+                child: SelectableText(lastPlaybackDiagnostics!),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Close'),
+                ),
+              ],
+            ),
+          ),
+          child: const Text('View last playback details'),
+        ),
       TextButton(
         onPressed: openSettings,
         child: const Text('Manage Android notification access'),

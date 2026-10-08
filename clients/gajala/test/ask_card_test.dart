@@ -17,8 +17,13 @@ class CardApi extends GajalaApi {
   Future<String> classifyWork(String id, String prompt) async => 'new_task';
 
   @override
-  Future<List<ChatMessage>> chatHistory(String sessionId, {int limit = 50}) async =>
-      [ChatMessage('user', 'build'), ChatMessage('bot', 'Ready.\n\n$_card')];
+  Future<List<ChatMessage>> chatHistory(
+    String sessionId, {
+    int limit = 50,
+  }) async => [
+    ChatMessage('user', 'build'),
+    ChatMessage('bot', 'Ready.\n\n$_card'),
+  ];
 
   @override
   Future<List<AssistantWork>> assistantWork(String sessionId) async => [];
@@ -32,8 +37,13 @@ class CardApi extends GajalaApi {
     String? project,
     String? requestId,
     String? continueTaskId,
+    int? replyToMessageId,
   }) async* {
-    yield {'type': 'final', 'result': 'Ready.\n\n$_card', 'workspace': 'general'};
+    yield {
+      'type': 'final',
+      'result': 'Ready.\n\n$_card',
+      'workspace': 'general',
+    };
   }
 }
 
@@ -48,8 +58,10 @@ void main() {
 
   test('broken or one-option cards are dropped, text kept', () {
     expect(splitAsk('Hi [[ask:{nope}]]').$2, isNull);
-    expect(splitAsk('Hi [[ask:{"question":"Q","options":["a"]}]]'),
-        ('Hi', null));
+    expect(splitAsk('Hi [[ask:{"question":"Q","options":["a"]}]]'), (
+      'Hi',
+      null,
+    ));
   });
 
   test('live replies and reloaded history both carry the card', () async {
@@ -57,14 +69,22 @@ void main() {
     addTearDown(() => dir.deleteSync(recursive: true));
     final api = CardApi();
 
-    final chat = ChatController(api, const ChatKey('shell', 'a::general'),
-        voiceJournal: VoiceJournal(dir: () async => dir), outbox: Outbox(dir: () async => dir));
+    final chat = ChatController(
+      api,
+      const ChatKey('shell', 'a::general'),
+      voiceJournal: VoiceJournal(dir: () async => dir),
+      outbox: Outbox(dir: () async => dir),
+    );
     await chat.send('build');
     expect(chat.state.messages.last.text, 'Ready.');
     expect(chat.state.messages.last.ask?.options, ['Debug', 'Release']);
 
-    final reloaded = ChatController(api, const ChatKey('shell', 'b::general'),
-        voiceJournal: VoiceJournal(dir: () async => dir), outbox: Outbox(dir: () async => dir));
+    final reloaded = ChatController(
+      api,
+      const ChatKey('shell', 'b::general'),
+      voiceJournal: VoiceJournal(dir: () async => dir),
+      outbox: Outbox(dir: () async => dir),
+    );
     await reloaded.ensureLoaded();
     expect(reloaded.state.messages.last.ask?.question, 'Which build?');
   });

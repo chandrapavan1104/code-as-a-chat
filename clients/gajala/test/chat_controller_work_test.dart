@@ -19,12 +19,21 @@ class FakeApi extends GajalaApi {
   final release = Completer<void>();
   final List<String?> continuations = [];
   final List<String> prompts = [];
+  final List<String?> sentProjects = [];
+  final List<int?> replyIds = [];
+  List<ChatMessage> history = [];
   int steerCalls = 0;
   String relation = 'new_task';
   bool holdFirst = true;
   int _runs = 0;
 
   FakeApi() : super('http://127.0.0.1:1', 'test');
+
+  @override
+  Future<List<ChatMessage>> chatHistory(
+    String sessionId, {
+    int limit = 50,
+  }) async => history;
 
   @override
   Future<String> classifyWork(String id, String prompt) async => relation;
@@ -48,10 +57,19 @@ class FakeApi extends GajalaApi {
     String? project,
     String? requestId,
     String? continueTaskId,
+    int? replyToMessageId,
   }) async* {
+    sentProjects.add(project);
+    replyIds.add(replyToMessageId);
     continuations.add(continueTaskId);
     prompts.add(prompt);
     _runs++;
+    if (prompt == 'hydrate ids') {
+      history = [
+        ChatMessage('user', prompt, messageId: 91, localRequestId: requestId),
+        ChatMessage('bot', 'done', messageId: 92, localRequestId: requestId),
+      ];
+    }
     if (_runs == 1) {
       started.complete();
       if (holdFirst) await release.future;
@@ -73,18 +91,16 @@ void main() {
       final photo = File('${temp.path}/photo.jpg');
       await photo.writeAsBytes([1, 2, 3]);
       final api = FakeApi();
+      final outbox = _tempOutbox();
       final controller = ChatController(
         api,
         const ChatKey('shell', 'app:test'),
-        outbox: _tempOutbox(),
+        outbox: outbox,
       );
       final first = controller.send('first');
       await api.started.future;
 
-      final queued = controller.send(
-        'photo later',
-        imagePath: photo.path,
-      );
+      final queued = controller.send('photo later', imagePath: photo.path);
       expect(api.steerCalls, 0);
       expect(controller.state.queued, hasLength(1));
       expect(controller.state.queued.single.imagePath, photo.path);
@@ -100,7 +116,11 @@ void main() {
   test('classified correction reuses the active work id', () async {
     final api = FakeApi()..holdFirst = false;
     api.relation = 'correction';
-    final controller = ChatController(api, const ChatKey('shell', 'app:test'), outbox: _tempOutbox());
+    final controller = ChatController(
+      api,
+      const ChatKey('shell', 'app:test'),
+      outbox: _tempOutbox(),
+    );
 
     await controller.send('first');
     await controller.send('please fix that');
@@ -111,11 +131,60 @@ void main() {
 
   test('new task classification does not reuse prior work', () async {
     final api = FakeApi()..holdFirst = false;
-    final controller = ChatController(api, const ChatKey('shell', 'app:test'), outbox: _tempOutbox());
+    final controller = ChatController(
+      api,
+      const ChatKey('shell', 'app:test'),
+      outbox: _tempOutbox(),
+    );
 
     await controller.send('first');
     await controller.send('unrelated question');
 
     expect(api.continuations, [null, null]);
+  });
+
+  test(
+    'queued reply snapshots its project and skips unrelated work classification',
+    () async {
+      final api = FakeApi();
+      final outbox = _tempOutbox();
+      final controller = ChatController(
+        api,
+        const ChatKey('shell', 'app:test'),
+        outbox: outbox,
+      );
+      controller.setProjectContext('alpha');
+      final first = controller.send('first');
+      await api.started.future;
+
+      controller.setProjectContext('beta');
+      final reply = controller.send(
+        'answer that message',
+        replyToMessageId: 17,
+        replyToContent: 'Question',
+        replyToRole: 'user',
+      );
+      await reply;
+      expect((await outbox.load()).pending.last.project, 'beta');
+      controller.setProjectContext('gamma');
+
+      api.release.complete();
+      await first;
+      expect(api.sentProjects, ['alpha', 'beta']);
+      expect(api.replyIds, [null, 17]);
+      expect(api.continuations, [null, null]);
+    },
+  );
+
+  test('history refresh hydrates IDs when a final event omits them', () async {
+    final api = FakeApi()..holdFirst = false;
+    final controller = ChatController(
+      api,
+      const ChatKey('shell', 'app:test'),
+      outbox: _tempOutbox(),
+    );
+    await controller.send('hydrate ids');
+    expect(controller.state.messages.first.messageId, 91);
+    expect(controller.state.messages[1].messageId, 92);
   });
 }

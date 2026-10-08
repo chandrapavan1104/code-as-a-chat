@@ -13,6 +13,10 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.media.browse.MediaBrowser
+import android.media.session.MediaController as PlatformMediaController
+import android.media.session.MediaSession
+import java.util.UUID
 import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.Settings
@@ -28,11 +32,39 @@ import io.flutter.plugin.common.MethodChannel
  * after Android grants CALL_PHONE. */
 class VoiceActions(private val activity: Activity) {
     private data class Pending(val kind: String, val result: MethodChannel.Result, val query: String? = null)
+    private inner class OnceMusicResult(
+        private val requestId: String,
+        private val delegate: MethodChannel.Result,
+    ) : MethodChannel.Result {
+        private var completed = false
+        override fun success(result: Any?) = finish {
+            val diagnostic = (result as? Map<*, *>)?.get("diagnostics") as? Map<*, *>
+            if (diagnostic != null) {
+                try {
+                    activity.getSharedPreferences("music_diagnostics", Context.MODE_PRIVATE).edit()
+                        .putString("last_result", org.json.JSONObject(diagnostic).toString().take(12000)).apply()
+                } catch (_: Exception) {}
+            }
+            delegate.success(result)
+        }
+        override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) =
+            finish { delegate.error(errorCode, errorMessage, errorDetails) }
+        override fun notImplemented() = finish { delegate.notImplemented() }
+        private fun finish(action: () -> Unit) {
+            if (completed) return
+            completed = true
+            pendingMusicResults.remove(requestId)
+            action()
+        }
+    }
 
     private var pending: Pending? = null
     private var disposed = false
     private var verifyHandler: Handler? = null
     private var verifyRunnable: Runnable? = null
+    private val musicBrowsers = mutableSetOf<MediaBrowser>()
+    private val pendingMusicResults = mutableMapOf<String, OnceMusicResult>()
+    private var lastMusicProbe: Map<String, Any?> = mapOf("status" to "not_checked", "reason" to "Probe has not run.")
 
     fun handle(call: MethodCall, result: MethodChannel.Result): Boolean {
         if (disposed) {
@@ -44,7 +76,16 @@ class VoiceActions(private val activity: Activity) {
             "call" -> callNumber(call.argument<String>("number"), result)
             "playMusic" -> playMusic(call.argument<String>("query"), call.argument<String>("package"), result)
             "musicApps" -> result.success(musicApps())
-            "musicAccess" -> result.success(musicAccess())
+            "musicAccess" -> {
+                val id = UUID.randomUUID().toString()
+                val once = OnceMusicResult(id, result)
+                pendingMusicResults[id] = once
+                probeYtMusic(id) { probe ->
+                    finishMusicBrowser(probe)
+                    if (disposed) once.success(mapOf("status" to "cancelled", "message" to "Activity is no longer active."))
+                    else once.success(musicAccess(probe))
+                }
+            }
             "openMusicControlAccess" -> {
                 try {
                     activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -94,6 +135,11 @@ class VoiceActions(private val activity: Activity) {
     fun cancelPending() {
         pending = null
         YouTubeMusicAccessibilityService.cancel()
+        pendingMusicResults.values.toList().forEach {
+            it.success(mapOf("status" to "cancelled", "message" to "Activity is no longer active."))
+        }
+        musicBrowsers.toList().forEach { try { it.disconnect() } catch (_: Exception) {} }
+        musicBrowsers.clear()
         verifyRunnable?.let { verifyHandler?.removeCallbacks(it) }
         verifyRunnable = null
         verifyHandler = null
@@ -187,18 +233,63 @@ class VoiceActions(private val activity: Activity) {
             return
         }
         val targetPackage = packageName?.takeIf { it.isNotBlank() } ?: YOUTUBE_MUSIC
+        val requestId = UUID.randomUUID().toString()
+        val once = OnceMusicResult(requestId, result)
+        pendingMusicResults[requestId] = once
         val extras = searchExtras(text)
+        val manager = mediaManager()
+        val before = activeMedia(manager, targetPackage)
+        val beforeToken = before?.sessionToken
+        val beforeTitle = before?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        val beforeArtist = before?.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+        if (targetPackage == YOUTUBE_MUSIC) {
+            probeYtMusic(requestId) { probe ->
+                if (disposed) return@probeYtMusic
+                val browserConnected = probe["browserConnected"] == true
+                val directSupported = probe["playFromSearchSupported"] == true
+                if (browserConnected && directSupported) {
+                    val browserToken = probe["sessionToken"] as? MediaSession.Token
+                    val controller = try { browserToken?.let { PlatformMediaController(activity, it) } }
+                    catch (_: Exception) { null }
+                    if (controller != null) {
+                        val diag = musicDiagnostic("direct_execution", "attempted", "playFromSearch dispatched", probe)
+                        try {
+                            controller.transportControls.playFromSearch(text, extras)
+                            verifyPlaybackAsync(manager, targetPackage, text, extras, beforeToken,
+                                beforeTitle, beforeArtist, once, diagnostic = diag) {
+                                    finishMusicBrowser(probe)
+                                }
+                        } catch (e: Exception) {
+                            finishMusicBrowser(probe)
+                            once.success(mapOf("status" to "unverified", "package" to targetPackage,
+                                "query" to text, "diagnostics" to diag,
+                                "message" to "YouTube Music exposed play-from-search, but rejected the request (${e.javaClass.simpleName})."))
+                        }
+                        return@probeYtMusic
+                    }
+                }
+                finishMusicBrowser(probe)
+                // Retain existing explicit, user-visible fallbacks when the
+                // official app does not expose a proven direct search action.
+                playMusicFallback(text, targetPackage, extras, manager, beforeToken,
+                    beforeTitle, beforeArtist, once, probe)
+            }
+            return
+        }
+        playMusicFallback(text, targetPackage, extras, manager, beforeToken,
+            beforeTitle, beforeArtist, once, emptyMap())
+    }
+
+    private fun playMusicFallback(text: String, targetPackage: String, extras: Bundle,
+                                  manager: MediaSessionManager?, beforeToken: android.media.session.MediaSession.Token?,
+                                  beforeTitle: String, beforeArtist: String, result: MethodChannel.Result,
+                                  probe: Map<String, Any?>) {
         val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
             putExtra(android.app.SearchManager.QUERY, text)
             putExtras(extras)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             setPackage(targetPackage)
         }
-        val manager = mediaManager()
-        val before = activeMedia(manager, targetPackage)
-        val beforeToken = before?.sessionToken
-        val beforeTitle = before?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
-        val beforeArtist = before?.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
         if (targetPackage == YOUTUBE_MUSIC &&
             YouTubeMusicAccessibilityService.isEnabled(activity) &&
             YouTubeMusicAccessibilityService.start(text) { outcome ->
@@ -206,21 +297,25 @@ class VoiceActions(private val activity: Activity) {
                 when (outcome) {
                     YouTubeMusicAccessibilityService.Outcome.SELECTED ->
                         verifyPlaybackAsync(manager, targetPackage, text, extras,
-                            beforeToken, beforeTitle, beforeArtist, result, allowSessionNudge = false)
+                            beforeToken, beforeTitle, beforeArtist, result, allowSessionNudge = false,
+                            diagnostic = musicDiagnostic("accessibility_execution", "selected", "Accessible result selected", probe))
                     YouTubeMusicAccessibilityService.Outcome.SELECTED_COLLECTION ->
                         verifyPlaybackAsync(manager, targetPackage, text, extras,
                             beforeToken, beforeTitle, beforeArtist, result,
-                            allowSessionNudge = false, selectedCollection = true)
+                            allowSessionNudge = false, selectedCollection = true,
+                            diagnostic = musicDiagnostic("accessibility_execution", "selected_collection", "Accessible collection selected", probe))
                     YouTubeMusicAccessibilityService.Outcome.SEARCHED ->
                         result.success(mapOf("status" to "searched", "package" to targetPackage,
-                            "query" to text,
+                            "query" to text, "diagnostics" to musicDiagnostic("accessibility_execution", "search_only", "No safe matching result selected", probe),
                             "message" to "Searched YouTube Music, but no safe matching song result was selected. Playback was not verified."))
                     YouTubeMusicAccessibilityService.Outcome.FAILED ->
                         result.success(mapOf("status" to "unsupported", "package" to targetPackage,
-                            "query" to text, "message" to "YouTube Music could not be opened for controlled playback."))
+                            "query" to text, "diagnostics" to musicDiagnostic("accessibility_execution", "failed", "Could not open controlled playback UI", probe),
+                            "message" to "YouTube Music could not be opened for controlled playback."))
                     YouTubeMusicAccessibilityService.Outcome.CANCELLED ->
                         result.success(mapOf("status" to "cancelled", "package" to targetPackage,
-                            "query" to text, "message" to "YouTube Music playback was cancelled."))
+                            "query" to text, "diagnostics" to musicDiagnostic("accessibility_execution", "cancelled", "Accessibility action cancelled", probe),
+                            "message" to "YouTube Music playback was cancelled."))
                 }
             }
         ) return
@@ -232,33 +327,37 @@ class VoiceActions(private val activity: Activity) {
         } catch (_: android.content.ActivityNotFoundException) {
             if (targetPackage == YOUTUBE_MUSIC && openYouTubeMusicSearch(text)) {
                 result.success(mapOf("status" to "searched", "package" to targetPackage,
-                    "query" to text,
+                    "query" to text, "diagnostics" to musicDiagnostic("intent_execution", "search_opened", "Play-from-search intent unavailable; search opened", probe),
                     "message" to "Opened YouTube Music and searched for $text. Playback was not verified."))
                 return
             }
             result.success(mapOf("status" to "unsupported", "package" to targetPackage,
-                "query" to text, "message" to "Music app cannot start playback search."))
+                "query" to text, "diagnostics" to musicDiagnostic("intent_execution", "unsupported", "No matching play-from-search activity", probe),
+                "message" to "Music app cannot start playback search."))
             return
         } catch (_: SecurityException) {
             if (targetPackage == YOUTUBE_MUSIC && openYouTubeMusicSearch(text)) {
                 result.success(mapOf("status" to "searched", "package" to targetPackage,
-                    "query" to text,
+                    "query" to text, "diagnostics" to musicDiagnostic("intent_execution", "search_opened", "Play-from-search intent denied; search opened", probe),
                     "message" to "Opened YouTube Music and searched for $text. Playback was not verified."))
                 return
             }
             result.success(mapOf("status" to "unsupported", "package" to targetPackage,
-                "query" to text, "message" to "Music app rejected playback search."))
+                "query" to text, "diagnostics" to musicDiagnostic("intent_execution", "denied", "Play-from-search intent denied", probe),
+                "message" to "Music app rejected playback search."))
             return
         }
         val access = musicAccess()
         if (access["sessionReadable"] != true) {
             result.success(mapOf("status" to "requested", "package" to targetPackage, "query" to text,
-                "access" to access,
+                "access" to access, "diagnostics" to musicDiagnostic("intent_execution", "search_opened", "Playback verification unavailable", probe),
                 "message" to "Opened the search, but Gajala cannot start playback without notification " +
                     "access (it plays through the app's media session). ${access["message"]}"))
             return
         }
-        verifyPlaybackAsync(manager, targetPackage, text, extras, beforeToken, beforeTitle, beforeArtist, result)
+        verifyPlaybackAsync(manager, targetPackage, text, extras, beforeToken, beforeTitle, beforeArtist, result,
+            allowSessionNudge = targetPackage != YOUTUBE_MUSIC,
+            diagnostic = musicDiagnostic("intent_execution", "requested", "Intent dispatched; playback pending verification", probe))
     }
 
     /** Try a package-targeted search fallback; installed app support varies.
@@ -298,21 +397,31 @@ class VoiceActions(private val activity: Activity) {
                                     beforeToken: android.media.session.MediaSession.Token?,
                                     beforeTitle: String, beforeArtist: String,
                                     result: MethodChannel.Result,
-                                    allowSessionNudge: Boolean = true, selectedCollection: Boolean = false) {
+                                    allowSessionNudge: Boolean = true, selectedCollection: Boolean = false,
+                                    diagnostic: Map<String, Any?> = emptyMap(),
+                                    onFinished: (() -> Unit)? = null) {
         if (manager == null) {
             result.success(mapOf("status" to "unverified", "package" to packageName,
+                "diagnostics" to diagnostic + mapOf("stage" to "execution_verification", "outcome" to "unavailable", "reason" to "Media session manager unavailable"),
                 "message" to "Playback was requested but no media session is available."))
+            onFinished?.invoke()
             return
         }
         val handler = Handler(Looper.getMainLooper())
         verifyHandler = handler
         val started = System.currentTimeMillis()
         var nudged = false
+        var firstPlayingPosition: Long? = null
+        var firstPlayingAt: Long? = null
         val check = object : Runnable {
             override fun run() {
-                if (disposed) return
+                if (disposed) {
+                    onFinished?.invoke()
+                    return
+                }
                 val current = activeMedia(manager, packageName)
-                val state = current?.playbackState?.state
+                val playbackState = current?.playbackState
+                val state = playbackState?.state
                 val metadata = current?.metadata
                 val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
                 val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
@@ -327,10 +436,35 @@ class VoiceActions(private val activity: Activity) {
                 }
                 val changed = beforeToken == null || current?.sessionToken != beforeToken ||
                     title != beforeTitle || artist != beforeArtist
-                if (state == PlaybackState.STATE_PLAYING && title.isNotBlank() && matched && changed) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                val position = playbackState?.let {
+                    when {
+                        it.position < 0 -> null
+                        it.lastPositionUpdateTime <= 0 -> it.position
+                        else -> it.position +
+                            ((now - it.lastPositionUpdateTime).coerceAtLeast(0) * it.playbackSpeed).toLong()
+                    }
+                }
+                val eligible = state == PlaybackState.STATE_PLAYING && title.isNotBlank() && matched && changed
+                if (eligible && position != null && firstPlayingPosition == null) {
+                    firstPlayingPosition = position
+                    firstPlayingAt = now
+                }
+                val firstPosition = firstPlayingPosition
+                val firstAt = firstPlayingAt
+                val positionAdvancedMs = position?.let { current -> firstPosition?.let { current - it } }
+                val advancing = eligible && firstAt != null && now - firstAt >= 200 &&
+                    positionAdvancedMs != null && positionAdvancedMs >= 200
+                if (advancing) {
                     verifyRunnable = null
                     result.success(mapOf("status" to "playing", "package" to packageName,
-                        "title" to title, "artist" to artist, "message" to "Playback verified."))
+                        "title" to title, "artist" to artist,
+                        "diagnostics" to diagnostic + mapOf("stage" to "execution_verification", "outcome" to "verified",
+                            "executionDurationMs" to (System.currentTimeMillis() - started),
+                            "observedState" to state, "observedTitle" to title.take(120),
+                            "positionAdvancedMs" to positionAdvancedMs),
+                        "message" to "Playback verified."))
+                    onFinished?.invoke()
                 } else if (allowSessionNudge && current != null && !nudged &&
                     System.currentTimeMillis() - started >= NUDGE_AFTER_MS) {
                     // The launch intent only opens YouTube Music's search
@@ -344,9 +478,15 @@ class VoiceActions(private val activity: Activity) {
                     handler.postDelayed(this, VERIFY_INTERVAL_MS)
                 } else if (System.currentTimeMillis() - started >= VERIFY_MS) {
                     verifyRunnable = null
+                    val positionAdvanced = position?.let { current -> firstPlayingPosition?.let { current - it } }
                     result.success(mapOf("status" to "unverified", "package" to packageName,
                         "title" to title, "artist" to artist,
+                        "diagnostics" to diagnostic + mapOf("stage" to "execution_verification", "outcome" to "unverified",
+                            "executionDurationMs" to (System.currentTimeMillis() - started),
+                            "observedState" to state, "observedTitle" to title.take(120),
+                            "positionAdvancedMs" to positionAdvanced),
                         "message" to "Playback was requested, but Gajala could not verify the matching track started."))
+                    onFinished?.invoke()
                 } else handler.postDelayed(this, VERIFY_INTERVAL_MS)
             }
         }
@@ -364,17 +504,9 @@ class VoiceActions(private val activity: Activity) {
     } catch (_: SecurityException) { null }
 
     // Permission approval and media-session availability are distinct facts.
-    private fun musicAccess(): Map<String, Any?> {
+    private fun musicAccess(probe: Map<String, Any?> = lastMusicProbe): Map<String, Any?> {
         val component = ComponentName(activity, GajalaNotificationListener::class.java)
-        val enabled: Boolean? = try {
-            if (Build.VERSION.SDK_INT >= 27) {
-                (activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                    .isNotificationListenerAccessGranted(component)
-            } else {
-                Settings.Secure.getString(activity.contentResolver, "enabled_notification_listeners")
-                    .orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component }
-            }
-        } catch (_: Exception) { null }
+        val enabled = notificationListenerEnabled()
         var error: String? = null
         val sessions = try {
             val manager = mediaManager()
@@ -391,13 +523,152 @@ class VoiceActions(private val activity: Activity) {
             enabled == false -> "Notification access is off for Gajala. Enable it in Android settings to verify playback."
             else -> "Gajala could not check notification access. This does not mean permission was denied."
         }
+        val services = discoverYtMusicServices()
         return mapOf("enabled" to enabled, "sessionReadable" to readable,
             "musicControlEnabled" to YouTubeMusicAccessibilityService.isEnabled(activity),
             "musicControlConnected" to (YouTubeMusicAccessibilityService.startProbe()),
             "listenerConnected" to (GajalaNotificationListener.instance != null),
             "activePlayers" to sessions?.map { it.packageName }?.distinct(),
-            "error" to error, "message" to message)
+            "error" to error, "message" to message, "ytmServices" to services,
+            "lastPlaybackDiagnostics" to activity.getSharedPreferences("music_diagnostics", Context.MODE_PRIVATE).getString("last_result", null),
+            "directProbe" to probe.filterKeys { it != "sessionToken" && it != "_browser" })
     }
+
+    private fun discoverYtMusicServices(): List<String> = try {
+        val query = Intent(android.service.media.MediaBrowserService.SERVICE_INTERFACE)
+        activity.packageManager.queryIntentServices(query, PackageManager.MATCH_ALL)
+            .filter { it.serviceInfo.packageName == YOUTUBE_MUSIC }
+            .map { it.serviceInfo.name }.take(12)
+    } catch (e: Exception) { emptyList() }
+
+    /** Connect only to YouTube Music's declared browser service; connection is
+     * evidence of a service, never evidence of searchable catalog/playback. */
+    private fun probeYtMusic(requestId: String = UUID.randomUUID().toString(), done: (Map<String, Any?>) -> Unit) {
+        val started = System.currentTimeMillis()
+        val services = discoverYtMusicServices()
+        if (services.isEmpty()) {
+            val probe = mapOf<String, Any?>("requestId" to requestId, "stage" to "service_discovery",
+                "status" to "unsupported", "reason" to "No YouTube Music MediaBrowserService is visible.",
+                "browserConnected" to false, "playFromSearchSupported" to false,
+                "browseSearch" to "unknown (no browser service)", "durationMs" to (System.currentTimeMillis() - started))
+            lastMusicProbe = probe
+            done(probe); return
+        }
+        val component = ComponentName(YOUTUBE_MUSIC, services.first())
+        var settled = false
+        lateinit var browser: MediaBrowser
+        try {
+            browser = MediaBrowser(activity, component, object : MediaBrowser.ConnectionCallback() {
+                override fun onConnected() {
+                    if (settled) return
+                    settled = true
+                    if (disposed) {
+                        finishMusicBrowser(mapOf("_browser" to browser))
+                        return
+                    }
+                    val token = try { browser.sessionToken } catch (_: Exception) { null }
+                    val controller = try { token?.let { PlatformMediaController(activity, it) } } catch (_: Exception) { null }
+                    val playbackState = controller?.playbackState
+                    val actions = playbackState?.actions ?: 0L
+                    val supportsPlayFromSearch: Boolean? = playbackState?.let {
+                        actions and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L
+                    }
+                    val base = linkedMapOf<String, Any?>("requestId" to requestId,
+                        "app" to YOUTUBE_MUSIC, "appVersion" to packageVersion(YOUTUBE_MUSIC),
+                        "service" to services.first(),
+                        "stage" to "session_capabilities", "status" to "connected",
+                        "browserConnected" to true, "sessionAvailable" to (token != null),
+                        "browseRootAvailable" to true,
+                        "browseRootExtraKeys" to browser.extras?.keySet()?.take(20),
+                        "playFromSearchSupported" to supportsPlayFromSearch,
+                        "supportedActions" to actions, "browseSearch" to "unknown (platform MediaBrowser has no search API)",
+                        "durationMs" to (System.currentTimeMillis() - started),
+                        "reason" to when (supportsPlayFromSearch) {
+                            true -> "Session advertises playFromSearch; execution still requires playback verification."
+                            false -> "Connected, but session does not advertise playFromSearch."
+                            null -> "Connected, but no playback state is published, so supported commands are unknown."
+                        })
+                    lastMusicProbe = base
+                    done(base + mapOf("sessionToken" to token, "_browser" to browser))
+                }
+                override fun onConnectionFailed() {
+                    if (settled) return
+                    settled = true
+                    musicBrowsers.remove(browser)
+                    try { browser.disconnect() } catch (_: Exception) {}
+                    val probe = mapOf<String, Any?>("requestId" to requestId, "stage" to "browser_connection",
+                        "status" to "failed", "browserConnected" to false, "playFromSearchSupported" to false,
+                        "browseSearch" to "not_probed", "reason" to "YouTube Music's browser service rejected the connection.",
+                        "durationMs" to (System.currentTimeMillis() - started))
+                    lastMusicProbe = probe; done(probe)
+                }
+            }, null)
+        } catch (e: Exception) {
+            val probe = mapOf<String, Any?>("requestId" to requestId, "stage" to "browser_bind",
+                "status" to "failed", "browserConnected" to false, "playFromSearchSupported" to false,
+                "browseSearch" to "not_probed", "reason" to "${e.javaClass.simpleName}: browser bind failed.")
+            lastMusicProbe = probe; done(probe); return
+        }
+        musicBrowsers.add(browser)
+        try { browser.connect() } catch (e: Exception) {
+            settled = true
+            musicBrowsers.remove(browser)
+            try { browser.disconnect() } catch (_: Exception) {}
+            val probe = mapOf<String, Any?>("requestId" to requestId, "stage" to "browser_bind", "status" to "failed",
+                "browserConnected" to false, "playFromSearchSupported" to false, "browseSearch" to "not_probed",
+                "reason" to "${e.javaClass.simpleName}: browser connection failed.")
+            lastMusicProbe = probe; done(probe)
+        }
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!settled) {
+                settled = true
+                try { browser.disconnect() } catch (_: Exception) {}
+                musicBrowsers.remove(browser)
+                val probe = mapOf<String, Any?>("requestId" to requestId, "stage" to "browser_connection",
+                    "status" to "timeout", "browserConnected" to false, "playFromSearchSupported" to false,
+                    "browseSearch" to "not_probed", "reason" to "YouTube Music browser connection timed out.", "durationMs" to (System.currentTimeMillis() - started))
+                lastMusicProbe = probe; done(probe)
+            }
+        }, 2500)
+    }
+
+    private fun finishMusicBrowser(probe: Map<String, Any?>) {
+        val browser = probe["_browser"] as? MediaBrowser ?: return
+        musicBrowsers.remove(browser)
+        try { browser.disconnect() } catch (_: Exception) {}
+    }
+
+    private fun packageVersion(pkg: String): String? = try {
+        @Suppress("DEPRECATION")
+        activity.packageManager.getPackageInfo(pkg, 0).versionName
+    } catch (_: Exception) { null }
+
+    private fun musicDiagnostic(stage: String, outcome: String, reason: String,
+                                probe: Map<String, Any?>): Map<String, Any?> = mapOf(
+        "requestId" to (probe["requestId"] ?: UUID.randomUUID().toString()), "stage" to stage,
+        "app" to YOUTUBE_MUSIC, "appVersion" to probe["appVersion"],
+        "adapter" to when {
+            stage == "direct_execution" -> "ytm_media_session"
+            stage == "accessibility_execution" -> "ytm_accessibility"
+            else -> "ytm_intent"
+        },
+        "outcome" to outcome, "reason" to reason, "probeStage" to probe["stage"],
+        "probeDurationMs" to probe["durationMs"], "chosenMediaId" to null,
+        "networkConnectivity" to "not_checked", "notificationAccess" to notificationListenerEnabled(),
+        "browserConnected" to probe["browserConnected"],
+        "playFromSearchSupported" to probe["playFromSearchSupported"],
+        "browseSearch" to probe["browseSearch"])
+
+    private fun notificationListenerEnabled(): Boolean? = try {
+        val component = ComponentName(activity, GajalaNotificationListener::class.java)
+        if (Build.VERSION.SDK_INT >= 27) {
+            (activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .isNotificationListenerAccessGranted(component)
+        } else {
+            Settings.Secure.getString(activity.contentResolver, "enabled_notification_listeners")
+                .orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component }
+        }
+    } catch (_: Exception) { null }
 
     private fun musicApps(): List<Map<String, String>> {
         val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)

@@ -16,11 +16,15 @@ class FlakyApi extends GajalaApi {
   bool rejectWith500 = false;
   final List<String?> requestIds = [];
   final List<String> prompts = [];
+  final List<int?> replyIds = [];
 
   FlakyApi() : super('http://127.0.0.1:1', 'test');
 
   @override
-  Future<List<ChatMessage>> chatHistory(String sessionId, {int limit = 50}) async => [];
+  Future<List<ChatMessage>> chatHistory(
+    String sessionId, {
+    int limit = 50,
+  }) async => [];
 
   @override
   Future<List<AssistantWork>> assistantWork(String sessionId) async => [];
@@ -37,6 +41,7 @@ class FlakyApi extends GajalaApi {
     String? project,
     String? requestId,
     String? continueTaskId,
+    int? replyToMessageId,
   }) async* {
     final options = RequestOptions(path: '/run/stream');
     if (rejectWith500) {
@@ -54,8 +59,13 @@ class FlakyApi extends GajalaApi {
     }
     requestIds.add(requestId);
     prompts.add(prompt);
+    replyIds.add(replyToMessageId);
     yield {'type': 'step', 'label': 'Thinking…'};
-    yield {'type': 'final', 'result': 'reply to $prompt', 'workspace': 'general'};
+    yield {
+      'type': 'final',
+      'result': 'reply to $prompt',
+      'workspace': 'general',
+    };
   }
 }
 
@@ -83,7 +93,10 @@ void main() {
       await outbox.add(entry('a'));
       await outbox.add(entry('b'));
       final reopened = Outbox(dir: () async => dir);
-      expect((await reopened.load()).pending.map((e) => e.requestId), ['a', 'b']);
+      expect((await reopened.load()).pending.map((e) => e.requestId), [
+        'a',
+        'b',
+      ]);
       await reopened.remove('a');
       expect((await outbox.load()).pending.map((e) => e.requestId), ['b']);
     });
@@ -91,7 +104,9 @@ void main() {
     test('drops entries older than 48 hours and reports them', () async {
       final now = DateTime(2026, 10, 6, 12);
       final timed = Outbox(dir: () async => dir, now: () => now);
-      await timed.add(entry('old', at: now.subtract(const Duration(hours: 49))));
+      await timed.add(
+        entry('old', at: now.subtract(const Duration(hours: 49))),
+      );
       await timed.add(entry('new', at: now.subtract(const Duration(hours: 1))));
       final r = await timed.load();
       expect(r.pending.map((e) => e.requestId), ['new']);
@@ -106,42 +121,85 @@ void main() {
       expect(() => outbox.add(entry('51')), throwsA(isA<OutboxFull>()));
     });
 
-    test('copies the photo so it survives, deletes the copy once sent', () async {
-      final photo = File('${dir.path}/picker-cache.jpg')..writeAsBytesSync([1, 2, 3]);
-      final saved = await outbox.add(entry('p', image: photo.path));
-      expect(saved.imagePath, isNot(photo.path));
-      photo.deleteSync(); // the picker's cache is gone after a restart
-      expect(File(saved.imagePath!).readAsBytesSync(), [1, 2, 3]);
-      await outbox.remove('p');
-      expect(File(saved.imagePath!).existsSync(), isFalse);
-    });
+    test(
+      'copies the photo so it survives, deletes the copy once sent',
+      () async {
+        final photo = File('${dir.path}/picker-cache.jpg')
+          ..writeAsBytesSync([1, 2, 3]);
+        final saved = await outbox.add(entry('p', image: photo.path));
+        expect(saved.imagePath, isNot(photo.path));
+        photo.deleteSync(); // the picker's cache is gone after a restart
+        expect(File(saved.imagePath!).readAsBytesSync(), [1, 2, 3]);
+        await outbox.remove('p');
+        expect(File(saved.imagePath!).existsSync(), isFalse);
+      },
+    );
   });
 
   group('ChatController', () {
-    test('offline send is kept, then delivered once with the same request id',
-        () async {
-      final api = FlakyApi();
-      final chat = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
-      await chat.send('deploy status');
+    test(
+      'reply target survives offline outbox persistence and replay',
+      () async {
+        final api = FlakyApi();
+        final chat = ChatController(
+          api,
+          _key,
+          outbox: outbox,
+          voiceJournal: VoiceJournal(dir: () async => dir),
+        );
+        await chat.send(
+          'follow up',
+          replyToMessageId: 41,
+          replyToContent: 'Original question',
+          replyToRole: 'user',
+        );
+        final saved = (await outbox.load()).pending.single;
+        expect(saved.replyToMessageId, 41);
+        expect(saved.replyToContent, 'Original question');
 
-      expect(chat.state.messages.last.role, 'outbox');
-      final waiting = (await outbox.load()).pending;
-      expect(waiting, hasLength(1));
+        api.online = true;
+        await chat.replayOutbox();
+        expect(api.replyIds, [41]);
+        expect(chat.state.messages.first.replyToMessageId, 41);
+      },
+    );
 
-      api.online = true;
-      await chat.replayOutbox();
-      expect(api.requestIds, [waiting.single.requestId]);
-      expect(chat.state.messages.map((m) => m.role), ['user', 'bot']);
-      expect(chat.state.messages.last.text, 'reply to deploy status');
-      expect((await outbox.load()).pending, isEmpty);
+    test(
+      'offline send is kept, then delivered once with the same request id',
+      () async {
+        final api = FlakyApi();
+        final chat = ChatController(
+          api,
+          _key,
+          outbox: outbox,
+          voiceJournal: VoiceJournal(dir: () async => dir),
+        );
+        await chat.send('deploy status');
 
-      await chat.replayOutbox(); // nothing left: no second delivery
-      expect(api.requestIds, hasLength(1));
-    });
+        expect(chat.state.messages.last.role, 'outbox');
+        final waiting = (await outbox.load()).pending;
+        expect(waiting, hasLength(1));
+
+        api.online = true;
+        await chat.replayOutbox();
+        expect(api.requestIds, [waiting.single.requestId]);
+        expect(chat.state.messages.map((m) => m.role), ['user', 'bot']);
+        expect(chat.state.messages.last.text, 'reply to deploy status');
+        expect((await outbox.load()).pending, isEmpty);
+
+        await chat.replayOutbox(); // nothing left: no second delivery
+        expect(api.requestIds, hasLength(1));
+      },
+    );
 
     test('a server error is not kept for resending', () async {
       final api = FlakyApi()..rejectWith500 = true;
-      final chat = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
+      final chat = ChatController(
+        api,
+        _key,
+        outbox: outbox,
+        voiceJournal: VoiceJournal(dir: () async => dir),
+      );
       // An HTTP error means the Mac saw the request; the existing recovery
       // then polls history for a reply, which this test does not wait out.
       chat.send('hello');
@@ -152,10 +210,20 @@ void main() {
 
     test('unsent messages survive an app restart and send on reopen', () async {
       final api = FlakyApi();
-      await ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir)).send('remember me');
+      await ChatController(
+        api,
+        _key,
+        outbox: outbox,
+        voiceJournal: VoiceJournal(dir: () async => dir),
+      ).send('remember me');
 
       api.online = true;
-      final reopened = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
+      final reopened = ChatController(
+        api,
+        _key,
+        outbox: outbox,
+        voiceJournal: VoiceJournal(dir: () async => dir),
+      );
       await reopened.ensureLoaded();
       // ensureLoaded kicks off the replay without awaiting it.
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -164,17 +232,25 @@ void main() {
       expect(reopened.state.messages.last.text, 'reply to remember me');
     });
 
-    test('messages behind an undeliverable one stay waiting in order', () async {
-      final api = FlakyApi();
-      final chat = ChatController(api, _key, outbox: outbox, voiceJournal: VoiceJournal(dir: () async => dir));
-      await chat.send('first');
-      await chat.send('second');
-      expect(chat.state.messages.map((m) => m.role), ['outbox', 'outbox']);
+    test(
+      'messages behind an undeliverable one stay waiting in order',
+      () async {
+        final api = FlakyApi();
+        final chat = ChatController(
+          api,
+          _key,
+          outbox: outbox,
+          voiceJournal: VoiceJournal(dir: () async => dir),
+        );
+        await chat.send('first');
+        await chat.send('second');
+        expect(chat.state.messages.map((m) => m.role), ['outbox', 'outbox']);
 
-      api.online = true;
-      await chat.replayOutbox();
-      expect(api.prompts, ['first', 'second']);
-      expect((await outbox.load()).pending, isEmpty);
-    });
+        api.online = true;
+        await chat.replayOutbox();
+        expect(api.prompts, ['first', 'second']);
+        expect((await outbox.load()).pending, isEmpty);
+      },
+    );
   });
 }

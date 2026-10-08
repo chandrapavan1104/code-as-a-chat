@@ -21,15 +21,20 @@ def test_search_is_session_scoped_and_get_returns_exact_text():
 
 
 def test_explicit_client_search_and_pagination():
-    for session in ("app:one", "app:two", "tg:42"):
+    sessions = ("app:install-a::project-one", "app:install-a::project-two",
+                "app:install-b::project-one", "tg:42")
+    for session in sessions:
         store.append_turn(session, "user", "shared decision text")
-    matches = store.search("app:one", "shared decision", all_client=True, limit=1)
+    matches = store.search("app:install-a::project-one", "shared decision",
+                           all_client=True, limit=1)
     assert len(matches) == 1
-    assert matches[0]["session_id"].startswith("app:")
-    page = store.search("app:one", "shared decision", all_client=True, limit=1, offset=1)
+    assert matches[0]["session_id"].startswith("app:install-a:")
+    page = store.search("app:install-a::project-one", "shared decision",
+                        all_client=True, limit=1, offset=1)
     assert len(page) == 1
     assert page[0]["id"] != matches[0]["id"]
-    assert all(item["session_id"].startswith("app:") for item in matches + page)
+    assert all(item["session_id"].startswith("app:install-a:")
+               for item in matches + page)
 
 
 def test_memory_skill_search_previews_and_get_is_exact():
@@ -49,10 +54,12 @@ def test_memory_skill_search_previews_and_get_is_exact():
 
 
 def test_memory_skill_explicit_cross_project_search_does_not_cross_clients():
-    store.append_turn("app:one", "user", "dashboard final copy")
-    store.append_turn("app:two", "user", "dashboard final copy")
+    store.append_turn("app:install-a::one", "user", "dashboard final copy")
+    store.append_turn("app:install-a::two", "user", "dashboard final copy")
+    store.append_turn("app:install-b::one", "user", "dashboard final copy")
     store.append_turn("tg:42", "user", "dashboard final copy")
     result = asyncio.run(MemorySkill().run(
-        "search all dashboard final copy", session_id="app:one"))
-    assert "app:one" in result or "app:two" in result
+        "search all dashboard final copy", session_id="app:install-a::one"))
+    assert "install-a" in result
+    assert "install-b" not in result
     assert "tg:42" not in result

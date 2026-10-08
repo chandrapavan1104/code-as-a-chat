@@ -12,11 +12,31 @@ import hashlib
 import json
 import sqlite3
 import time
+from contextvars import ContextVar
 from contextlib import contextmanager
 from pathlib import Path
 
 
 DB_PATH = Path.home() / ".codeasachat" / "conversations.db"
+_turn_context: ContextVar[dict | None] = ContextVar("memory_turn_context", default=None)
+
+
+@contextmanager
+def turn_context(session_id: str | None, reply_to_message_id: int | None = None):
+    """Carry the explicit reply source through async routing and memory writes."""
+    state = {"session_id": session_id, "reply_to_message_id": reply_to_message_id,
+             "user_message_id": None, "assistant_message_id": None}
+    token = _turn_context.set(state)
+    try:
+        yield state
+    finally:
+        _turn_context.reset(token)
+
+
+def current_turn_ids() -> dict:
+    state = _turn_context.get()
+    return {"user_message_id": state.get("user_message_id"),
+            "assistant_message_id": state.get("assistant_message_id")} if state else {}
 
 
 @contextmanager
@@ -50,12 +70,27 @@ def _init() -> None:
         cols = {r[1] for r in c.execute("PRAGMA table_info(conversations)")}
         if "run_id" not in cols:
             c.execute("ALTER TABLE conversations ADD COLUMN run_id TEXT")
+        if "reply_to_message_id" not in cols:
+            c.execute("ALTER TABLE conversations ADD COLUMN reply_to_message_id INTEGER")
         if "local_request_id" not in cols:
             c.execute(
                 "ALTER TABLE conversations ADD COLUMN local_request_id TEXT")
         # Receipts make client-reported (on-device) turns safe to retry. They
         # deliberately live outside conversations: these turns did not run an
         # agent and therefore have no synthetic run/trace record.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS request_reply_bindings (
+                request_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                reply_to_message_id INTEGER
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS research_reply_sources (
+                task_id TEXT PRIMARY KEY,
+                message_id INTEGER NOT NULL
+            )
+        """)
         c.execute("""
             CREATE TABLE IF NOT EXISTS local_turn_receipts (
                 request_id    TEXT PRIMARY KEY,
@@ -72,16 +107,34 @@ _init()
 
 
 def append_turn(session_id: str, role: str, content: str,
-                run_id: str | None = None) -> None:
+                run_id: str | None = None,
+                reply_to_message_id: int | None = None) -> int | None:
     if not session_id or not role or not content:
-        return
+        return None
+    state = _turn_context.get()
+    if state and state.get("session_id") == session_id:
+        if role == "user":
+            # The request handler persists the user message before execution;
+            # shell._remember can remain unchanged and safely confirm that row.
+            if state.get("user_message_id") is not None:
+                return state["user_message_id"]
+            reply_to_message_id = reply_to_message_id or state.get("reply_to_message_id")
+        elif role == "assistant":
+            reply_to_message_id = reply_to_message_id or state.get("user_message_id")
     with _conn() as c:
-        c.execute(
-            "INSERT INTO conversations (session_id, role, content, ts, run_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, time.time(), run_id),
+        cur = c.execute(
+            "INSERT INTO conversations (session_id, role, content, ts, run_id, reply_to_message_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, role, content, time.time(), run_id, reply_to_message_id),
         )
+        message_id = cur.lastrowid
         c.commit()
+    if state and state.get("session_id") == session_id:
+        if role == "user":
+            state["user_message_id"] = message_id
+        elif role == "assistant":
+            state["assistant_message_id"] = message_id
+    return message_id
 
 
 class LocalTurnConflict(ValueError):
@@ -89,14 +142,19 @@ class LocalTurnConflict(ValueError):
 
 
 def append_local_turn(session_id: str, request_id: str,
-                      messages: list[dict[str, str]]) -> bool:
+                      messages: list[dict[str, str]],
+                      reply_to_message_id: int | None = None,
+                      existing_user_message_id: int | None = None) -> bool:
     """Atomically append an on-device exchange once.
 
     Returns True for the first insert and False for an identical retry. The
     timestamp is assigned here, never accepted from the client.
     """
+    payload = {"session_id": session_id, "messages": messages}
+    if reply_to_message_id is not None:
+        payload["reply_to_message_id"] = reply_to_message_id
     canonical = json.dumps(
-        {"session_id": session_id, "messages": messages},
+        payload,
         ensure_ascii=False, separators=(",", ":"), sort_keys=True,
     )
     payload_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -111,15 +169,41 @@ def append_local_turn(session_id: str, request_id: str,
             if existing != (session_id, payload_hash):
                 raise LocalTurnConflict(
                     "request_id was already used for a different local turn")
+            state = _turn_context.get()
+            if state and state.get("session_id") == session_id:
+                rows = c.execute(
+                    "SELECT id, role FROM conversations WHERE local_request_id = ? "
+                    "AND session_id = ? ORDER BY id", (request_id, session_id),
+                ).fetchall()
+                for message_id, role in rows:
+                    if role == "user" and state.get("user_message_id") is None:
+                        state["user_message_id"] = message_id
+                    elif role == "assistant":
+                        state["assistant_message_id"] = message_id
             return False
         for message in messages:
-            c.execute(
+            if (message["role"] == "user" and existing_user_message_id is not None):
+                c.execute(
+                    "UPDATE conversations SET local_request_id=? WHERE id=? AND session_id=?",
+                    (request_id, existing_user_message_id, session_id),
+                )
+                state = _turn_context.get()
+                if state and state.get("session_id") == session_id:
+                    state["user_message_id"] = existing_user_message_id
+                continue
+            cur = c.execute(
                 "INSERT INTO conversations "
-                "(session_id, role, content, ts, run_id, local_request_id) "
-                "VALUES (?, ?, ?, ?, NULL, ?)",
+                "(session_id, role, content, ts, run_id, local_request_id, reply_to_message_id) "
+                "VALUES (?, ?, ?, ?, NULL, ?, ?)",
                 (session_id, message["role"], message["content"], now,
-                 request_id),
+                 request_id, reply_to_message_id if message["role"] == "assistant" else None),
             )
+            state = _turn_context.get()
+            if state and state.get("session_id") == session_id:
+                if message["role"] == "user":
+                    state["user_message_id"] = cur.lastrowid
+                elif message["role"] == "assistant":
+                    state["assistant_message_id"] = cur.lastrowid
         c.execute(
             "INSERT INTO local_turn_receipts "
             "(request_id, session_id, payload_hash, message_count, created_at) "
@@ -136,7 +220,7 @@ def get_recent(session_id: str, n: int = 5) -> list[dict]:
         return []
     with _conn() as c:
         rows = c.execute(
-            "SELECT id, role, content, ts, run_id, local_request_id "
+            "SELECT id, role, content, ts, run_id, local_request_id, reply_to_message_id "
             "FROM conversations "
             "WHERE session_id = ? "
             "ORDER BY ts DESC LIMIT ?",
@@ -144,7 +228,8 @@ def get_recent(session_id: str, n: int = 5) -> list[dict]:
         ).fetchall()
     return [
         {"id": r[0], "role": r[1], "content": r[2], "ts": r[3],
-         "run_id": r[4], "local_request_id": r[5]}
+         "run_id": r[4], "local_request_id": r[5],
+         "reply_to_message_id": r[6]}
         for r in reversed(rows)
     ]
 
@@ -156,7 +241,12 @@ def client_scope(session_id: str) -> str:
     ``tg:<chat>``).  The prefix is the safe boundary for an explicit
     cross-project search; callers never receive another client's memory.
     """
-    return (session_id or "").split(":", 1)[0]
+    value = session_id or ""
+    if value.startswith("app:"):
+        return value.split(":chat:", 1)[0].split("::", 1)[0]
+    if value.startswith("tg:"):
+        return value.split("::", 1)[0]
+    return value.split("::", 1)[0]
 
 
 def search(session_id: str, query: str, *, limit: int = 20, offset: int = 0,
@@ -167,24 +257,27 @@ def search(session_id: str, query: str, *, limit: int = 20, offset: int = 0,
     limit = min(limit, 100)
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
+    owner = client_scope(session_id)
+    owner_like = owner.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     with _conn() as c:
         if all_client and client_scope(session_id):
             rows = c.execute(
-                "SELECT id, session_id, role, content, ts, run_id "
-                "FROM conversations WHERE session_id LIKE ? AND content LIKE ? ESCAPE '\\' "
+                "SELECT id, session_id, role, content, ts, run_id, reply_to_message_id "
+                "FROM conversations WHERE (session_id = ? OR session_id LIKE ? ESCAPE '\\' OR session_id LIKE ? ESCAPE '\\') AND content LIKE ? ESCAPE '\\' "
                 "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
-                (client_scope(session_id) + ":%", pattern, limit, offset),
+                (owner, owner_like + "::%", owner_like + ":chat:%",
+                 pattern, limit, offset),
             ).fetchall()
         else:
             rows = c.execute(
-                "SELECT id, session_id, role, content, ts, run_id "
+                "SELECT id, session_id, role, content, ts, run_id, reply_to_message_id "
                 "FROM conversations WHERE session_id = ? AND content LIKE ? ESCAPE '\\' "
                 "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
                 (session_id, pattern, limit, offset),
             ).fetchall()
     return [
         {"id": r[0], "session_id": r[1], "role": r[2], "content": r[3],
-         "ts": r[4], "run_id": r[5]}
+         "ts": r[4], "run_id": r[5], "reply_to_message_id": r[6]}
         for r in rows
     ]
 
@@ -195,7 +288,7 @@ def get_message(message_id: int, session_id: str, *, all_client: bool = False) -
         return None
     with _conn() as c:
         row = c.execute(
-            "SELECT id, session_id, role, content, ts, run_id "
+            "SELECT id, session_id, role, content, ts, run_id, reply_to_message_id "
             "FROM conversations WHERE id = ?", (message_id,)
         ).fetchone()
     if not row:
@@ -207,7 +300,51 @@ def get_message(message_id: int, session_id: str, *, all_client: bool = False) -
     if not allowed:
         return None
     return {"id": row[0], "session_id": row[1], "role": row[2],
-            "content": row[3], "ts": row[4], "run_id": row[5]}
+            "content": row[3], "ts": row[4], "run_id": row[5],
+            "reply_to_message_id": row[6]}
+
+
+def bind_request_reply(request_id: str | None, session_id: str | None,
+                      reply_to_message_id: int | None) -> bool:
+    """Bind a retry key to its conversation and explicit reply target once."""
+    if not request_id or not session_id:
+        return True
+    with _conn() as c:
+        c.execute("INSERT OR IGNORE INTO request_reply_bindings VALUES (?, ?, ?)",
+                  (request_id, session_id, reply_to_message_id))
+        row = c.execute(
+            "SELECT session_id, reply_to_message_id FROM request_reply_bindings WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        c.commit()
+    return row == (session_id, reply_to_message_id)
+
+
+def get_local_turn(session_id: str, request_id: str) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, role, content, reply_to_message_id FROM conversations "
+            "WHERE session_id=? AND local_request_id=? ORDER BY id",
+            (session_id, request_id),
+        ).fetchall()
+    return [{"id": r[0], "role": r[1], "content": r[2],
+             "reply_to_message_id": r[3]} for r in rows]
+
+
+def set_research_reply_source(task_id: str, message_id: int | None) -> None:
+    if not task_id or not message_id:
+        return
+    with _conn() as c:
+        c.execute("INSERT OR IGNORE INTO research_reply_sources(task_id, message_id) VALUES (?, ?)",
+                  (task_id, message_id))
+        c.commit()
+
+
+def get_research_reply_source(task_id: str) -> int | None:
+    with _conn() as c:
+        row = c.execute("SELECT message_id FROM research_reply_sources WHERE task_id = ?",
+                         (task_id,)).fetchone()
+    return row[0] if row else None
 
 
 def clear(session_id: str) -> int:

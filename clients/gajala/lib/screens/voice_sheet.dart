@@ -14,6 +14,7 @@ import '../core/chat_controller.dart';
 import '../core/offline_brain.dart';
 import '../core/push.dart';
 import '../core/state.dart';
+import '../core/storage.dart';
 import '../core/theme.dart';
 import '../core/voice.dart';
 import '../core/voice_logic.dart';
@@ -29,21 +30,21 @@ import 'wake_enrollment_screen.dart';
 /// Open the voice sheet over whatever is on screen.
 bool _sheetOpen = false;
 
-Future<void> showVoiceSheet([BuildContext? context]) async {
+Future<void> showVoiceSheet([BuildContext? context, ChatKey? chatKey]) async {
   final ctx = context ?? Push.navigatorKey.currentContext;
   // A second "Hey Gajala" while voice mode is open must not stack another sheet.
   if (ctx == null || _sheetOpen) return;
   _sheetOpen = true;
   unawaited(WakeWord.hold());
   try {
-    await _showSheet(ctx);
+    await _showSheet(ctx, chatKey);
   } finally {
     _sheetOpen = false;
     await WakeWord.release();
   }
 }
 
-Future<void> _showSheet(BuildContext ctx) async {
+Future<void> _showSheet(BuildContext ctx, ChatKey? chatKey) async {
   await showModalBottomSheet(
     context: ctx,
     isScrollControlled: true,
@@ -52,7 +53,7 @@ Future<void> _showSheet(BuildContext ctx) async {
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (_) => const VoiceSheet(),
+    builder: (_) => VoiceSheet(chatKey: chatKey),
   );
   await Voice.instance.cancelListening();
   await Voice.instance.stopSpeaking();
@@ -68,7 +69,8 @@ class _Exchange {
 }
 
 class VoiceSheet extends ConsumerStatefulWidget {
-  const VoiceSheet({super.key});
+  final ChatKey? chatKey;
+  const VoiceSheet({super.key, this.chatKey});
   @override
   ConsumerState<VoiceSheet> createState() => _VoiceSheetState();
 }
@@ -89,6 +91,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
   Timer? _followUp;
   ChatController? _voiceLog;
   String? _voiceLogId;
+  ChatKey? _resolvedKey;
   static const _phone = MethodChannel('gajala/phone');
 
   @override
@@ -102,7 +105,16 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
   }
 
   Future<ChatKey> _shellKey(GajalaApi? api) async {
+    if (widget.chatKey != null) return _resolvedKey = widget.chatKey!;
     final install = await ref.read(sessionIdProvider.future);
+    final selected = await Storage.selectedConversation();
+    if (selected.sessionId != null && selected.sessionId!.startsWith(install)) {
+      final key = ChatKey('shell', selected.sessionId!);
+      ref
+          .read(chatControllerProvider(key).notifier)
+          .setProjectContext(selected.project);
+      return _resolvedKey = key;
+    }
     if (_dir == null) {
       try {
         _dir = (await api?.projects())?['current_name']?.toString();
@@ -110,7 +122,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
         /* default thread */
       }
     }
-    return ChatKey('shell', shellSessionId(install, _dir));
+    return _resolvedKey = ChatKey('shell', shellSessionId(install, _dir));
   }
 
   @override
@@ -432,7 +444,12 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
     Navigator.of(context).pop();
     Push.navigatorKey.currentState?.push(
       MaterialPageRoute(
-        builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'),
+        builder: (_) => ChatScreen(
+          command: 'shell',
+          title: 'Gajala',
+          sessionId: _resolvedKey?.sid,
+          project: _dir,
+        ),
       ),
     );
   }

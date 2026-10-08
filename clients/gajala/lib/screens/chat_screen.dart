@@ -9,6 +9,7 @@ import '../core/chat_controller.dart';
 import '../core/models.dart';
 import '../core/push.dart';
 import '../core/state.dart';
+import '../core/storage.dart';
 import '../core/theme.dart';
 import '../core/voice.dart';
 import '../widgets/run_trace.dart';
@@ -19,7 +20,15 @@ import 'voice_sheet.dart';
 class ChatScreen extends ConsumerStatefulWidget {
   final String command; // 'shell' = Gajala agent; else a specific skill
   final String title;
-  const ChatScreen({super.key, this.command = 'shell', this.title = 'Gajala'});
+  final String? sessionId;
+  final String? project;
+  const ChatScreen({
+    super.key,
+    this.command = 'shell',
+    this.title = 'Gajala',
+    this.sessionId,
+    this.project,
+  });
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
@@ -44,6 +53,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   bool _foreground = true;
   bool _dictating = false;
   bool _dictated = false; // this draft came from the mic → speak the reply
+  ChatMessage? _replyTarget;
+  bool _independentConversation = false;
+  String? _conversationProject;
+  final Map<int, GlobalKey> _messageKeys = {};
 
   /// The conversation this screen is showing. State lives in the controller so
   /// it survives navigating away (a running turn keeps running and stays visible).
@@ -78,6 +91,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       unawaited(_chat?.refreshBackgroundResearch());
       return;
     }
+    final saved = await Storage.selectedConversation();
+    final savedSession = widget.sessionId ?? saved.sessionId;
+    _independentConversation =
+        widget.sessionId != null ||
+        (saved.sessionId != null &&
+            saved.sessionId == savedSession &&
+            saved.independent);
+    _conversationProject =
+        widget.project ??
+        (savedSession == saved.sessionId ? saved.project : null);
     final api = ref.read(apiProvider);
     String? dir;
     var model = 'auto';
@@ -90,13 +113,48 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         /* header stays blank */
       }
     }
+    if (savedSession != null && _conversationProject != null) {
+      dir = _conversationProject;
+    }
+    if (!mounted) return;
+    var session = savedSession;
+    if (session == null && api != null) {
+      try {
+        final created = await api.createConversation(
+          _installId!,
+          'General',
+          dir,
+        );
+        session = created['session_id']?.toString();
+        _conversationProject = created['project']?.toString() ?? dir;
+        if (session != null && session.isNotEmpty) {
+          _independentConversation = true;
+          await Storage.setSelectedConversation(
+            session,
+            _conversationProject,
+            independent: true,
+          );
+        }
+      } catch (_) {
+        // Older servers keep opening the existing per-project thread.
+      }
+    }
     if (!mounted) return;
     setState(() {
       _dir = dir;
       _model = model;
-      _sid = _sidFor(dir);
+      _sid = session ?? _sidFor(dir);
+      if (_conversationProject == null) _conversationProject = dir;
     });
     Push.activeSession = _sid;
+    if (_independentConversation && _sid != null) {
+      await Storage.setSelectedConversation(
+        _sid!,
+        _conversationProject ?? dir,
+        independent: true,
+      );
+    }
+    _chat?.setProjectContext(_conversationProject ?? dir);
     await _chat?.ensureLoaded(welcome: _welcome);
     _restoreDraft();
     unawaited(_chat?.refreshBackgroundResearch());
@@ -129,6 +187,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // clearing — and build() then re-scheduled this call on every single frame.
     _chat?.consumeWorkspace();
     if (widget.command != 'shell' || name == null || name.isEmpty) return;
+    if (_independentConversation) {
+      setState(() {
+        _dir = name;
+        _conversationProject = name;
+      });
+      _chat?.setProjectContext(name);
+      if (_sid != null) {
+        unawaited(
+          Storage.setSelectedConversation(_sid!, name, independent: true),
+        );
+      }
+      return;
+    }
     if (name == _dir) return;
     final sid = _sidFor(name);
     setState(() {
@@ -136,7 +207,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _sid = sid;
     });
     Push.activeSession = sid;
+    _conversationProject = name;
     await _chat?.ensureLoaded(welcome: _welcome);
+    _chat?.setProjectContext(name);
     if (!reload) _chat?.addSystemNote('Switched to $name');
   }
 
@@ -157,13 +230,120 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   /// Swap the visible conversation to another directory's thread.
   Future<void> _switchConversation(String dir) async {
     if (dir == _dir) return;
+    if (_independentConversation) {
+      setState(() {
+        _dir = dir;
+        _conversationProject = dir;
+      });
+      _chat?.setProjectContext(dir);
+      if (_sid != null) {
+        unawaited(
+          Storage.setSelectedConversation(_sid!, dir, independent: true),
+        );
+      }
+      return;
+    }
     final sid = _sidFor(dir);
     setState(() {
       _dir = dir;
       _sid = sid;
     });
     Push.activeSession = sid;
+    _conversationProject = dir;
     await _chat?.ensureLoaded(welcome: _welcome);
+    _chat?.setProjectContext(dir);
+  }
+
+  Future<void> _openConversation(Map<String, dynamic> item) async {
+    final session = item['session_id']?.toString();
+    if (session == null || session.isEmpty) return;
+    final project = item['project']?.toString();
+    setState(() {
+      _sid = session;
+      _dir = project ?? _dir;
+      _conversationProject = project ?? _dir;
+      _independentConversation = item['legacy'] != true;
+      _replyTarget = null;
+    });
+    Push.activeSession = session;
+    await Storage.setSelectedConversation(
+      session,
+      _conversationProject,
+      independent: _independentConversation,
+    );
+    _chat?.setProjectContext(project ?? _dir);
+    await _chat?.ensureLoaded(welcome: _welcome);
+    _restoreDraft();
+  }
+
+  Future<void> _newConversation() async {
+    final api = ref.read(apiProvider);
+    if (api == null || _installId == null) return;
+    final title = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        final controller = TextEditingController(text: 'New conversation');
+        return AlertDialog(
+          title: const Text('New conversation'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('Create'),
+            ),
+          ],
+        );
+      },
+    );
+    if (title == null || title.isEmpty || !mounted) return;
+    try {
+      final created = await api.createConversation(_installId!, title, _dir);
+      await _openConversation({...created, 'legacy': false});
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create conversation: $e')),
+        );
+    }
+  }
+
+  Future<void> _chooseConversation() async {
+    final api = ref.read(apiProvider);
+    if (api == null || _installId == null) return;
+    try {
+      final items = await api.conversations(_installId!);
+      if (!mounted) return;
+      final chosen = await showModalBottomSheet<Map<String, dynamic>>(
+        context: context,
+        builder: (context) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final item in items)
+                ListTile(
+                  title: Text(item['title']?.toString() ?? 'Conversation'),
+                  subtitle: Text(item['project']?.toString() ?? 'No project'),
+                  onTap: () => Navigator.pop(context, item),
+                ),
+            ],
+          ),
+        ),
+      );
+      if (chosen != null) await _openConversation(chosen);
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load conversations: $e')),
+        );
+    }
   }
 
   /// Confirm-to-move: switch to [dir] (server workspace + thread), then re-ask
@@ -243,7 +423,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final key = _key!;
     final wasBusy = ref.read(chatControllerProvider(key)).sending;
     final before = ref.read(chatControllerProvider(key)).messages.length;
-    await chat.send(text, imagePath: attach?.path);
+    final reply = _replyTarget;
+    setState(() => _replyTarget = null);
+    await chat.send(
+      text,
+      imagePath: attach?.path,
+      replyToMessageId: reply?.messageId,
+      replyToContent: reply?.text,
+      replyToRole: reply?.role,
+    );
     if (!spoken || wasBusy || !await Voice.instance.speakReplies()) return;
     final msgs = ref.read(chatControllerProvider(key)).messages.skip(before);
     final replies = msgs.where((m) => m.role == 'bot');
@@ -254,6 +442,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _answer(String text) async {
     _input.text = text;
     await _send();
+  }
+
+  void _replyTo(ChatMessage message) {
+    if (message.messageId == null) return;
+    setState(() => _replyTarget = message);
+    _inputFocus.requestFocus();
+  }
+
+  void _jumpToReply(int? id) {
+    if (id == null) return;
+    final key = _messageKeys[id];
+    final ctx = key?.currentContext;
+    if (ctx != null)
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 250),
+        alignment: .35,
+      );
   }
 
   /// Review the project's uncommitted changes; lines sent "to chat" land in
@@ -438,6 +644,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         actions: [
           if (widget.command == 'shell')
             IconButton(
+              tooltip: 'Conversations',
+              icon: const Icon(Icons.forum_outlined),
+              onPressed: _chooseConversation,
+            ),
+          if (widget.command == 'shell')
+            IconButton(
+              tooltip: 'New conversation',
+              icon: const Icon(Icons.add_comment_outlined),
+              onPressed: _newConversation,
+            ),
+          if (widget.command == 'shell')
+            IconButton(
               tooltip: 'Review changes',
               icon: const Icon(Icons.difference_outlined),
               onPressed: _reviewChanges,
@@ -446,7 +664,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             IconButton(
               tooltip: 'Voice mode',
               icon: const Icon(Icons.graphic_eq),
-              onPressed: () => showVoiceSheet(context),
+              onPressed: () => showVoiceSheet(context, _key),
             ),
         ],
       ),
@@ -467,6 +685,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 onOther: i == openQuestion && !sending
                     ? () => _inputFocus.requestFocus()
                     : null,
+                onReply: msgs[i].messageId == null
+                    ? null
+                    : () => _replyTo(msgs[i]),
+                onJump: () => _jumpToReply(msgs[i].replyToMessageId),
+                key: msgs[i].messageId == null
+                    ? null
+                    : (_messageKeys[msgs[i].messageId!] ??= GlobalKey()),
               ),
             ),
           ),
@@ -549,6 +774,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           ),
                         ],
                       ),
+                    ),
+                  ),
+                if (_replyTarget != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: context.pal.surfaceAlt,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.reply, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Replying to ${_replyTarget!.role == 'user' ? 'you' : 'Gajala'}: ${_replyTarget!.text}',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          tooltip: 'Cancel reply',
+                          onPressed: () => setState(() => _replyTarget = null),
+                          icon: const Icon(Icons.close, size: 18),
+                        ),
+                      ],
                     ),
                   ),
                 Row(
@@ -688,6 +944,8 @@ class _Bubble extends StatelessWidget {
   final void Function(String dir)? onMove; // confirm-to-move action
   final void Function(String answer)? onAnswer; // tap a question-card choice
   final VoidCallback? onOther;
+  final VoidCallback? onReply;
+  final VoidCallback? onJump;
   const _Bubble(
     this.m,
     this.imgHeaders, {
@@ -695,6 +953,9 @@ class _Bubble extends StatelessWidget {
     this.api,
     this.onAnswer,
     this.onOther,
+    this.onReply,
+    this.onJump,
+    super.key,
   });
   @override
   Widget build(BuildContext context) {
@@ -726,6 +987,22 @@ class _Bubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              if (m.replyToContent?.isNotEmpty == true)
+                InkWell(
+                  onTap: onJump,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      '${m.replyToRole == 'user' ? 'You' : 'Gajala'} · ${m.replyToContent}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: context.pal.textDim,
+                      ),
+                    ),
+                  ),
+                ),
               Text(
                 m.text,
                 style: TextStyle(
@@ -886,12 +1163,63 @@ class _Bubble extends StatelessWidget {
     // What the agent did to produce this reply, collapsed under it. Steps we
     // already have (the turn just ran) render immediately; a reply restored from
     // history carries only its run id and fetches on demand.
-    if (isUser) return bubble;
+    final quoted = m.replyToContent;
+    final decorated = GestureDetector(
+      onLongPress: onReply == null
+          ? null
+          : () => showModalBottomSheet<void>(
+              context: context,
+              builder: (context) => SafeArea(
+                child: ListTile(
+                  leading: const Icon(Icons.reply),
+                  title: const Text('Reply'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    onReply!();
+                  },
+                ),
+              ),
+            ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (quoted != null && quoted.isNotEmpty)
+            Align(
+              alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+              child: InkWell(
+                onTap: onJump,
+                child: Container(
+                  margin: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * .72,
+                  ),
+                  decoration: BoxDecoration(
+                    color: context.pal.surfaceAlt,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '${m.replyToRole == 'user' ? 'You' : 'Gajala'} · $quoted',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: context.pal.textDim),
+                  ),
+                ),
+              ),
+            ),
+          bubble,
+        ],
+      ),
+    );
+    if (isUser) return decorated;
     if (m.steps.isNotEmpty) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          bubble,
+          decorated,
           RunTraceStrip(
             steps: m.steps,
             project: m.project,
@@ -904,10 +1232,10 @@ class _Bubble extends StatelessWidget {
     if (m.runId != null && m.runId!.isNotEmpty) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: [bubble, _LazyTrace(m.runId!)],
+        children: [decorated, _LazyTrace(m.runId!)],
       );
     }
-    return bubble;
+    return decorated;
   }
 }
 

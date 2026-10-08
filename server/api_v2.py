@@ -79,6 +79,11 @@ def chat_history(session_id: str, limit: int = 50):
     fetch turns into a dead "What it did" affordance that 404s when tapped.
     """
     turns = memory.get_recent(session_id, n=limit)
+    for turn in turns:
+        parent_id = turn.get("reply_to_message_id")
+        parent = memory.get_message(parent_id, session_id) if parent_id else None
+        turn["reply_to_content"] = parent["content"][:1200] if parent else None
+        turn["reply_to_role"] = parent["role"] if parent else None
     wanted = {t["run_id"] for t in turns if t.get("run_id")}
     if wanted:
         from server.db import agent_runs_store

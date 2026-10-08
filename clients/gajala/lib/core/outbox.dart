@@ -21,6 +21,9 @@ class OutboxEntry {
   final String? imagePath; // copied into app storage, so it survives restarts
   final String? project;
   final String? continuationTaskId;
+  final int? replyToMessageId;
+  final String? replyToContent;
+  final String? replyToRole;
   final DateTime createdAt;
 
   const OutboxEntry({
@@ -32,6 +35,9 @@ class OutboxEntry {
     this.imagePath,
     this.project,
     this.continuationTaskId,
+    this.replyToMessageId,
+    this.replyToContent,
+    this.replyToRole,
   });
 
   Map<String, dynamic> toJson() => {
@@ -42,6 +48,9 @@ class OutboxEntry {
     'image_path': imagePath,
     'project': project,
     'continuation_task_id': continuationTaskId,
+    'reply_to_message_id': replyToMessageId,
+    'reply_to_content': replyToContent,
+    'reply_to_role': replyToRole,
     'created_at': createdAt.toUtc().toIso8601String(),
   };
 
@@ -53,6 +62,9 @@ class OutboxEntry {
     imagePath: j['image_path'] as String?,
     project: j['project'] as String?,
     continuationTaskId: j['continuation_task_id'] as String?,
+    replyToMessageId: (j['reply_to_message_id'] as num?)?.toInt(),
+    replyToContent: j['reply_to_content'] as String?,
+    replyToRole: j['reply_to_role'] as String?,
     createdAt: DateTime.parse(j['created_at'] as String),
   );
 }
@@ -132,7 +144,8 @@ class Outbox {
       // Own folder per message, original file name kept: the name is what
       // the Mac sees when the photo is uploaded.
       final folder = Directory(
-          '${(await _root()).path}/${entry.requestId.hashCode.toUnsigned(32)}');
+        '${(await _root()).path}/${entry.requestId.hashCode.toUnsigned(32)}',
+      );
       await folder.create(recursive: true);
       final copy = '${folder.path}/${img.split('/').last}';
       await File(img).copy(copy);

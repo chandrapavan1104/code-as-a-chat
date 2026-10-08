@@ -27,6 +27,7 @@ class AskingApi extends GajalaApi {
     String? project,
     String? requestId,
     String? continueTaskId,
+    int? replyToMessageId,
   }) async* {
     yield {'type': 'step', 'label': 'Thinking…'};
     yield {
@@ -56,7 +57,8 @@ void main() {
   ) => ChatController(
     api,
     const ChatKey('shell', 'app:test::general'),
-    voiceJournal: VoiceJournal(dir: () async => dir), outbox: Outbox(dir: () async => dir),
+    voiceJournal: VoiceJournal(dir: () async => dir),
+    outbox: Outbox(dir: () async => dir),
     phone: (command, args, _) async {
       asked.add(command);
       return answer;
