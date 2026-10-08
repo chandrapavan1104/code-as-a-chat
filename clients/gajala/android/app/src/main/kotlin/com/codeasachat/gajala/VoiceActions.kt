@@ -207,6 +207,10 @@ class VoiceActions(private val activity: Activity) {
                     YouTubeMusicAccessibilityService.Outcome.SELECTED ->
                         verifyPlaybackAsync(manager, targetPackage, text, extras,
                             beforeToken, beforeTitle, beforeArtist, result, allowSessionNudge = false)
+                    YouTubeMusicAccessibilityService.Outcome.SELECTED_COLLECTION ->
+                        verifyPlaybackAsync(manager, targetPackage, text, extras,
+                            beforeToken, beforeTitle, beforeArtist, result,
+                            allowSessionNudge = false, selectedCollection = true)
                     YouTubeMusicAccessibilityService.Outcome.SEARCHED ->
                         result.success(mapOf("status" to "searched", "package" to targetPackage,
                             "query" to text,
@@ -294,7 +298,7 @@ class VoiceActions(private val activity: Activity) {
                                     beforeToken: android.media.session.MediaSession.Token?,
                                     beforeTitle: String, beforeArtist: String,
                                     result: MethodChannel.Result,
-                                    allowSessionNudge: Boolean = true) {
+                                    allowSessionNudge: Boolean = true, selectedCollection: Boolean = false) {
         if (manager == null) {
             result.success(mapOf("status" to "unverified", "package" to packageName,
                 "message" to "Playback was requested but no media session is available."))
@@ -315,8 +319,11 @@ class VoiceActions(private val activity: Activity) {
                 val album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty()
                 val needle = query.lowercase().split(Regex("\\s+"))
                     .filter { it.length > 2 && it !in GENERIC_MUSIC_WORDS }
-                val matched = needle.isEmpty() || needle.all {
-                    title.lowercase().contains(it) || artist.lowercase().contains(it) || album.lowercase().contains(it)
+                val matched = selectedCollection || needle.isEmpty() || needle.all {
+                    title.lowercase().contains(it) || artist.lowercase().contains(it) || album.lowercase().contains(it) ||
+                        (it == "dsp" && listOf("devi", "sri", "prasad").all { part ->
+                            "$title $artist $album".lowercase().contains(part)
+                        })
                 }
                 val changed = beforeToken == null || current?.sessionToken != beforeToken ||
                     title != beforeTitle || artist != beforeArtist
