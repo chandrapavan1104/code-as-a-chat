@@ -59,6 +59,22 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Conversation baseline implementation (October 8).** Gajala now opens/restores
+an independent General chat, offers New conversation and a history picker,
+and preserves legacy project chats. Long-press Reply carries a server message ID,
+quoted source, and reply relation through queued/offline retries. Assistant and
+background research replies link to their originating user message. Text and
+voice share the selected conversation; project changes update execution context
+without moving independent chats. Local FTS search, exact message/file sources,
+and provenance-aware reply context feed routing. Separate domain procedures and
+typed context tools are exposed at `/api/assistant/capabilities`; legacy skills
+remain compatible adapters. Durable operation leases/receipts block uncertain
+replays rather than repeating side effects. YouTube Music now probes its actual
+browser/session capabilities before direct playback requests, keeps connections
+through verification, requires advancing playback position, and retains bounded
+last-attempt diagnostics on the phone. Official-app catalog search and real-phone
+playback remain unverified; no companion player is silently substituted.
+
 Substantial public research now uses immediate durable background jobs, with
 30-minute default/60-minute maximum runtime, stop/restart recovery, and a later
 reply linked to the original question in the same chat. Research cards refresh
@@ -399,6 +415,16 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-08 — **Implemented conversation baseline.** Added explicit quoted replies,
+  independent conversations with persisted selection and legacy history access,
+  shared voice/text chat identity, exact reply context and local full-text search.
+  Fixed cross-installation memory scope and request retarget/duplicate research
+  receipts. Added separate domain guidance/typed tool contracts and durable
+  operation observation leases. Direct YouTube Music probing now tests advertised
+  commands, holds the browser through playback verification, and requires advancing
+  position; last-attempt diagnostics persist locally. Server/Flutter regressions
+  cover reply isolation, queued project snapshots, recovery and deduplication.
+  Real-device playback and UI acceptance remain required.
 - 2026-10-08 — Reworked long research into durable background execution and
   original-chat result delivery, with cancel/restart recovery and bounded runtime.
   Added optional YouTube Music semantic UI control, actual playback verification,

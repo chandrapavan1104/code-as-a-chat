@@ -74,6 +74,8 @@ async def require_token(x_api_token: str | None = Header(default=None)) -> None:
 # ── API v2 — structured JSON for the native app (token-authed) ────────────────
 from server.api_v2 import router as api_v2_router  # noqa: E402
 app.include_router(api_v2_router, dependencies=[Depends(require_token)])
+from server.conversation_api import router as conversation_router
+app.include_router(conversation_router, prefix="/api", dependencies=[Depends(require_token)])
 
 
 class RunRequest(BaseModel):
@@ -97,6 +99,9 @@ class RunRequest(BaseModel):
     request_id: str | None = None
     # A correction/follow-up can explicitly continue the same unfinished work.
     continue_task_id: str | None = None
+    # Explicit conversation message being replied to. The server validates it
+    # against this session before accepting work or invoking a skill.
+    reply_to_message_id: int | None = None
 
 
 # Longest reply preview carried in a completion push (Android collapses more).
@@ -106,6 +111,55 @@ _STREAM_HEARTBEAT_SECONDS = 15
 # the completion push. The event loop otherwise only retains weak references.
 _stream_workers: set[asyncio.Task] = set()
 _assistant_workers: dict[str, asyncio.Task] = {}
+
+
+def _validated_reply_context(body: RunRequest) -> dict | None:
+    if body.reply_to_message_id is None:
+        return None
+    if body.reply_to_message_id <= 0 or not body.session_id:
+        raise HTTPException(status_code=400, detail="reply requires a valid message and session")
+    source = memory.get_message(body.reply_to_message_id, body.session_id)
+    if not source:
+        # Do not reveal whether an ID exists in another session.
+        raise HTTPException(status_code=404, detail="reply message not found")
+    chain = []
+    current = source
+    seen = {source["id"]}
+    while current and len(chain) < 8:
+        chain.append({"id": current["id"], "role": current["role"],
+                      "content": current["content"]})
+        parent_id = current.get("reply_to_message_id")
+        if not parent_id or parent_id in seen:
+            break
+        seen.add(parent_id)
+        current = memory.get_message(parent_id, body.session_id)
+    return {"message_id": source["id"], "role": source["role"],
+            "content": source["content"], "ancestors": chain[1:]}
+
+
+def _bind_request_reply(body: RunRequest) -> None:
+    if not memory.bind_request_reply(body.request_id, body.session_id,
+                                     body.reply_to_message_id):
+        raise HTTPException(status_code=409,
+                            detail="request_id was already used with a different conversation reply target")
+
+
+def _direct_request_receipt(body: RunRequest) -> dict | None:
+    if body.command == "shell" or not body.request_id or not body.session_id:
+        return None
+    rows = memory.get_local_turn(body.session_id, f"command-result:{body.request_id}")
+    if not rows:
+        return None
+    user = next((row for row in rows if row["role"] == "user"), None)
+    assistant = next((row for row in rows if row["role"] == "assistant"), None)
+    if not user or not assistant:
+        return None
+    if user["content"] != body.prompt or user.get("reply_to_message_id") != body.reply_to_message_id:
+        raise HTTPException(status_code=409,
+                            detail="request_id was already used for a different message")
+    return {"command": body.command, "result": assistant["content"],
+            "workspace": body.project, "deduplicated": True,
+            "user_message_id": user["id"], "assistant_message_id": assistant["id"]}
 
 
 def _accept_work(body: RunRequest) -> tuple[dict | None, bool]:
@@ -162,10 +216,13 @@ def _persist_skill_turn(command: str, session_id: str | None,
         return
     try:
         if request_id:
+            ids = memory.current_turn_ids()
             memory.append_local_turn(
                 session_id, f"command-result:{request_id}",
                 [{"role": "user", "content": prompt},
                  {"role": "assistant", "content": result}],
+                reply_to_message_id=ids.get("user_message_id"),
+                existing_user_message_id=ids.get("user_message_id"),
             )
         else:
             memory.append_turn(session_id, "user", prompt)
@@ -237,6 +294,11 @@ async def toggle_skill(skill_name: str, request: SkillToggleRequest):
 
 @app.post("/run", dependencies=[Depends(require_token)])
 async def run(body: RunRequest, background_tasks: BackgroundTasks):
+    reply_context = _validated_reply_context(body)
+    _bind_request_reply(body)
+    receipt = _direct_request_receipt(body)
+    if receipt:
+        return receipt
     work, created = _accept_work(body)
     if work and not created:
         # /run serves plain-text clients (Telegram, widgets): no ask cards.
@@ -255,17 +317,22 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
             assistant_tasks_store.update(
                 work["id"], status="working", event="started",
                 next_action="Understanding the request")
-        with workspace.bound(workspace.for_turn(body.project, body.session_id)):
-            result = await orchestrator.route(
-                body.command, body.prompt, session_id=body.session_id,
-                on_event=on_event,
-                work_context=assistant_tasks_store.context_for(work['id']) if work else '',
-                request_id=body.request_id, project=body.project,
-            )
-            # Read inside the binding: the agent may have rebound the turn.
-            ws_name = workspace.name()
-        _persist_skill_turn(
-            body.command, body.session_id, body.prompt, result, body.request_id)
+        with memory.turn_context(body.session_id, body.reply_to_message_id):
+            if body.session_id:
+                memory.append_turn(body.session_id, "user", body.prompt)
+            with workspace.bound(workspace.for_turn(body.project, body.session_id)):
+                result = await orchestrator.route(
+                    body.command, body.prompt, session_id=body.session_id,
+                    on_event=on_event,
+                    work_context=assistant_tasks_store.context_for(work['id']) if work else '',
+                    request_id=body.request_id, project=body.project,
+                    reply_context=reply_context,
+                )
+                # Read inside the binding: the agent may have rebound the turn.
+                ws_name = workspace.name()
+            _persist_skill_turn(
+                body.command, body.session_id, body.prompt, result, body.request_id)
+            message_ids = memory.current_turn_ids()
         if work:
             work = _finish_work(work, result, ws_name, completion)
         # Ping the phone once the (possibly long) run finishes, if asked and we
@@ -277,7 +344,7 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
         # `workspace` lets the app follow project switches made *during* the turn
         # (e.g. the agent used the projects tool) so its header + thread stay synced.
         return {"command": body.command, "result": ask_cards.as_plain_text(result),
-                "workspace": ws_name, "work": work}
+                "workspace": ws_name, "work": work, **message_ids}
     except Exception as exc:
         if work:
             assistant_tasks_store.update(
@@ -303,6 +370,13 @@ async def run_stream(body: RunRequest):
     if the phone dropped the stream (backgrounded / killed) before `final`.
     """
     queue: asyncio.Queue = asyncio.Queue()
+    reply_context = _validated_reply_context(body)
+    _bind_request_reply(body)
+    receipt = _direct_request_receipt(body)
+    if receipt:
+        async def receipt_frame():
+            yield json.dumps({"type": "final", **receipt}) + "\n"
+        return StreamingResponse(receipt_frame(), media_type="application/x-ndjson")
     work, created = _accept_work(body)
     if work and not created:
         async def duplicate_frames():
@@ -351,19 +425,23 @@ async def run_stream(body: RunRequest):
                 assistant_tasks_store.update(
                     work["id"], status="working",
                     next_action="Understanding the request", event="started")
-            with workspace.bound(workspace.for_turn(body.project, body.session_id)):
-                result = await orchestrator.route(
-                    body.command, body.prompt,
-                    session_id=body.session_id, on_event=on_event,
-                    work_context=assistant_tasks_store.context_for(work['id']) if work else '',
-                    request_id=body.request_id, project=body.project,
-                    # This stream reaches the app, so the phone can answer
-                    # phone_request frames (see server/phone_bridge.py).
-                    phone_stream=True,
-                )
-                ws_name = workspace.name()
-            _persist_skill_turn(
-                body.command, body.session_id, body.prompt, result, body.request_id)
+            with memory.turn_context(body.session_id, body.reply_to_message_id):
+                if body.session_id:
+                    memory.append_turn(body.session_id, "user", body.prompt)
+                with workspace.bound(workspace.for_turn(body.project, body.session_id)):
+                    result = await orchestrator.route(
+                        body.command, body.prompt,
+                        session_id=body.session_id, on_event=on_event,
+                        work_context=assistant_tasks_store.context_for(work['id']) if work else '',
+                        request_id=body.request_id, project=body.project,
+                        # This stream reaches the app, so the phone can answer
+                        # phone_request frames (see server/phone_bridge.py).
+                        phone_stream=True, reply_context=reply_context,
+                    )
+                    ws_name = workspace.name()
+                _persist_skill_turn(
+                    body.command, body.session_id, body.prompt, result, body.request_id)
+                message_ids = memory.current_turn_ids()
             decisive = [s for s in observed_statuses if s != "unknown"]
             failed = bool(decisive and decisive[-1] in
                           ("failed", "unsupported", "needs_permission", "not_found"))
@@ -378,7 +456,8 @@ async def run_stream(body: RunRequest):
             # switch the agent made mid-turn (projects tool) and keep its header +
             # conversation thread in sync.
             await queue.put({"type": "final", "result": result,
-                             "workspace": ws_name, "work": final_work})
+                             "workspace": ws_name, "work": final_work,
+                             **message_ids})
             if body.notify and body.session_id:
                 await _push_reply(body.session_id, body.command, result)
         except asyncio.CancelledError:

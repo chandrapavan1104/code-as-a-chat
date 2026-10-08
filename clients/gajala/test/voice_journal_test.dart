@@ -51,6 +51,7 @@ class JournalApi extends GajalaApi {
     String? project,
     String? requestId,
     String? continueTaskId,
+    int? replyToMessageId,
   }) async* {
     executions++;
     yield {'type': 'final', 'result': 'unexpected'};
@@ -157,22 +158,29 @@ void main() {
       expect(restored.synced, isFalse);
     },
   );
-  test('history receipt prevents duplicate transcript after lost acknowledgement', () async {
-    await journal.begin('voice-retry', _key.sid, 'call PSS');
-    await journal.append('voice-retry', 'assistant', 'Calling PSS.');
-    await journal.finish('voice-retry');
-    final api = JournalApi()..historyFails = false;
-    api.history = [
-      ChatMessage('user', 'call PSS', localRequestId: 'voice-retry'),
-      ChatMessage('bot', 'Calling PSS.', localRequestId: 'voice-retry'),
-    ];
-    final chat = ChatController(api, _key, outbox: outbox, voiceJournal: journal);
-    await chat.ensureLoaded();
-    await Future<void>.delayed(const Duration(milliseconds: 20));
-    expect(chat.state.messages, hasLength(2));
-    expect((await journal.load()).single.synced, isTrue);
-    expect(api.executions, 0);
-    expect(api.storedIds, isEmpty);
-  });
-
+  test(
+    'history receipt prevents duplicate transcript after lost acknowledgement',
+    () async {
+      await journal.begin('voice-retry', _key.sid, 'call PSS');
+      await journal.append('voice-retry', 'assistant', 'Calling PSS.');
+      await journal.finish('voice-retry');
+      final api = JournalApi()..historyFails = false;
+      api.history = [
+        ChatMessage('user', 'call PSS', localRequestId: 'voice-retry'),
+        ChatMessage('bot', 'Calling PSS.', localRequestId: 'voice-retry'),
+      ];
+      final chat = ChatController(
+        api,
+        _key,
+        outbox: outbox,
+        voiceJournal: journal,
+      );
+      await chat.ensureLoaded();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(chat.state.messages, hasLength(2));
+      expect((await journal.load()).single.synced, isTrue);
+      expect(api.executions, 0);
+      expect(api.storedIds, isEmpty);
+    },
+  );
 }

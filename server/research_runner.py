@@ -40,6 +40,8 @@ def submit(*, session_id: str, request_id: str | None, prompt: str,
             workspace=str(path), timeout_seconds=timeout,
             attachment_refs=attachment_refs,
         )
+    turn_ids = memory.current_turn_ids()
+    memory.set_research_reply_source(work["id"], turn_ids.get("user_message_id"))
     if attachment_refs:
         work = assistant_tasks_store.update(
             work["id"], status="waiting_for_user",
@@ -150,6 +152,7 @@ def _append_terminal_reply(work: dict) -> bool:
     return memory.append_local_turn(
         work["session_id"], receipt,
         [{"role": "assistant", "content": _terminal_text(work)}],
+        reply_to_message_id=memory.get_research_reply_source(work["id"]),
     )
 
 

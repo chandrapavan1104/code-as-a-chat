@@ -421,6 +421,10 @@ class ChatMessage {
   final String? stopLabel; // why it stopped
   final bool hitStepLimit;
   final AskCard? ask; // choices to tap, when the agent asked a question
+  final int? messageId; // durable server identity, used for explicit replies
+  final int? replyToMessageId;
+  final String? replyToContent;
+  final String? replyToRole;
   ChatMessage(
     this.role,
     this.text, {
@@ -434,6 +438,10 @@ class ChatMessage {
     this.project,
     this.stopLabel,
     this.hitStepLimit = false,
+    this.messageId,
+    this.replyToMessageId,
+    this.replyToContent,
+    this.replyToRole,
   }) : remoteImages = remoteImages ?? const [],
        steps = steps ?? const [];
 }

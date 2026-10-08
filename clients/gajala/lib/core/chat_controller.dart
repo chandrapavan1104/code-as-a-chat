@@ -100,12 +100,16 @@ String shellSessionId(String installId, String? dir) {
 class ChatKey {
   final String command;
   final String sid;
-  const ChatKey(this.command, this.sid);
+  final String? project;
+  const ChatKey(this.command, this.sid, [this.project]);
   @override
   bool operator ==(Object other) =>
-      other is ChatKey && other.command == command && other.sid == sid;
+      other is ChatKey &&
+      other.command == command &&
+      other.sid == sid &&
+      other.project == project;
   @override
-  int get hashCode => Object.hash(command, sid);
+  int get hashCode => Object.hash(command, sid, project);
 }
 
 /// A message waiting behind a running turn. Keep the attachment with its text
@@ -116,11 +120,19 @@ class QueuedMessage {
   final String? imagePath;
   final String? continuationTaskId;
   final String? requestId; // its outbox entry, so a restart can still send it
+  final String? project;
+  final int? replyToMessageId;
+  final String? replyToContent;
+  final String? replyToRole;
   const QueuedMessage(
     this.text, {
     this.imagePath,
     this.continuationTaskId,
     this.requestId,
+    this.project,
+    this.replyToMessageId,
+    this.replyToContent,
+    this.replyToRole,
   });
 }
 
@@ -219,6 +231,7 @@ class ChatController extends StateNotifier<ChatState> {
   final GajalaApi? _api;
   final ChatKey key;
   final Outbox _outbox;
+  String? _projectContext;
   final VoiceJournal _voiceJournal;
   final PhoneHandler _phone;
   // Request ids queued in memory or currently being sent; a replay skips them.
@@ -308,6 +321,10 @@ class ChatController extends StateNotifier<ChatState> {
             ask: ask,
             runId: m.runId,
             localRequestId: m.localRequestId,
+            messageId: m.messageId,
+            replyToMessageId: m.replyToMessageId,
+            replyToContent: m.replyToContent,
+            replyToRole: m.replyToRole,
           );
         }).toList();
       } catch (_) {
@@ -500,6 +517,9 @@ class ChatController extends StateNotifier<ChatState> {
             'outbox',
             e.text.isEmpty ? '📷 Photo' : e.text,
             localImage: e.imagePath,
+            replyToMessageId: e.replyToMessageId,
+            replyToContent: e.replyToContent,
+            replyToRole: e.replyToRole,
           ),
         if (lost > 0)
           ChatMessage(
@@ -532,6 +552,9 @@ class ChatController extends StateNotifier<ChatState> {
           requestId: e.requestId,
           forcedContinuation: e.continuationTaskId,
           project: e.project,
+          replyToMessageId: e.replyToMessageId,
+          replyToContent: e.replyToContent,
+          replyToRole: e.replyToRole,
           replay: true,
         );
         if (!delivered) break;
@@ -546,7 +569,11 @@ class ChatController extends StateNotifier<ChatState> {
     String text,
     String? imagePath, {
     required String requestId,
+    String? project,
     String? continuationTaskId,
+    int? replyToMessageId,
+    String? replyToContent,
+    String? replyToRole,
   }) async {
     try {
       return await _outbox.add(
@@ -556,8 +583,11 @@ class ChatController extends StateNotifier<ChatState> {
           sid: key.sid,
           text: text,
           imagePath: imagePath,
-          project: state.workspace,
+          project: project ?? state.workspace,
           continuationTaskId: continuationTaskId,
+          replyToMessageId: replyToMessageId,
+          replyToContent: replyToContent,
+          replyToRole: replyToRole,
           createdAt: DateTime.now(),
         ),
       );
@@ -568,6 +598,7 @@ class ChatController extends StateNotifier<ChatState> {
   }
 
   void setDraft(String v) => state = state.copyWith(draft: v);
+  void setProjectContext(String? project) => _projectContext = project;
 
   void addSystemNote(String text) => state = state.copyWith(
     messages: [...state.messages, ChatMessage('system', text)],
@@ -651,14 +682,26 @@ class ChatController extends StateNotifier<ChatState> {
     String text, {
     String? imagePath,
     PhoneHandler? phone,
+    int? replyToMessageId,
+    String? replyToContent,
+    String? replyToRole,
   }) async {
     final t = text.trim();
     if (t.isEmpty && imagePath == null) return;
     final id = _requestId();
+    final project = _projectContext ?? state.workspace;
     _active.add(id);
     if (state.sending) {
       final prior = state.work;
-      final queued = QueuedMessage(t, imagePath: imagePath, requestId: id);
+      final queued = QueuedMessage(
+        t,
+        imagePath: imagePath,
+        requestId: id,
+        project: project,
+        replyToMessageId: replyToMessageId,
+        replyToContent: replyToContent,
+        replyToRole: replyToRole,
+      );
       state = state.copyWith(
         draft: '',
         queued: [...state.queued, queued],
@@ -668,12 +711,24 @@ class ChatController extends StateNotifier<ChatState> {
             'queued',
             t.isEmpty ? '📷 Photo' : t,
             localImage: imagePath,
+            replyToMessageId: replyToMessageId,
+            replyToContent: replyToContent,
+            replyToRole: replyToRole,
           ),
         ],
       );
       // Shown at once, then made durable before anything is sent: a restart
       // while this waits must not lose it.
-      if (await _persist(t, imagePath, requestId: id) == null) {
+      if (await _persist(
+            t,
+            imagePath,
+            requestId: id,
+            project: project,
+            replyToMessageId: replyToMessageId,
+            replyToContent: replyToContent,
+            replyToRole: replyToRole,
+          ) ==
+          null) {
         _active.remove(id);
         state = state.copyWith(
           queued: [...state.queued]..remove(queued),
@@ -688,7 +743,7 @@ class ChatController extends StateNotifier<ChatState> {
       // Put the message on the durable in-memory queue immediately. The
       // advisory classifier may be slow or unavailable, but must never make
       // an image/text submission disappear while the current turn completes.
-      if (prior?.isContinuable == true) {
+      if (replyToMessageId == null && prior?.isContinuable == true) {
         final continuation = await _classifyContinuation(t, prior!);
         if (continuation != null && mounted) {
           final q = [...state.queued];
@@ -699,6 +754,10 @@ class ChatController extends StateNotifier<ChatState> {
               imagePath: queued.imagePath,
               continuationTaskId: continuation,
               requestId: id,
+              project: queued.project,
+              replyToMessageId: queued.replyToMessageId,
+              replyToContent: queued.replyToContent,
+              replyToRole: queued.replyToRole,
             );
             state = state.copyWith(queued: q);
           }
@@ -706,12 +765,30 @@ class ChatController extends StateNotifier<ChatState> {
       }
       return;
     }
-    if (await _persist(t, imagePath, requestId: id) == null) {
+    if (await _persist(
+          t,
+          imagePath,
+          requestId: id,
+          project: project,
+          replyToMessageId: replyToMessageId,
+          replyToContent: replyToContent,
+          replyToRole: replyToRole,
+        ) ==
+        null) {
       _active.remove(id);
       return;
     }
     state = state.copyWith(draft: '');
-    await _runTurn(t, imagePath, requestId: id, phone: phone);
+    await _runTurn(
+      t,
+      imagePath,
+      requestId: id,
+      project: project,
+      phone: phone,
+      replyToMessageId: replyToMessageId,
+      replyToContent: replyToContent,
+      replyToRole: replyToRole,
+    );
     await _drainQueue();
   }
 
@@ -727,7 +804,11 @@ class ChatController extends StateNotifier<ChatState> {
         next.text,
         next.imagePath,
         forcedContinuation: next.continuationTaskId,
+        project: next.project,
         requestId: next.requestId,
+        replyToMessageId: next.replyToMessageId,
+        replyToContent: next.replyToContent,
+        replyToRole: next.replyToRole,
       );
       if (!delivered) {
         // Offline: everything behind it stays in the outbox for the replay.
@@ -739,7 +820,14 @@ class ChatController extends StateNotifier<ChatState> {
           messages: [
             for (final m in state.messages)
               m.role == 'queued'
-                  ? ChatMessage('outbox', m.text, localImage: m.localImage)
+                  ? ChatMessage(
+                      'outbox',
+                      m.text,
+                      localImage: m.localImage,
+                      replyToMessageId: m.replyToMessageId,
+                      replyToContent: m.replyToContent,
+                      replyToRole: m.replyToRole,
+                    )
                   : m,
           ],
         );
@@ -775,6 +863,9 @@ class ChatController extends StateNotifier<ChatState> {
     String? project,
     bool replay = false,
     PhoneHandler? phone,
+    int? replyToMessageId,
+    String? replyToContent,
+    String? replyToRole,
   }) async {
     final api = _api;
     if (api == null) return true;
@@ -799,6 +890,10 @@ class ChatController extends StateNotifier<ChatState> {
         'user',
         text.isEmpty ? '📷 Photo' : text,
         localImage: imagePath,
+        localRequestId: id,
+        replyToMessageId: replyToMessageId,
+        replyToContent: replyToContent,
+        replyToRole: replyToRole,
       ),
       ChatMessage('status', 'Gajala typing…'),
     ];
@@ -843,7 +938,14 @@ class ChatController extends StateNotifier<ChatState> {
       final userIdx = m.lastIndexWhere(
         (x) => x.role == 'user' && x.text == display,
       );
-      final waiting = ChatMessage('outbox', display, localImage: imagePath);
+      final waiting = ChatMessage(
+        'outbox',
+        display,
+        localImage: imagePath,
+        replyToMessageId: replyToMessageId,
+        replyToContent: replyToContent,
+        replyToRole: replyToRole,
+      );
       if (userIdx >= 0 && userIdx < m.length && m[userIdx].role == 'user') {
         m[userIdx] = waiting;
       } else {
@@ -872,11 +974,16 @@ class ChatController extends StateNotifier<ChatState> {
     // updates the row already on screen instead of appending a duplicate.
     final live = <int, RunStep>{};
     String? runId;
-    final String? sentProject = project ?? state.workspace;
+    int? userMessageId;
+    int? assistantMessageId;
+    final String? sentProject =
+        project ?? state.workspace ?? key.project ?? _projectContext;
     project = null;
     String? continuing = forcedContinuation;
     final priorWork = state.work;
-    if (continuing == null && priorWork?.isContinuable == true) {
+    if (replyToMessageId == null &&
+        continuing == null &&
+        priorWork?.isContinuable == true) {
       continuing = await _classifyContinuation(text, priorWork!);
     }
 
@@ -907,6 +1014,7 @@ class ChatController extends StateNotifier<ChatState> {
         project: sentProject,
         requestId: id,
         continueTaskId: continuing,
+        replyToMessageId: replyToMessageId,
       )) {
         // Any frame proves the Mac has the request; it is no longer ours to resend.
         await markDelivered();
@@ -967,6 +1075,28 @@ class ChatController extends StateNotifier<ChatState> {
             showSteps();
             break;
           case 'final':
+            userMessageId = (ev['user_message_id'] as num?)?.toInt();
+            assistantMessageId = (ev['assistant_message_id'] as num?)?.toInt();
+            if (userMessageId != null) {
+              final m = [...state.messages];
+              final userIdx = m.lastIndexWhere(
+                (x) => x.role == 'user' && x.localRequestId == id,
+              );
+              if (userIdx >= 0) {
+                final old = m[userIdx];
+                m[userIdx] = ChatMessage(
+                  old.role,
+                  old.text,
+                  localImage: old.localImage,
+                  localRequestId: id,
+                  messageId: userMessageId,
+                  replyToMessageId: replyToMessageId,
+                  replyToContent: replyToContent,
+                  replyToRole: replyToRole,
+                );
+                state = state.copyWith(messages: m);
+              }
+            }
             final rawWork = ev['work'];
             if (rawWork is Map) {
               state = state.copyWith(
@@ -994,8 +1124,13 @@ class ChatController extends StateNotifier<ChatState> {
                 remoteImages: urls,
                 moveTo: moveTo,
                 runId: runId,
+                messageId: assistantMessageId,
+                localRequestId: id,
                 steps: [for (final n in ordered) live[n]!],
                 project: ws ?? project,
+                replyToMessageId: replyToMessageId,
+                replyToContent: replyToContent,
+                replyToRole: replyToRole,
               ),
             );
             // The agent may have switched project mid-turn; follow it so the
@@ -1056,7 +1191,75 @@ class ChatController extends StateNotifier<ChatState> {
       _active.remove(id);
       if (mounted) state = state.copyWith(sending: false);
     }
+    if (delivered && (userMessageId == null || assistantMessageId == null)) {
+      await _hydrateMessageIds(id);
+    }
     return true;
+  }
+
+  /// Older servers may omit IDs from the stream's final event. Read them back
+  /// from durable history so the just-sent messages can be replied to without
+  /// reopening the screen.
+  Future<void> _hydrateMessageIds(String requestId) async {
+    final api = _api;
+    if (api == null || !mounted) return;
+    try {
+      final history = await api.chatHistory(key.sid, limit: 200);
+      final userIndex = history.lastIndexWhere(
+        (m) => m.role == 'user' && m.localRequestId == requestId,
+      );
+      if (userIndex < 0) return;
+      ChatMessage? assistant;
+      for (var i = userIndex + 1; i < history.length; i++) {
+        if (history[i].role == 'user') break;
+        if (history[i].role == 'bot') {
+          assistant = history[i];
+          break;
+        }
+      }
+      final user = history[userIndex];
+      final messages = [...state.messages];
+      var changed = false;
+      for (var i = 0; i < messages.length; i++) {
+        final current = messages[i];
+        if (current.localRequestId == requestId && current.role == 'user') {
+          messages[i] = ChatMessage(
+            current.role,
+            current.text,
+            localImage: current.localImage,
+            localRequestId: requestId,
+            messageId: user.messageId,
+            replyToMessageId: user.replyToMessageId ?? current.replyToMessageId,
+            replyToContent: user.replyToContent ?? current.replyToContent,
+            replyToRole: user.replyToRole ?? current.replyToRole,
+          );
+          changed = true;
+        } else if (current.role == 'bot' &&
+            current.localRequestId == requestId &&
+            assistant != null) {
+          messages[i] = ChatMessage(
+            current.role,
+            current.text,
+            ask: current.ask,
+            remoteImages: current.remoteImages,
+            moveTo: current.moveTo,
+            runId: current.runId,
+            localRequestId: requestId,
+            messageId: assistant.messageId,
+            steps: current.steps,
+            project: current.project,
+            replyToMessageId:
+                assistant.replyToMessageId ?? current.replyToMessageId,
+            replyToContent: assistant.replyToContent ?? current.replyToContent,
+            replyToRole: assistant.replyToRole ?? current.replyToRole,
+          );
+          changed = true;
+        }
+      }
+      if (changed) state = state.copyWith(messages: messages);
+    } catch (_) {
+      // The history refresh is opportunistic; IDs in the final frame remain authoritative.
+    }
   }
 
   /// The live stream dropped before the final frame. The server still finishes
@@ -1078,6 +1281,11 @@ class ChatController extends StateNotifier<ChatState> {
               clean.isEmpty ? h[j].text : clean,
               remoteImages: urls,
               runId: runId ?? h[j].runId,
+              messageId: h[j].messageId,
+              localRequestId: h[j].localRequestId,
+              replyToMessageId: h[j].replyToMessageId,
+              replyToContent: h[j].replyToContent,
+              replyToRole: h[j].replyToRole,
             );
           }
         }

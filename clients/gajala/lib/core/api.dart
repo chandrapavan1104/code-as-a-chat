@@ -95,9 +95,39 @@ class GajalaApi {
             // still see what a reply did after an app restart.
             runId: t['run_id']?.toString(),
             localRequestId: t['local_request_id']?.toString(),
+            messageId: (t['id'] as num?)?.toInt(),
+            replyToMessageId: (t['reply_to_message_id'] as num?)?.toInt(),
+            replyToContent: t['reply_to_content']?.toString(),
+            replyToRole: t['reply_to_role']?.toString(),
           ),
         )
         .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> conversations(String clientId) async {
+    final r = await _dio.get(
+      '/api/conversations',
+      queryParameters: {'client_id': clientId},
+    );
+    return (r.data['items'] as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
+  Future<Map<String, dynamic>> createConversation(
+    String clientId,
+    String title,
+    String? project,
+  ) async {
+    final r = await _dio.post(
+      '/api/conversations',
+      data: {
+        'client_id': clientId,
+        'title': title,
+        if (project != null && project.isNotEmpty) 'project': project,
+      },
+    );
+    return Map<String, dynamic>.from(r.data);
   }
 
   /// Stores a transcript created entirely on the phone. This endpoint only
@@ -153,6 +183,7 @@ class GajalaApi {
     String? project,
     String? requestId,
     String? continueTaskId,
+    int? replyToMessageId,
   }) async* {
     final resp = await _dio.post<ResponseBody>(
       '/run/stream',
@@ -164,6 +195,7 @@ class GajalaApi {
         if (requestId != null && requestId.isNotEmpty) 'request_id': requestId,
         if (continueTaskId != null && continueTaskId.isNotEmpty)
           'continue_task_id': continueTaskId,
+        if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
         'notify': notify,
       },
       options: Options(responseType: ResponseType.stream),

@@ -46,3 +46,21 @@ separate Phone abilities notification-reading switch remains independent.
 - Test Mac Lock and Wake manually when convenient. A denied Mac Accessibility
   shortcut must report display-sleep fallback rather than claim a verified lock.
   Wake opens the display; normal macOS authentication still applies.
+
+## Conversation baseline acceptance
+
+- After updating, General opens as an independent conversation. Start a second
+  chat from New conversation, leave/reopen the app, and confirm selection persists.
+- Long-press an older persisted message, choose Reply, and send a correction after
+  discussing another topic. Check quoted source, tap-to-jump, and relevant response.
+- Change execution project while remaining in the same new chat. Queued messages
+  must retain the project selected when sent. Legacy project histories remain in
+  the conversation picker.
+- Open voice from that chat and make a local command. Its transcript and outcome
+  must appear there. Resume voice through the assistant entry and check selected
+  conversation continuity.
+- Retry an offline reply after reconnecting; it must appear once and retain its
+  reply target. A slow research result must link to its originating question.
+- In voice settings, refresh the YouTube Music connection check, then request music.
+  View last playback details if it fails. Record actual app version, stage/reason,
+  selection, and audible playback. An advertised command alone is not a pass.

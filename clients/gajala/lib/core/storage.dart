@@ -16,6 +16,35 @@ class Storage {
   static const _kSpeak = 'voice_speak_replies';
   static const _kVoiceName = 'voice_tts_name';
   static const _kVoiceLocale = 'voice_tts_locale';
+  static const _kSelectedConversation = 'selected_conversation_id';
+  static const _kSelectedConversationProject = 'selected_conversation_project';
+  static const _kSelectedConversationIndependent =
+      'selected_conversation_independent';
+
+  static Future<({String? sessionId, String? project, bool independent})>
+  selectedConversation() async => (
+    sessionId: await _s.read(key: _kSelectedConversation),
+    project: await _s.read(key: _kSelectedConversationProject),
+    independent:
+        (await _s.read(key: _kSelectedConversationIndependent)) == 'true',
+  );
+
+  static Future<void> setSelectedConversation(
+    String sessionId,
+    String? project, {
+    required bool independent,
+  }) async {
+    await _s.write(key: _kSelectedConversation, value: sessionId);
+    await _s.write(
+      key: _kSelectedConversationIndependent,
+      value: independent.toString(),
+    );
+    if (project == null || project.isEmpty) {
+      await _s.delete(key: _kSelectedConversationProject);
+    } else {
+      await _s.write(key: _kSelectedConversationProject, value: project);
+    }
+  }
 
   static Future<bool> speakReplies() async =>
       (await _s.read(key: _kSpeak)) != 'false';
