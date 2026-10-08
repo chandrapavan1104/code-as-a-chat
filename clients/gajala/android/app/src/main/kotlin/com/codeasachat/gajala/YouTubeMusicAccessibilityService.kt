@@ -19,7 +19,7 @@ import android.view.accessibility.AccessibilityNodeInfo
  * rejects controls and results whose accessible labels identify advertising.
  */
 class YouTubeMusicAccessibilityService : AccessibilityService() {
-    enum class Outcome { SELECTED, SEARCHED, FAILED, CANCELLED }
+    enum class Outcome { SELECTED, SELECTED_COLLECTION, SEARCHED, FAILED, CANCELLED }
 
     private enum class Stage { OPEN_SEARCH, ENTER_QUERY, SUBMIT_QUERY, CHOOSE_RESULT, PLAY_COLLECTION }
     private enum class MatchKind { TRACK, COLLECTION }
@@ -184,7 +184,7 @@ class YouTubeMusicAccessibilityService : AccessibilityService() {
                 }
                 if (play?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) {
                     Log.i(TAG, "music request ${current.id}: matching collection playback selected")
-                    finish(Outcome.SELECTED, "collection playback selected")
+                    finish(Outcome.SELECTED_COLLECTION, "collection playback selected")
                 }
             }
         }
