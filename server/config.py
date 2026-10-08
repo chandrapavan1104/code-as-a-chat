@@ -242,6 +242,10 @@ NIGHT_MAX_JOBS: int = int(os.getenv("NIGHT_MAX_JOBS", "12"))          # per-nigh
 NIGHT_TOKEN_BUDGET: int = int(os.getenv("NIGHT_TOKEN_BUDGET", "0"))   # 0 = unlimited
 NIGHT_TICK: int = int(os.getenv("NIGHT_TICK", "120"))                 # dispatch cadence (s)
 
+# Immediate read-only research launched by the conversational research tool.
+RESEARCH_ENGINE: str = os.getenv("RESEARCH_ENGINE", "gemini").lower()
+RESEARCH_TIMEOUT: int = int(os.getenv("RESEARCH_TIMEOUT", "1800"))
+
 # ── FCM push (Gajala Android app) ─────────────────────────────────────────────
 # Service-account key downloaded from Firebase console; lets the server send
 # pushes to registered devices via the FCM HTTP v1 API. If the file is absent,

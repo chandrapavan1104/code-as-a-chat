@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
-from server import ask_cards, config, fcm, orchestrator, workspace
+from server import ask_cards, config, fcm, orchestrator, research_runner, workspace
 from server.db import store as memory
 from server.db import (agent_runs_store, capability_store, cli_runs_store, deployment_store,
                        errors_store, night_queue_store, notifications_store,
@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
     assistant_tasks_store.init()
     assistant_tasks_store.recover_orphans()
     orchestrator.init()
+    research_runner.recover()
     tasks = [
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(night_shift_loop()),
@@ -152,15 +153,23 @@ def _preview(text: str, limit: int = _PUSH_PREVIEW_CHARS) -> str:
 
 
 def _persist_skill_turn(command: str, session_id: str | None,
-                        prompt: str, result: str) -> None:
+                        prompt: str, result: str,
+                        request_id: str | None = None) -> None:
     """Persist a direct skill-chat turn (claude/codex/gemini/etc.) to memory so
     the app can restore it on reopen. The shell path already records its own
     turns via `_remember`, so skip it here to avoid double-writing."""
     if command == "shell" or not session_id or not result or not result.strip():
         return
     try:
-        memory.append_turn(session_id, "user", prompt)
-        memory.append_turn(session_id, "assistant", result)
+        if request_id:
+            memory.append_local_turn(
+                session_id, f"command-result:{request_id}",
+                [{"role": "user", "content": prompt},
+                 {"role": "assistant", "content": result}],
+            )
+        else:
+            memory.append_turn(session_id, "user", prompt)
+            memory.append_turn(session_id, "assistant", result)
     except Exception:
         pass
 
@@ -251,10 +260,12 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
                 body.command, body.prompt, session_id=body.session_id,
                 on_event=on_event,
                 work_context=assistant_tasks_store.context_for(work['id']) if work else '',
+                request_id=body.request_id, project=body.project,
             )
             # Read inside the binding: the agent may have rebound the turn.
             ws_name = workspace.name()
-        _persist_skill_turn(body.command, body.session_id, body.prompt, result)
+        _persist_skill_turn(
+            body.command, body.session_id, body.prompt, result, body.request_id)
         if work:
             work = _finish_work(work, result, ws_name, completion)
         # Ping the phone once the (possibly long) run finishes, if asked and we
@@ -345,12 +356,14 @@ async def run_stream(body: RunRequest):
                     body.command, body.prompt,
                     session_id=body.session_id, on_event=on_event,
                     work_context=assistant_tasks_store.context_for(work['id']) if work else '',
+                    request_id=body.request_id, project=body.project,
                     # This stream reaches the app, so the phone can answer
                     # phone_request frames (see server/phone_bridge.py).
                     phone_stream=True,
                 )
                 ws_name = workspace.name()
-            _persist_skill_turn(body.command, body.session_id, body.prompt, result)
+            _persist_skill_turn(
+                body.command, body.session_id, body.prompt, result, body.request_id)
             decisive = [s for s in observed_statuses if s != "unknown"]
             failed = bool(decisive and decisive[-1] in
                           ("failed", "unsupported", "needs_permission", "not_found"))
@@ -483,6 +496,8 @@ async def assistant_work_stop(task_id: str):
     work = assistant_tasks_store.get(task_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work item not found")
+    if assistant_tasks_store.get_research(task_id) is not None:
+        return await research_runner.cancel(task_id)
     task = _assistant_workers.get(task_id)
     if task is not None and not task.done():
         task.cancel()

@@ -45,6 +45,7 @@ class MacScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final actions = <(IconData, String, VoidCallback)>[
       (Icons.lock, 'Lock', () => _run(context, ref, 'lock')),
+      (Icons.wb_sunny_outlined, 'Wake', () => _run(context, ref, 'wake')),
       (Icons.bedtime, 'Sleep', () => _run(context, ref, 'sleep')),
       (Icons.bluetooth, 'BT On', () => _run(context, ref, 'bluetooth on')),
       (Icons.bluetooth_disabled, 'BT Off', () => _run(context, ref, 'bluetooth off')),

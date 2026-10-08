@@ -16,21 +16,48 @@ void main() {
     expect(pcm16ToFloat32(ByteData(3)), hasLength(1));
   });
 
-  test('nested holds pause once and resume only after the last release', () async {
-    final calls = <String>[];
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('gajala/wakeword/control'),
-      (call) async {
-        calls.add(call.method);
-        return null;
-      },
+  test(
+    'nested holds pause once and resume only after the last release',
+    () async {
+      final calls = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('gajala/wakeword/control'),
+            (call) async {
+              calls.add(call.method);
+              return null;
+            },
+          );
+      await WakeWord.hold(); // voice sheet opens
+      await WakeWord.hold(); // speech recognition starts
+      await WakeWord.release(); // recognition ends
+      expect(calls, ['pause']);
+      await WakeWord.release(); // sheet closes
+      await WakeWord.release(); // stray release is ignored
+      expect(calls, ['pause', 'resume']);
+    },
+  );
+
+  test('calibration chooses the first safe, least-sensitive profile', () {
+    final chosen = chooseWakeCalibration([
+      [true, true, true, false, false, false, false, false],
+      [true, true, true, true, false, false, false, true],
+      [true, true, true, true, true, false, false, true],
+      [true, true, true, true, true, true, false, true],
+    ]);
+    expect(chosen?.threshold, 0.25);
+    expect(chosen?.boost, 1.6);
+  });
+
+  test('calibration rejects false wakes and a failed holdout', () {
+    expect(
+      chooseWakeCalibration([
+        [true, true, true, true, true, false, false, false],
+        [true, true, true, true, true, true, false, true],
+        [true, true, true, false, false, false, false, true],
+        [true, true, true, true, true, false, true, true],
+      ]),
+      isNull,
     );
-    await WakeWord.hold();     // voice sheet opens
-    await WakeWord.hold();     // speech recognition starts
-    await WakeWord.release();  // recognition ends
-    expect(calls, ['pause']);
-    await WakeWord.release();  // sheet closes
-    await WakeWord.release();  // stray release is ignored
-    expect(calls, ['pause', 'resume']);
   });
 }

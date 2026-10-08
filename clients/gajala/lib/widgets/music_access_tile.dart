@@ -13,6 +13,8 @@ class _MusicAccessTileState extends State<MusicAccessTile>
   static const channel = MethodChannel('gajala/phone');
   String message = 'Checking Android playback access…';
   bool? enabled;
+  bool musicControlEnabled = false;
+  bool musicControlConnected = false;
   @override
   void initState() {
     super.initState();
@@ -39,17 +41,20 @@ class _MusicAccessTileState extends State<MusicAccessTile>
       if (!mounted) return;
       setState(() {
         enabled = result?['enabled'] as bool?;
+        musicControlEnabled = result?['musicControlEnabled'] == true;
+        musicControlConnected = result?['musicControlConnected'] == true;
         message =
             result?['message'] as String? ??
             'Playback access could not be checked.';
       });
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           enabled = null;
           message =
               'Playback access could not be checked. Permission may already be enabled.';
         });
+      }
     }
   }
 
@@ -57,10 +62,23 @@ class _MusicAccessTileState extends State<MusicAccessTile>
     try {
       await channel.invokeMethod('openMusicAccess');
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(
           () => message = 'Android access settings could not be opened.',
         );
+      }
+    }
+  }
+
+  Future<void> openMusicControlSettings() async {
+    try {
+      await channel.invokeMethod('openMusicControlAccess');
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => message = 'Android accessibility settings could not be opened.',
+        );
+      }
     }
   }
 
@@ -84,6 +102,31 @@ class _MusicAccessTileState extends State<MusicAccessTile>
       TextButton(
         onPressed: openSettings,
         child: const Text('Manage Android notification access'),
+      ),
+      const Divider(),
+      ListTile(
+        leading: Icon(
+          musicControlEnabled ? Icons.check_circle_outline : Icons.touch_app,
+        ),
+        title: Text(
+          'Select songs in YouTube Music'
+          '${musicControlEnabled ? ' · Enabled' : ''}',
+        ),
+        subtitle: Text(
+          musicControlConnected
+              ? 'Ready. Gajala can search and select a matching song when you ask. It conservatively rejects results labelled as ads or sponsored content.'
+              : musicControlEnabled
+              ? 'Enabled. Reopen Gajala if Android has not connected the service yet.'
+              : 'Optional one-time setup. Android limits this service to YouTube Music; Gajala does not read or control other apps.',
+        ),
+      ),
+      TextButton(
+        onPressed: openMusicControlSettings,
+        child: Text(
+          musicControlEnabled
+              ? 'Manage YouTube Music control'
+              : 'Enable YouTube Music control',
+        ),
       ),
     ],
   );

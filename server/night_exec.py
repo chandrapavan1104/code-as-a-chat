@@ -226,6 +226,17 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
             except Exception:
                 pass
         return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
+    except asyncio.CancelledError:
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+        raise
     except FileNotFoundError:
         return "", 0, 0, f"the {engine} CLI is not installed on PATH"
     except Exception as exc:  # noqa: BLE001 — surface any spawn failure as job error
@@ -267,6 +278,17 @@ async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
             except Exception:
                 pass
         return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
+    except asyncio.CancelledError:
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+        raise
     except FileNotFoundError:
         return "", 0, 0, f"the {engine} CLI is not installed on PATH"
     except Exception as exc:  # noqa: BLE001

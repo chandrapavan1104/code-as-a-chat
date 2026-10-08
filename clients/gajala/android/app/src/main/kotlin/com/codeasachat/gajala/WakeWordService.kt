@@ -143,7 +143,11 @@ class WakeWordService : Service() {
             setMethodCallHandler { call, result ->
                 when (call.method) {
                     "ready" -> {
-                        invokeMethod("configure", mapOf("dir" to dir.absolutePath), object : MethodChannel.Result {
+                            invokeMethod("configure", mapOf(
+                                "dir" to dir.absolutePath,
+                                "threshold" to calibration(this@WakeWordService).first,
+                                "boost" to calibration(this@WakeWordService).second,
+                            ), object : MethodChannel.Result {
                             override fun success(r: Any?) {
                                 engineReady = true
                                 if (pauses.isEmpty()) startRecording()
@@ -342,7 +346,7 @@ class WakeWordService : Service() {
         private const val ONGOING_ID = 7301
         private const val TRIGGER_ID = 7302
         private const val PREFS = "gajala_wakeword"
-        private val MODEL_FILES = listOf(
+        val MODEL_FILES = listOf(
             "encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt", "keywords.txt",
         )
 
@@ -351,6 +355,23 @@ class WakeWordService : Service() {
 
         fun setEnabled(context: Context, on: Boolean) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("enabled", on).apply()
+        }
+
+        fun calibration(context: Context): Pair<Double, Double> {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            return prefs.getFloat("threshold", 0.3f).toDouble() to
+                prefs.getFloat("boost", 1.5f).toDouble()
+        }
+
+        fun saveCalibration(context: Context, threshold: Double, boost: Double) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putFloat("threshold", threshold.toFloat())
+                .putFloat("boost", boost.toFloat()).apply()
+        }
+
+        fun resetCalibration(context: Context) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .remove("threshold").remove("boost").apply()
         }
 
         fun hasMic(context: Context): Boolean =

@@ -87,6 +87,20 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+        <!-- Opt-in, package-scoped control used only to search and select a
+             requested track in YouTube Music. Android shows its own warning. -->
+        <service
+            android:name=".YouTubeMusicAccessibilityService"
+            android:exported="true"
+            android:label="Gajala YouTube Music control"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/youtube_music_accessibility_service" />
+        </service>
         <!-- Hands-free "Hey Gajala" listener. -->
         <service
             android:name=".WakeWordService"

@@ -192,6 +192,10 @@ class GajalaApi {
     }
   }
 
+  Future<void> cancelResearch(String id) async {
+    await _dio.post('/api/work/$id/stop');
+  }
+
   Future<AssistantWork> stopWork(String id) async => AssistantWork.fromJson(
     Map<String, dynamic>.from((await _dio.post('/api/work/$id/stop')).data),
   );

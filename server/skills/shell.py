@@ -142,6 +142,9 @@ DECISION RULES:
 - Answer greetings and stable knowledge directly. For current facts, project
   status, metrics, earlier drafts or deployment state, retrieve authoritative evidence.
   A notes entry saying done is not verification of a live application.
+- For substantial public research requiring several current sources, comparisons,
+  or a report, call the research tool. It returns a durable background task
+  immediately. Do not send that work to a coding CLI or hold the chat stream open.
 - First establish the requested deliverables and source scope. "All projects"
   means inspect candidates across projects, not just the active directory.
   Resolve project identity by path/remote and deployment by the agreed URL.
@@ -1169,6 +1172,8 @@ class ShellSkill(Skill):
                     raw_result = await skill.run(
                         tool_args, session_id=session_id, source_prompt=prompt,
                         work_context=kwargs.get("work_context") or "",
+                        request_id=kwargs.get("request_id"),
+                        project=kwargs.get("project"),
                         # Only a live app stream can carry a question to the phone.
                         on_event=on_event if kwargs.get("phone_stream") else None,
                         phone_stream=bool(kwargs.get("phone_stream")))
