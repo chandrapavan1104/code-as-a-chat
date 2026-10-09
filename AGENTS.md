@@ -59,6 +59,20 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Native Library controls (October 8).** Library uses compact grouped cards with
+48-pixel icon rows and intentional ordering. Ports has filtering, process details
+and confirmed SIGTERM with live listener/PID revalidation. Reminders supports
+schedule presets, editing, cancellation, daily recurrence, explicit IANA timezone
+and linked-note stop conditions; new schedules default to the server timezone.
+Files browses folders and stages durable authenticated previews/downloads on tap.
+Sessions filters CLI histories, displays bounded transcripts and continues the
+exact native session in a new independent conversation with its original engine.
+Context, Errors, Auth, Firebase and Fix have explicit action forms; coding engines
+use task forms with project selection and streamed results. Existing native Work,
+project/model, phone settings and system screens are reused. Server regressions:
+310 passed; Flutter regressions: 153 passed; changed-screen analysis clean.
+Physical-phone ergonomics remain an acceptance check.
+
 **WhatsApp-style quoted replies (October 8).** Quotes now render inside the
 reply bubble with a colored left bar, separate sender name and bounded two-line
 preview; the composer uses the same treatment. Old saved research replies split
@@ -441,6 +455,12 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-08 — **Compact Library and skill-specific controls.** Replaced roomy
+  Library rows and generic chat fallbacks with native Ports/Files/Sessions,
+  a full reminder editor, and explicit command/task forms. Added authenticated
+  bounded Library APIs, exact engine/session pinning, staged file previews,
+  safe port termination and reminder validation. 310 server and 153 Flutter
+  tests pass; changed screens analyze cleanly.
 - 2026-10-08 — **Reply quotes moved inside the message.** Added a compact sender
   and preview block with a colored side bar to sent replies and the composer.
   Already saved research-question prefixes render as quotes without changing
