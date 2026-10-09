@@ -72,6 +72,7 @@ results return to that message. Repository preflight and recovery explanations a
 honest for Mine/Auto and legacy escalations. Alerts become read individually; exact
 result notification links survive cold launch. Existing updater discovery is retained.
 291 server tests and 139 Flutter tests pass plus final cold-start routing checks;
+failure finalization also retains captured stdout/stderr (9 focused tests pass);
 signed build 1791504833. Physical-phone acceptance remains. Delivery details and
 remaining general offline-cache work: `docs/gajala-ux-and-work-plan.md`.
 
@@ -431,6 +432,10 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-08 — **Preserve failure diagnostics at finalization.** Failure handling
+  now leaves already captured worker stdout/stderr intact when no replacement
+  logs are supplied. A regression exercises timeout output through finalization;
+  the focused queue-result suite passes all nine tests.
 - 2026-10-08 — **Chat comfort and visible Work results implemented.** Added
   swipe Reply, responsive composer and Chats/Work/Library/Alerts navigation;
   grouped settings and preserved updater visibility. Work now opens saved reports,
