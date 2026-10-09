@@ -131,3 +131,17 @@ def test_invalid_repo_is_classified_before_worker_launch(tmp_path, monkeypatch):
     assert job["failure_kind"] == "invalid_repo"
     assert attempt["stage"] == "repository_preflight"
     assert attempt["status"] == "failed"
+
+
+def test_failure_finalization_preserves_captured_worker_diagnostics(tmp_path, monkeypatch):
+    from server import night_shift
+    store = _store(tmp_path, monkeypatch)
+    jid = store.add(project="/tmp/repo", task="slow task", tag="mine")
+    attempt = store.begin_attempt(jid, "codex")
+    store.update_attempt(attempt["id"], stdout="worker output before timeout", stderr="useful diagnostic")
+    asyncio.run(night_shift._fail_job(store.get(jid), attempt, "timeout", stage="agent_run", output="partial report"))
+    saved = store.attempts(jid, include_logs=True)[0]
+    assert saved["stdout"] == "worker output before timeout"
+    assert saved["stderr"] == "useful diagnostic"
+    assert saved["output"] == "partial report"
+    assert store.result(jid)["completeness"] == "partial"
