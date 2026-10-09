@@ -14,6 +14,7 @@ import '../core/theme.dart';
 import '../core/voice.dart';
 import '../widgets/run_trace.dart';
 import '../widgets/chat_content.dart';
+import '../widgets/quoted_reply.dart';
 import '../widgets/swipe_reply.dart';
 import '../widgets/chat_composer.dart';
 import 'diff_screen.dart';
@@ -725,7 +726,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 onReply: msgs[i].messageId == null
                     ? null
                     : () => _replyTo(msgs[i]),
-                onJump: () => _jumpToReply(msgs[i].replyToMessageId),
+                onJump: msgs[i].replyToMessageId == null
+                    ? null
+                    : () => _jumpToReply(msgs[i].replyToMessageId),
                 key: msgs[i].messageId == null
                     ? null
                     : (_messageKeys[msgs[i].messageId!] ??= GlobalKey()),
@@ -772,9 +775,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             focusNode: _inputFocus,
             sending: sending,
             dictating: _dictating,
-            replyPreview: _replyTarget == null
-                ? null
-                : 'Replying to ${_replyTarget!.role == 'user' ? 'you' : 'Gajala'}: ${_replyTarget!.text}',
+            replyPreview: _replyTarget == null ? null : _replyTarget!.text,
+            replySender: _replyTarget?.role == 'user' ? 'You' : 'Gajala',
             onCancelReply: () => setState(() => _replyTarget = null),
             attachmentPreview: _pending == null
                 ? null
@@ -933,19 +935,12 @@ class _Bubble extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               if (m.replyToContent?.isNotEmpty == true)
-                InkWell(
-                  onTap: onJump,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      '${m.replyToRole == 'user' ? 'You' : 'Gajala'} · ${m.replyToContent}',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: context.pal.textDim,
-                      ),
-                    ),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: QuotedReply(
+                    sender: m.replyToRole == 'user' ? 'You' : 'Gajala',
+                    text: m.replyToContent!,
+                    onTap: onJump,
                   ),
                 ),
               Text(
@@ -1000,7 +995,8 @@ class _Bubble extends StatelessWidget {
     }
     final isUser = m.role == 'user';
     final isError = m.role == 'error';
-    final hasText = m.text.trim().isNotEmpty;
+    final presentation = replyPresentation(m);
+    final hasText = presentation.body.trim().isNotEmpty;
     final radius = BorderRadius.only(
       topLeft: const Radius.circular(16),
       topRight: const Radius.circular(16),
@@ -1024,6 +1020,14 @@ class _Bubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (presentation.quote?.isNotEmpty == true) ...[
+              QuotedReply(
+                sender: presentation.sender,
+                text: presentation.quote!,
+                onTap: onJump,
+              ),
+              const SizedBox(height: 8),
+            ],
             // Image the user attached (rendered from the local file).
             if (m.localImage != null)
               Padding(
@@ -1072,7 +1076,7 @@ class _Bubble extends StatelessWidget {
               ),
             if (hasText)
               ChatContent(
-                text: m.text,
+                text: presentation.body,
                 api: isUser ? null : api,
                 style: TextStyle(
                   color: isError ? GajalaColors.danger : context.pal.text,
@@ -1108,41 +1112,8 @@ class _Bubble extends StatelessWidget {
     // What the agent did to produce this reply, collapsed under it. Steps we
     // already have (the turn just ran) render immediately; a reply restored from
     // history carries only its run id and fetches on demand.
-    final quoted = m.replyToContent;
-    final messageContent = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (quoted != null && quoted.isNotEmpty)
-          Align(
-            alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-            child: InkWell(
-              onTap: onJump,
-              child: Container(
-                margin: const EdgeInsets.only(top: 4),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * .72,
-                ),
-                decoration: BoxDecoration(
-                  color: context.pal.surfaceAlt,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '${m.replyToRole == 'user' ? 'You' : 'Gajala'} · $quoted',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, color: context.pal.textDim),
-                ),
-              ),
-            ),
-          ),
-        bubble,
-      ],
-    );
-    final hasCodeBlock = m.text.contains('```');
+    final messageContent = bubble;
+    final hasCodeBlock = presentation.body.contains('```');
     final decorated = onReply == null
         ? messageContent
         : hasCodeBlock
