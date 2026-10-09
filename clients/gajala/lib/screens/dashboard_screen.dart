@@ -70,7 +70,7 @@ class DashboardScreen extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
-            const _UpdateBanner(),
+            const UpdateBanner(),
             const _AskHero(),
             const SizedBox(height: 18),
             skills.when(
@@ -237,13 +237,13 @@ class _OverflowMenu extends ConsumerWidget {
 
 /// "Update available" banner — checks the server for a newer build and installs
 /// it in-app with a tap (download → system installer).
-class _UpdateBanner extends ConsumerStatefulWidget {
-  const _UpdateBanner();
+class UpdateBanner extends ConsumerStatefulWidget {
+  const UpdateBanner();
   @override
-  ConsumerState<_UpdateBanner> createState() => _UpdateBannerState();
+  ConsumerState<UpdateBanner> createState() => UpdateBannerState();
 }
 
-class _UpdateBannerState extends ConsumerState<_UpdateBanner>
+class UpdateBannerState extends ConsumerState<UpdateBanner>
     with WidgetsBindingObserver {
   UpdateInfo? _update;
   bool _downloading = false;
@@ -337,7 +337,7 @@ class _UpdateBannerState extends ConsumerState<_UpdateBanner>
 }
 
 /// Rich native screen for skills that have one; chat fallback for the rest.
-Widget _screenFor(Skill s) {
+Widget screenForSkill(Skill s) {
   switch (s.name) {
     case 'notes': return const NotesScreen();
     case 'sysmon': return const SystemScreen();
@@ -432,7 +432,7 @@ class _FeatureCard extends ConsumerWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
         onTap: () => Navigator.of(context)
-            .push(MaterialPageRoute(builder: (_) => _screenFor(skill))),
+            .push(MaterialPageRoute(builder: (_) => screenForSkill(skill))),
         onLongPress: () => showAllSkillsSheet(context, all),
         child: Ink(
           decoration: BoxDecoration(
@@ -496,7 +496,7 @@ class _SkillChip extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
         onTap: () => Navigator.of(context)
-            .push(MaterialPageRoute(builder: (_) => _screenFor(skill))),
+            .push(MaterialPageRoute(builder: (_) => screenForSkill(skill))),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -616,7 +616,7 @@ void showAllSkillsSheet(BuildContext context, List<Skill> all) {
                   onTap: () {
                     Navigator.pop(sheetCtx);
                     Navigator.of(context)
-                        .push(MaterialPageRoute(builder: (_) => _screenFor(s)));
+                        .push(MaterialPageRoute(builder: (_) => screenForSkill(s)));
                   },
                 ),
             ],

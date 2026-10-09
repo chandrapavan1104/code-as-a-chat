@@ -14,6 +14,8 @@ interactive one.
 
 import asyncio
 import json
+import os
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -186,13 +188,62 @@ def _parse(engine: str, stdout: str, stderr: str) -> tuple[str, int, int]:
     return text, total, billable
 
 
+def _result_callback(callback, *, stdout: str = "", stderr: str = "",
+                     output: str = "", error: str | None = None,
+                     exit_code: int | None = None) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stdout=stdout, stderr=stderr, output=output, error=error,
+                 exit_code=exit_code)
+    except Exception:
+        # Diagnostics persistence must not turn a completed run into failure.
+        pass
+
+
+async def _communicate_bounded(proc, timeout: int):
+    """Keep pipe readers alive through timeout and retain partial output."""
+    reader = asyncio.create_task(proc.communicate())
+    try:
+        return await asyncio.wait_for(asyncio.shield(reader), timeout), None
+    except asyncio.TimeoutError:
+        _kill_process_tree(proc)
+        try:
+            output = await asyncio.wait_for(asyncio.shield(reader), 5)
+        except Exception:
+            output = (b"", b"")
+        return output, f"ran past the {timeout}s limit and was stopped"
+    except asyncio.CancelledError:
+        _kill_process_tree(proc)
+        try:
+            output = await asyncio.wait_for(asyncio.shield(reader), 5)
+        except Exception:
+            output = (b"", b"")
+        raise _ProcessCancelled(output)
+
+
+class _ProcessCancelled(asyncio.CancelledError):
+    def __init__(self, output):
+        self.output = output
+
+
+def _kill_process_tree(proc) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, AttributeError):
+            pass
+
+
 def _model_for(engine: str) -> str:
     from server import prefs
     return prefs.get_coding_model(engine) or ""
 
 
 async def run_job(engine: str, repo: str, task: str, timeout: int,
-                  on_spawn=None) -> tuple[str, int, int, str | None]:
+                  on_spawn=None, on_result=None) -> tuple[str, int, int, str | None]:
     """Run one bounded night build. Returns (final_text, total_tok, billable_tok,
     error). `error` is a short string on timeout / spawn failure, else None.
 
@@ -208,52 +259,44 @@ async def run_job(engine: str, repo: str, task: str, timeout: int,
             *argv, cwd=repo,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         if on_spawn is not None:
             try:
                 on_spawn(proc)
             except Exception:
                 pass
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+        (out_b, err_b), timeout_error = await _communicate_bounded(proc, timeout)
+    except _ProcessCancelled as exc:
         if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.communicate()
-            except Exception:
-                pass
-        return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
-    except asyncio.CancelledError:
-        if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.communicate()
-            except Exception:
-                pass
+            out_b, err_b = exc.output
+            _result_callback(on_result, stdout=out_b.decode(errors="replace"),
+                             stderr=err_b.decode(errors="replace"), error="cancelled",
+                             exit_code=proc.returncode)
         raise
     except FileNotFoundError:
-        return "", 0, 0, f"the {engine} CLI is not installed on PATH"
+        error = f"the {engine} CLI is not installed on PATH"
+        _result_callback(on_result, error=error)
+        return "", 0, 0, error
     except Exception as exc:  # noqa: BLE001 — surface any spawn failure as job error
-        return "", 0, 0, f"failed to launch {engine}: {exc}"
+        error = f"failed to launch {engine}: {exc}"
+        _result_callback(on_result, error=error)
+        return "", 0, 0, error
 
     stdout = out_b.decode(errors="replace")
     stderr = err_b.decode(errors="replace")
     text, total, billable = _parse(engine, stdout, stderr)
 
-    error = None
-    if proc.returncode not in (0, None):
+    error = timeout_error
+    if error is None and proc.returncode not in (0, None):
         error = (stderr.strip() or text.strip() or f"exit code {proc.returncode}")[:400]
+    _result_callback(on_result, stdout=stdout, stderr=stderr, output=text,
+                     error=error, exit_code=proc.returncode)
     return text, total, billable, error
 
 
 async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
-                           on_spawn=None) -> tuple[str, int, int, str | None]:
+                           on_spawn=None, on_result=None) -> tuple[str, int, int, str | None]:
     """Run a read-only research job without Git/branch expectations."""
     prompt = f"{RESEARCH_SYSTEM}\n\n=== RESEARCH TASK ===\n{task}"
     argv = _argv(engine, cwd, prompt, _model_for(engine))
@@ -263,31 +306,17 @@ async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
             *argv, cwd=cwd,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         if on_spawn is not None:
             on_spawn(proc)
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+        (out_b, err_b), timeout_error = await _communicate_bounded(proc, timeout)
+    except _ProcessCancelled as exc:
         if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.communicate()
-            except Exception:
-                pass
-        return "", 0, 0, f"ran past the {timeout}s limit and was stopped"
-    except asyncio.CancelledError:
-        if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.communicate()
-            except Exception:
-                pass
+            out_b, err_b = exc.output
+            _result_callback(on_result, stdout=out_b.decode(errors="replace"),
+                             stderr=err_b.decode(errors="replace"), error="cancelled",
+                             exit_code=proc.returncode)
         raise
     except FileNotFoundError:
         return "", 0, 0, f"the {engine} CLI is not installed on PATH"
@@ -297,7 +326,9 @@ async def run_research_job(engine: str, cwd: str, task: str, timeout: int,
     stdout = out_b.decode(errors="replace")
     stderr = err_b.decode(errors="replace")
     text, total, billable = _parse(engine, stdout, stderr)
-    error = None
-    if proc.returncode not in (0, None):
+    error = timeout_error
+    if error is None and proc.returncode not in (0, None):
         error = (stderr.strip() or text.strip() or f"exit code {proc.returncode}")[:400]
+    _result_callback(on_result, stdout=stdout, stderr=stderr, output=text,
+                     error=error, exit_code=proc.returncode)
     return text, total, billable, error

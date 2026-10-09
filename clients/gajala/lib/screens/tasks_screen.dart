@@ -4,42 +4,52 @@ import '../core/api.dart';
 import '../core/models.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import 'work_result_screen.dart';
+import '../widgets/work_result_widgets.dart';
 
-/// Tasks tab — durable Night Shift work orders. Items are never deleted: they
-/// move between Active and Closed and keep their closure history.
+/// Work tab — durable jobs grouped by what needs attention and available results.
 class TasksScreen extends ConsumerWidget {
   const TasksScreen({super.key});
 
-  static const _order = [
-    'running',
-    'deploying',
+  static const _running = {'running', 'deploying', 'queued'};
+  static const _needsYou = {
     'awaiting_input',
     'blocked',
     'unverified',
-    'queued',
-    'deployed',
-    'staged',
-    'completed',
     'needs_you',
     'failed',
     'stopped',
     'held',
-    'shipped',
-    'closed',
-  ];
+  };
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final data = ref.watch(queueProvider);
     return DefaultTabController(
-      length: 2,
+      length: 4,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Tasks'),
+          title: const Text('Work'),
+          actions: [
+            IconButton(
+              tooltip: 'Work settings',
+              icon: const Icon(Icons.tune),
+              onPressed: data.hasValue
+                  ? () => _settingsSheet(
+                      context,
+                      ref,
+                      data.requireValue.settings,
+                      data.requireValue.health,
+                    )
+                  : null,
+            ),
+          ],
           bottom: const TabBar(
             tabs: [
-              Tab(text: 'Active'),
-              Tab(text: 'Closed'),
+              Tab(text: 'Running'),
+              Tab(text: 'Needs you'),
+              Tab(text: 'Results'),
+              Tab(text: 'All'),
             ],
           ),
         ),
@@ -61,26 +71,22 @@ class TasksScreen extends ConsumerWidget {
             ),
           ),
           data: (d) {
-            final active = d.jobs.where((j) => j.status != 'closed').toList()
-              ..sort(
-                (a, b) => _order
-                    .indexOf(a.status)
-                    .compareTo(_order.indexOf(b.status)),
-              );
-            final closed = d.jobs.where((j) => j.status == 'closed').toList();
+            final active = d.jobs
+                .where((j) => _running.contains(j.status))
+                .toList();
+            final needsYou = d.jobs
+                .where((j) => _needsYou.contains(j.status))
+                .toList();
+            final results = d.jobs.where(_hasResult).toList();
             return TabBarView(
               children: [
+                _JobList(active, empty: 'No work is running or queued.'),
+                _JobList(needsYou, empty: 'Nothing needs your attention.'),
                 _JobList(
-                  active,
-                  header: Column(
-                    children: [
-                      _QueueHealthCard(d.health),
-                      const SizedBox(height: 8),
-                      _NightShiftHeader(d.settings),
-                    ],
-                  ),
+                  results,
+                  empty: 'Finished work results will appear here.',
                 ),
-                _JobList(closed, closed: true),
+                _JobList(d.jobs, empty: 'No work orders yet.'),
               ],
             );
           },
@@ -90,11 +96,15 @@ class TasksScreen extends ConsumerWidget {
   }
 }
 
+bool _hasResult(QueueJob job) =>
+    job.result.available ||
+    job.result.completeness == 'partial' ||
+    const {'completed', 'deployed', 'staged', 'shipped'}.contains(job.status);
+
 class _JobList extends ConsumerWidget {
   final List<QueueJob> jobs;
-  final Widget? header;
-  final bool closed;
-  const _JobList(this.jobs, {this.header, this.closed = false});
+  final String empty;
+  const _JobList(this.jobs, {required this.empty});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => RefreshIndicator(
@@ -103,15 +113,12 @@ class _JobList extends ConsumerWidget {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
       children: [
-        if (header != null) ...[header!, const SizedBox(height: 8)],
         if (jobs.isEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 60),
             child: Center(
               child: Text(
-                closed
-                    ? 'Nothing closed.\nClosed work can always be reopened.'
-                    : 'No active work.\nCreate a work order for Night Shift.',
+                empty,
                 textAlign: TextAlign.center,
                 style: TextStyle(color: context.pal.textDim),
               ),
@@ -359,6 +366,15 @@ class _JobCard extends ConsumerWidget {
                   height: 1.3,
                 ),
               ),
+              if (_hasResult(j))
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: WorkResultButton(
+                    result: j.result,
+                    onPressed: () =>
+                        showWorkResult(context, j.id, title: j.title),
+                  ),
+                ),
               if ((j.spec['outcome']?.toString() ?? '').isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
@@ -1436,80 +1452,16 @@ class _QueueHealthCard extends ConsumerWidget {
   }
 }
 
-class _NightShiftHeader extends ConsumerWidget {
-  final Map<String, dynamic> settings;
-  const _NightShiftHeader(this.settings);
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final pal = context.pal;
-    final on = settings['enabled'] == true;
-    final window =
-        '${settings['start'] ?? '23:00'}–${settings['end'] ?? '07:00'}';
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
-      decoration: BoxDecoration(
-        color: (on ? GajalaColors.green : pal.textDim).withValues(alpha: .10),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: (on ? GajalaColors.green : pal.border).withValues(alpha: .4),
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.nightlight_round,
-            color: on ? GajalaColors.green : pal.textDim,
-            size: 20,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  on ? 'Night Shift on' : 'Night Shift off',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: pal.text,
-                  ),
-                ),
-                Text(
-                  on
-                      ? 'Builds queued tasks $window'
-                      : 'Tap the switch to run overnight',
-                  style: TextStyle(fontSize: 12, color: pal.textDim),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            icon: Icon(Icons.tune, size: 20, color: pal.textDim),
-            tooltip: 'Settings',
-            onPressed: () => _settingsSheet(context, ref, settings),
-          ),
-          Switch(
-            value: on,
-            activeThumbColor: GajalaColors.green,
-            onChanged: (v) async {
-              await ref.read(apiProvider)?.setQueueSettings({'enabled': v});
-              ref.invalidate(queueProvider);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 Future<void> _settingsSheet(
   BuildContext context,
   WidgetRef ref,
   Map<String, dynamic> s,
+  Map<String, dynamic> health,
 ) async {
   final start = TextEditingController(text: '${s['start'] ?? '23:00'}');
   final end = TextEditingController(text: '${s['end'] ?? '07:00'}');
   final maxJobs = TextEditingController(text: '${s['max_jobs'] ?? 12}');
+  var enabled = s['enabled'] == true;
   await showModalBottomSheet(
     context: context,
     isScrollControlled: true,
@@ -1517,50 +1469,68 @@ Future<void> _settingsSheet(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
-    builder: (ctx) => Padding(
-      padding: EdgeInsets.fromLTRB(
-        20,
-        18,
-        20,
-        MediaQuery.of(ctx).viewInsets.bottom + 20,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            'Night Shift settings',
-            style: Theme.of(ctx).textTheme.titleMedium,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setSheet) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: .86,
+        minChildSize: .55,
+        maxChildSize: .96,
+        builder: (ctx, scroll) => ListView(
+          controller: scroll,
+          padding: EdgeInsets.fromLTRB(
+            16,
+            16,
+            16,
+            MediaQuery.of(ctx).viewInsets.bottom + 24,
           ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: start,
-                  decoration: const InputDecoration(labelText: 'Start (HH:MM)'),
-                ),
+          children: [
+            Text('Work settings', style: Theme.of(ctx).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            _QueueHealthCard(health),
+            const SizedBox(height: 12),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Night Shift'),
+              subtitle: Text(
+                enabled
+                    ? 'Overnight run window is enabled.'
+                    : 'Queued work will wait for manual runs.',
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  controller: end,
-                  decoration: const InputDecoration(labelText: 'End (HH:MM)'),
+              value: enabled,
+              activeThumbColor: GajalaColors.green,
+              onChanged: (value) => setSheet(() => enabled = value),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: start,
+                    decoration: const InputDecoration(
+                      labelText: 'Start (HH:MM)',
+                    ),
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: maxJobs,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Max jobs / night'),
-          ),
-          const SizedBox(height: 18),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: end,
+                    decoration: const InputDecoration(labelText: 'End (HH:MM)'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: maxJobs,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Max jobs / night'),
+            ),
+            const SizedBox(height: 18),
+            FilledButton(
               onPressed: () async {
                 await ref.read(apiProvider)?.setQueueSettings({
+                  'enabled': enabled,
                   'start': start.text.trim(),
                   'end': end.text.trim(),
                   'max_jobs':
@@ -1569,10 +1539,10 @@ Future<void> _settingsSheet(
                 ref.invalidate(queueProvider);
                 if (ctx.mounted) Navigator.pop(ctx);
               },
-              child: const Text('Save'),
+              child: const Text('Save work settings'),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );

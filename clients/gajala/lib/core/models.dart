@@ -279,6 +279,136 @@ class SystemStats {
 }
 
 /// A Night Shift queue item (Tasks tab).
+class QueueResultSummary {
+  final bool available;
+  final String kind, completeness;
+  final int artifactCount;
+  const QueueResultSummary({
+    this.available = false,
+    this.kind = 'unknown',
+    this.completeness = 'none',
+    this.artifactCount = 0,
+  });
+
+  factory QueueResultSummary.fromJson(Map<String, dynamic> json) =>
+      QueueResultSummary(
+        available: json['available'] == true,
+        kind: json['kind']?.toString() ?? 'unknown',
+        completeness: json['completeness']?.toString() ?? 'none',
+        artifactCount: (json['artifact_count'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class QueueResultArtifact {
+  final String kind, ref, name;
+  final int? size;
+  final List<String> filesChanged;
+  const QueueResultArtifact({
+    required this.kind,
+    required this.ref,
+    this.name = '',
+    this.size,
+    this.filesChanged = const [],
+  });
+
+  factory QueueResultArtifact.fromJson(Map<String, dynamic> json) =>
+      QueueResultArtifact(
+        kind: json['kind']?.toString() ?? 'artifact',
+        ref: json['path']?.toString() ?? json['ref']?.toString() ?? '',
+        name: json['name']?.toString() ?? '',
+        size: (json['size'] as num?)?.toInt(),
+        filesChanged: List<String>.from(json['files_changed'] ?? const []),
+      );
+}
+
+class QueueAttempt {
+  final int id, attemptNo;
+  final String engine, stage, status;
+  final String? error, stdout, stderr, output;
+  final int? exitCode;
+  final bool stdoutTruncated, stderrTruncated, outputTruncated;
+  final double? startedAt, endedAt;
+  const QueueAttempt({
+    required this.id,
+    required this.attemptNo,
+    required this.engine,
+    required this.stage,
+    required this.status,
+    this.error,
+    this.exitCode,
+    this.stdout,
+    this.stderr,
+    this.output,
+    this.stdoutTruncated = false,
+    this.stderrTruncated = false,
+    this.outputTruncated = false,
+    this.startedAt,
+    this.endedAt,
+  });
+
+  factory QueueAttempt.fromJson(Map<String, dynamic> json) => QueueAttempt(
+    id: (json['id'] as num?)?.toInt() ?? 0,
+    attemptNo: (json['attempt_no'] as num?)?.toInt() ?? 0,
+    engine: json['engine']?.toString() ?? 'unknown',
+    stage: json['stage']?.toString() ?? 'unknown',
+    status: json['status']?.toString() ?? 'unknown',
+    error: json['error']?.toString(),
+    exitCode: (json['exit_code'] as num?)?.toInt(),
+    stdout: json['stdout']?.toString(),
+    stderr: json['stderr']?.toString(),
+    output: json['output']?.toString(),
+    stdoutTruncated: _queueBool(json['stdout_truncated']),
+    stderrTruncated: _queueBool(json['stderr_truncated']),
+    outputTruncated: _queueBool(json['output_truncated']),
+    startedAt: (json['started_at'] as num?)?.toDouble(),
+    endedAt: (json['ended_at'] as num?)?.toDouble(),
+  );
+}
+
+class QueueJobResult {
+  final int jobId;
+  final bool available;
+  final String kind, completeness, text;
+  final String? title;
+  final List<QueueResultArtifact> artifacts;
+  final List<QueueAttempt> attempts;
+  const QueueJobResult({
+    required this.jobId,
+    required this.available,
+    required this.kind,
+    required this.completeness,
+    required this.text,
+    this.title,
+    this.artifacts = const [],
+    this.attempts = const [],
+  });
+
+  factory QueueJobResult.fromJson(Map<String, dynamic> json) {
+    final details = Map<String, dynamic>.from(json['result'] ?? json);
+    return QueueJobResult(
+      jobId: (json['job_id'] as num?)?.toInt() ?? 0,
+      available: details['available'] == true,
+      kind: details['kind']?.toString() ?? 'unknown',
+      completeness: details['completeness']?.toString() ?? 'none',
+      text: details['text']?.toString() ?? '',
+      title: json['title']?.toString() ?? details['title']?.toString(),
+      artifacts: (details['artifacts'] as List? ?? const [])
+          .map(
+            (e) => QueueResultArtifact.fromJson(Map<String, dynamic>.from(e)),
+          )
+          .toList(),
+      attempts:
+          (json['attempts'] as List? ??
+                  details['attempts'] as List? ??
+                  const [])
+              .map((e) => QueueAttempt.fromJson(Map<String, dynamic>.from(e)))
+              .toList(),
+    );
+  }
+}
+
+bool _queueBool(dynamic value) => value == true || value == 1;
+
 class QueueJob {
   final int id;
   final String project,
@@ -291,6 +421,8 @@ class QueueJob {
       readiness;
   final String? branch, summary, closeReason, previousStatus;
   final Map<String, dynamic> spec, deployment, supervision, awareness;
+  final QueueResultSummary result;
+  final int attemptCount;
   final List<String> filesChanged;
   final List<int> dependsOn, blockedBy;
   final List<Map<String, dynamic>> dependencies, closureHistory;
@@ -314,6 +446,8 @@ class QueueJob {
     required this.deployment,
     required this.supervision,
     required this.awareness,
+    this.result = const QueueResultSummary(),
+    this.attemptCount = 0,
     required this.filesChanged,
     required this.tokensTotal,
     required this.dependsOn,
@@ -342,6 +476,10 @@ class QueueJob {
     deployment: Map<String, dynamic>.from(j['deployment'] ?? const {}),
     supervision: Map<String, dynamic>.from(j['supervision'] ?? const {}),
     awareness: Map<String, dynamic>.from(j['awareness'] ?? const {}),
+    result: QueueResultSummary.fromJson(
+      Map<String, dynamic>.from(j['result'] ?? const {}),
+    ),
+    attemptCount: (j['attempt_count'] as num?)?.toInt() ?? 0,
     filesChanged: List<String>.from(j['files_changed'] ?? const []),
     dependsOn: List<int>.from(j['depends_on'] ?? const []),
     blockedBy: List<int>.from(j['blocked_by'] ?? const []),

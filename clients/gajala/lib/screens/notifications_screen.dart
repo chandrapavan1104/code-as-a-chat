@@ -6,6 +6,7 @@ import '../core/state.dart';
 import '../core/theme.dart';
 import '../core/update.dart';
 import 'home_shell.dart';
+import 'work_result_screen.dart';
 
 /// Alerts tab — the durable inbox of everything Gajala tells you: needs-input
 /// questions, job status, night reports, "new build ready", reminders.
@@ -146,6 +147,9 @@ class _NotifTile extends ConsumerWidget {
         if (n.status != 'answered') await _answerSheet(context, ref);
         break;
       case 'queue_status':
+        if (n.refId != null) { await showWorkResult(context, n.refId!); }
+        else { context.findAncestorStateOfType<HomeShellState>()?.go(1); }
+        break;
       case 'night_report':
         context.findAncestorStateOfType<HomeShellState>()?.go(1); // Tasks
         break;

@@ -59,6 +59,38 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Chat comfort and visible Work results (October 8).** Gajala opens Chats first,
+with Work / Library / Alerts destinations and consolidated Settings. Right-swipe
+Reply preserves long-press selection; fenced-code messages expose Reply explicitly
+so horizontal code scrolling stays intact. The compact composer uses Message…,
+one attachment/dictation menu and mic/Send switching, with bounded multiline input.
+Work separates Running / Needs you / Results / All and opens full reports, partial
+outputs, immutable downloadable files and attempt timelines. Diagnostics are bounded,
+redacted and retained for 30 days / 20 attempts. Queue creation accepts idempotent
+request IDs and exact conversation/message origins; receipt-guarded background
+results return to that message. Repository preflight and recovery explanations are
+honest for Mine/Auto and legacy escalations. Alerts become read individually; exact
+result notification links survive cold launch. Existing updater discovery is retained.
+291 server tests and 139 Flutter tests pass plus final cold-start routing checks;
+signed build 1791504833. Physical-phone acceptance remains. Delivery details and
+remaining general offline-cache work: `docs/gajala-ux-and-work-plan.md`.
+
+**Conversation baseline implementation (October 8).** Gajala now opens/restores
+an independent General chat, offers New conversation and a history picker,
+and preserves legacy project chats. Reply carries a server message ID,
+quoted source, and reply relation through queued/offline retries. Assistant and
+background research replies link to their originating user message. Text and
+voice share the selected conversation; project changes update execution context
+without moving independent chats. Local FTS search, exact message/file sources,
+and provenance-aware reply context feed routing. Separate domain procedures and
+typed context tools are exposed at `/api/assistant/capabilities`; legacy skills
+remain compatible adapters. Durable operation leases/receipts block uncertain
+replays rather than repeating side effects. YouTube Music now probes its actual
+browser/session capabilities before direct playback requests, keeps connections
+through verification, requires advancing playback position, and retains bounded
+last-attempt diagnostics on the phone. Official-app catalog search and real-phone
+playback remain unverified; no companion player is silently substituted.
+
 Substantial public research now uses immediate durable background jobs, with
 30-minute default/60-minute maximum runtime, stop/restart recovery, and a later
 reply linked to the original question in the same chat. Research cards refresh
@@ -399,6 +431,24 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-08 — **Chat comfort and visible Work results implemented.** Added
+  swipe Reply, responsive composer and Chats/Work/Library/Alerts navigation;
+  grouped settings and preserved updater visibility. Work now opens saved reports,
+  downloadable immutable result files, partial output and bounded attempt logs.
+  Fixed repository-preflight failure explanations and stale Mine/recovery states;
+  added idempotent queue capture, source-message result delivery, exact result push
+  links and individual alert read behavior. Server/Flutter regression suites pass;
+  phone ergonomics and device-action acceptance remain separate checks.
+- 2026-10-08 — **Implemented conversation baseline.** Added explicit quoted replies,
+  independent conversations with persisted selection and legacy history access,
+  shared voice/text chat identity, exact reply context and local full-text search.
+  Fixed cross-installation memory scope and request retarget/duplicate research
+  receipts. Added separate domain guidance/typed tool contracts and durable
+  operation observation leases. Direct YouTube Music probing now tests advertised
+  commands, holds the browser through playback verification, and requires advancing
+  position; last-attempt diagnostics persist locally. Server/Flutter regressions
+  cover reply isolation, queued project snapshots, recovery and deduplication.
+  Real-device playback and UI acceptance remain required.
 - 2026-10-08 — Reworked long research into durable background execution and
   original-chat result delivery, with cancel/restart recovery and bounded runtime.
   Added optional YouTube Music semantic UI control, actual playback verification,

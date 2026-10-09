@@ -635,7 +635,7 @@ class ChatController extends StateNotifier<ChatState> {
             )
             .toList(),
       );
-      if (jobs.isEmpty) return;
+      // Queue results also arrive through durable history, even without research jobs.
       final history = await api.chatHistory(key.sid, limit: 200);
       if (!mounted || state.sending) return;
       final seen = state.messages
@@ -645,7 +645,8 @@ class ChatController extends StateNotifier<ChatState> {
       final fresh = history
           .where(
             (m) =>
-                m.localRequestId?.startsWith('research-result:') == true &&
+                (m.localRequestId?.startsWith('research-result:') == true ||
+                 m.localRequestId?.startsWith('queue-result:') == true) &&
                 !seen.contains(m.localRequestId),
           )
           .toList();

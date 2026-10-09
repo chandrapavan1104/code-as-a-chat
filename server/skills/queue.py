@@ -25,7 +25,7 @@ import re
 
 from server import config
 from server import workspace
-from server.db import deployment_store, night_queue_store
+from server.db import deployment_store, night_queue_store, store as memory
 from server.skills.base import Skill
 from server.skills import register
 
@@ -329,7 +329,9 @@ class QueueSkill(Skill):
                                     kwargs.get("source_prompt"))
             spec = {"attachment_refs": refs} if refs else None
             jid = night_queue_store.add(project=project, task=task, tag=tag, engine=engine,
-                                        spec=spec)
+                                        spec=spec, session_id=kwargs.get("session_id"),
+                                        origin_message_id=memory.current_turn_ids().get("user_message_id"),
+                                        request_id=kwargs.get("request_id"))
             saved = night_queue_store.get(jid)
             draft = not night_queue_store.is_refined(saved)
             where = "saved as a draft — use /queue refine " + str(jid) if draft else (

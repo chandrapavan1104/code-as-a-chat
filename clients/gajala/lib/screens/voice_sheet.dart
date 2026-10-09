@@ -44,6 +44,16 @@ Future<void> showVoiceSheet([BuildContext? context, ChatKey? chatKey]) async {
   }
 }
 
+/// Settings can be opened without starting a microphone conversation.
+Future<void> showVoiceSettings(BuildContext context) async {
+  var speak = await Voice.instance.speakReplies();
+  if (!context.mounted) return;
+  await showModalBottomSheet<void>(context: context, isScrollControlled: true, useSafeArea: true,
+    builder: (_) => StatefulBuilder(builder: (ctx, setState) => SingleChildScrollView(
+      padding: const EdgeInsets.all(16), child: _VoiceSettings(speakReplies: speak,
+        onSpeakReplies: (value) { setState(() => speak = value); Voice.instance.setSpeakReplies(value); }))));
+}
+
 Future<void> _showSheet(BuildContext ctx, ChatKey? chatKey) async {
   await showModalBottomSheet(
     context: ctx,

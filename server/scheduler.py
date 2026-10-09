@@ -80,6 +80,8 @@ async def scheduler_loop() -> None:
              config.SCHEDULER_INTERVAL, config.BATTERY_THRESHOLD)
     while True:
         try:
+            from server.work_results import deliver_pending_results
+            await asyncio.to_thread(deliver_pending_results)
             await _check_reminders()
             if config.BATTERY_ALERTS:
                 await _check_battery()

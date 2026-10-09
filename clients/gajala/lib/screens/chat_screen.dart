@@ -14,6 +14,8 @@ import '../core/theme.dart';
 import '../core/voice.dart';
 import '../widgets/run_trace.dart';
 import '../widgets/chat_content.dart';
+import '../widgets/swipe_reply.dart';
+import '../widgets/chat_composer.dart';
 import 'diff_screen.dart';
 import 'voice_sheet.dart';
 
@@ -22,12 +24,14 @@ class ChatScreen extends ConsumerStatefulWidget {
   final String title;
   final String? sessionId;
   final String? project;
+  final bool active;
   const ChatScreen({
     super.key,
     this.command = 'shell',
     this.title = 'Gajala',
     this.sessionId,
     this.project,
+    this.active = true,
   });
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -51,6 +55,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   bool _followingWorkspace = false;
   Timer? _researchPoll;
   bool _foreground = true;
+  bool _appResumed = true;
   bool _dictating = false;
   bool _dictated = false; // this draft came from the mic → speak the reply
   ChatMessage? _replyTarget;
@@ -64,6 +69,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   ChatController? get _chat =>
       _key == null ? null : ref.read(chatControllerProvider(_key!).notifier);
 
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active == widget.active) return;
+    _foreground = widget.active && _appResumed;
+    if (!_foreground) {
+      if (Push.activeSession == _sid) Push.activeSession = null;
+      _stopResearchPolling();
+      return;
+    }
+    Push.activeSession = _sid;
+    _startResearchPolling();
+    _chat?.refreshBackgroundResearch();
+    _chat?.replayOutbox();
+  }
+
   String get _welcome => widget.command == 'shell'
       ? 'Em sangathi mava! Gajala ikkada 🔥\nCheppu — em kavali?'
       : 'Send a /${widget.command} request, or just type.';
@@ -71,11 +92,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   void initState() {
     super.initState();
+    _foreground = widget.active;
     WidgetsBinding.instance.addObserver(this);
     _bootstrap();
+    if (_foreground) _startResearchPolling();
+  }
+
+  void _startResearchPolling() {
+    if (_researchPoll != null || !_foreground) return;
     _researchPoll = Timer.periodic(const Duration(seconds: 15), (_) {
       if (_foreground && mounted) _chat?.refreshBackgroundResearch();
     });
+  }
+
+  void _stopResearchPolling() {
+    _researchPoll?.cancel();
+    _researchPoll = null;
   }
 
   /// Resolve the install id + active directory/model, then open THAT
@@ -85,10 +117,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _installId = await ref.read(sessionIdProvider.future);
     if (widget.command != 'shell') {
       setState(() => _sid = _sidFor(null)); // per-engine thread (persisted)
-      Push.activeSession = _sid;
+      if (_foreground) Push.activeSession = _sid;
       await _chat?.ensureLoaded(welcome: _welcome);
       _restoreDraft();
-      unawaited(_chat?.refreshBackgroundResearch());
+      if (_foreground) unawaited(_chat?.refreshBackgroundResearch());
       return;
     }
     final saved = await Storage.selectedConversation();
@@ -146,7 +178,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _sid = session ?? _sidFor(dir);
       if (_conversationProject == null) _conversationProject = dir;
     });
-    Push.activeSession = _sid;
+    if (_foreground) Push.activeSession = _sid;
     if (_independentConversation && _sid != null) {
       await Storage.setSelectedConversation(
         _sid!,
@@ -157,7 +189,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _chat?.setProjectContext(_conversationProject ?? dir);
     await _chat?.ensureLoaded(welcome: _welcome);
     _restoreDraft();
-    unawaited(_chat?.refreshBackgroundResearch());
+    if (_foreground) unawaited(_chat?.refreshBackgroundResearch());
   }
 
   /// Put back the half-typed message you left in this conversation.
@@ -206,7 +238,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _dir = name;
       _sid = sid;
     });
-    Push.activeSession = sid;
+    if (_foreground) Push.activeSession = sid;
     _conversationProject = name;
     await _chat?.ensureLoaded(welcome: _welcome);
     _chat?.setProjectContext(name);
@@ -248,7 +280,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _dir = dir;
       _sid = sid;
     });
-    Push.activeSession = sid;
+    if (_foreground) Push.activeSession = sid;
     _conversationProject = dir;
     await _chat?.ensureLoaded(welcome: _welcome);
     _chat?.setProjectContext(dir);
@@ -265,7 +297,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _independentConversation = item['legacy'] != true;
       _replyTarget = null;
     });
-    Push.activeSession = session;
+    if (_foreground) Push.activeSession = session;
     await Storage.setSelectedConversation(
       session,
       _conversationProject,
@@ -365,7 +397,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   @override
   void dispose() {
-    _researchPoll?.cancel();
+    _stopResearchPolling();
     WidgetsBinding.instance.removeObserver(this);
     if (Push.activeSession == _sid) Push.activeSession = null;
     _inputFocus.dispose();
@@ -375,14 +407,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Only "viewing" this chat while it's on top AND the app is foregrounded.
-    _foreground = state == AppLifecycleState.resumed;
+    _appResumed = state == AppLifecycleState.resumed;
+    _foreground = _appResumed && widget.active;
     if (state == AppLifecycleState.resumed) {
-      _chat?.refreshBackgroundResearch();
-      Push.activeSession = _sid;
-      _refreshWorkspace(); // catch a project switch made while we were away
-      _chat?.replayOutbox(); // the connection may be back
-    } else if (Push.activeSession == _sid) {
-      Push.activeSession = null;
+      if (_foreground) {
+        _startResearchPolling();
+        _chat?.refreshBackgroundResearch();
+        Push.activeSession = _sid;
+        _refreshWorkspace(); // catch a project switch made while we were away
+        _chat?.replayOutbox(); // the connection may be back
+      }
+    } else {
+      _stopResearchPolling();
+      if (Push.activeSession == _sid) Push.activeSession = null;
     }
   }
 
@@ -730,143 +767,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   ? () => _chat?.stopWork()
                   : null,
             ),
-          Container(
-            decoration: BoxDecoration(
-              color: context.pal.bg,
-              border: Border(top: BorderSide(color: context.pal.border)),
-            ),
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_pending != null)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 8, left: 4),
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.file(
-                              File(_pending!.path),
-                              width: 64,
-                              height: 64,
-                              fit: BoxFit.cover,
+          ChatComposer(
+            controller: _input,
+            focusNode: _inputFocus,
+            sending: sending,
+            dictating: _dictating,
+            replyPreview: _replyTarget == null
+                ? null
+                : 'Replying to ${_replyTarget!.role == 'user' ? 'you' : 'Gajala'}: ${_replyTarget!.text}',
+            onCancelReply: () => setState(() => _replyTarget = null),
+            attachmentPreview: _pending == null
+                ? null
+                : Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.file(
+                          File(_pending!.path),
+                          width: 64,
+                          height: 64,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      Positioned(
+                        top: -8,
+                        right: -8,
+                        child: GestureDetector(
+                          onTap: () => setState(() => _pending = null),
+                          child: CircleAvatar(
+                            radius: 11,
+                            backgroundColor: context.pal.surfaceAlt,
+                            child: Icon(
+                              Icons.close,
+                              size: 14,
+                              color: context.pal.text,
                             ),
                           ),
-                          Positioned(
-                            top: -8,
-                            right: -8,
-                            child: GestureDetector(
-                              onTap: () => setState(() => _pending = null),
-                              child: CircleAvatar(
-                                radius: 11,
-                                backgroundColor: context.pal.surfaceAlt,
-                                child: Icon(
-                                  Icons.close,
-                                  size: 14,
-                                  color: context.pal.text,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
+                    ],
                   ),
-                if (_replyTarget != null)
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 7,
-                    ),
-                    decoration: BoxDecoration(
-                      color: context.pal.surfaceAlt,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.reply, size: 16),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'Replying to ${_replyTarget!.role == 'user' ? 'you' : 'Gajala'}: ${_replyTarget!.text}',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          tooltip: 'Cancel reply',
-                          onPressed: () => setState(() => _replyTarget = null),
-                          icon: const Icon(Icons.close, size: 18),
-                        ),
-                      ],
-                    ),
-                  ),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    IconButton(
-                      icon: Icon(
-                        Icons.add_photo_alternate_outlined,
-                        color: context.pal.textDim,
-                      ),
-                      onPressed: sending ? null : _pickImage,
-                      tooltip: 'Attach image',
-                    ),
-                    IconButton(
-                      icon: Icon(
-                        _dictating
-                            ? Icons.stop_circle_outlined
-                            : Icons.mic_none,
-                        color: _dictating
-                            ? GajalaColors.danger
-                            : context.pal.textDim,
-                      ),
-                      onPressed: _dictate,
-                      tooltip: _dictating ? 'Stop dictation' : 'Dictate',
-                    ),
-                    Expanded(
-                      child: TextField(
-                        controller: _input,
-                        focusNode: _inputFocus,
-                        minLines: 1,
-                        maxLines: 6,
-                        // Enter inserts a newline; the button sends (mobile standard).
-                        keyboardType: TextInputType.multiline,
-                        textInputAction: TextInputAction.newline,
-                        onChanged: (v) => _chat?.setDraft(v),
-                        decoration: InputDecoration(
-                          hintText: _dictating
-                              ? 'Listening…'
-                              : sending
-                              ? 'Send again to queue…'
-                              : 'Message or /command…',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    // Stays enabled while a turn runs — a second message queues.
-                    CircleAvatar(
-                      backgroundColor: GajalaColors.accent,
-                      child: IconButton(
-                        icon: Icon(
-                          sending ? Icons.playlist_add : Icons.send,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                        onPressed: _send,
-                        tooltip: sending ? 'Queue message' : 'Send',
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+            onAddPhoto: () => _pickImage(),
+            onDictate: _dictate,
+            onSend: _send,
+            onDraftChanged: (text) => _chat?.setDraft(text),
           ),
         ],
       ),
@@ -1164,56 +1109,61 @@ class _Bubble extends StatelessWidget {
     // already have (the turn just ran) render immediately; a reply restored from
     // history carries only its run id and fetches on demand.
     final quoted = m.replyToContent;
-    final decorated = GestureDetector(
-      onLongPress: onReply == null
-          ? null
-          : () => showModalBottomSheet<void>(
-              context: context,
-              builder: (context) => SafeArea(
-                child: ListTile(
-                  leading: const Icon(Icons.reply),
-                  title: const Text('Reply'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    onReply!();
-                  },
+    final messageContent = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (quoted != null && quoted.isNotEmpty)
+          Align(
+            alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+            child: InkWell(
+              onTap: onJump,
+              child: Container(
+                margin: const EdgeInsets.only(top: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * .72,
+                ),
+                decoration: BoxDecoration(
+                  color: context.pal.surfaceAlt,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '${m.replyToRole == 'user' ? 'You' : 'Gajala'} · $quoted',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: context.pal.textDim),
                 ),
               ),
             ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (quoted != null && quoted.isNotEmpty)
-            Align(
-              alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-              child: InkWell(
-                onTap: onJump,
-                child: Container(
-                  margin: const EdgeInsets.only(top: 4),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * .72,
-                  ),
-                  decoration: BoxDecoration(
-                    color: context.pal.surfaceAlt,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '${m.replyToRole == 'user' ? 'You' : 'Gajala'} · $quoted',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: context.pal.textDim),
-                  ),
-                ),
-              ),
-            ),
-          bubble,
-        ],
-      ),
+          ),
+        bubble,
+      ],
     );
+    final hasCodeBlock = m.text.contains('```');
+    final decorated = onReply == null
+        ? messageContent
+        : hasCodeBlock
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Align(
+                alignment: isUser
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
+                child: IconButton(
+                  tooltip: 'Reply to message',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.reply_rounded, size: 18),
+                  onPressed: onReply,
+                ),
+              ),
+              messageContent,
+            ],
+          )
+        : SwipeReply(onReply: onReply!, child: messageContent);
     if (isUser) return decorated;
     if (m.steps.isNotEmpty) {
       return Column(

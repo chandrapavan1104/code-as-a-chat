@@ -871,6 +871,9 @@ def _job_view(j: dict) -> dict:
         "status": j["status"],
         "branch": j.get("branch"),
         "summary": j.get("summary"),
+        "result": night_queue_store.result_metadata(j),
+        "session_id": j.get("session_id"),
+        "origin_message_id": j.get("origin_message_id"),
         "files_changed": j.get("files_changed") or [],
         "tokens_total": j.get("tokens_total") or 0,
         "created_at": j.get("created_at"),
@@ -904,6 +907,9 @@ class QueueJobIn(BaseModel):
     tag: str = "auto"                   # auto | mine
     engine: str = "auto"                # auto | claude | codex | gemini
     priority: int = 0
+    session_id: str | None = None
+    origin_message_id: int | None = Field(default=None, gt=0)
+    request_id: str | None = None
 
 
 class QueueTag(BaseModel):
@@ -981,15 +987,37 @@ def queue_add(body: QueueJobIn):
                if night_queue_store.get(job_id) is None]
     if missing:
         raise HTTPException(400, f"unknown dependencies: {missing}")
-    jid = night_queue_store.add(
-        project=project, task=task, tag=body.tag, engine=body.engine,
-        priority=body.priority, spec=spec.model_dump(), depends_on=body.depends_on)
+    if body.origin_message_id is not None:
+        from server.db import store as memory
+        source = memory.get_message(body.origin_message_id, body.session_id or "")
+        if source is None or source["role"] != "user":
+            raise HTTPException(400, "origin message must be a user message in this conversation")
+    try:
+        jid = night_queue_store.add(
+            project=project, task=task, tag=body.tag, engine=body.engine,
+            priority=body.priority, spec=spec.model_dump(), depends_on=body.depends_on,
+            session_id=body.session_id, origin_message_id=body.origin_message_id,
+            request_id=body.request_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     from server.capability_registry import assess
     try:
         assess(jid)
     except Exception:
         pass  # awareness is advisory; it must never block task capture
     return _job_view(night_queue_store.get(jid))
+
+
+@router.get("/queue/{job_id}/result")
+def queue_result(job_id: int):
+    """Durable deliverables and bounded diagnostics, loaded only when opened."""
+    from server.db import night_queue_store
+    job = night_queue_store.get(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    result = night_queue_store.result(job_id)
+    return {"job_id": job_id, "title": (job.get("spec_json") or {}).get("title") or job["task"].splitlines()[0],
+            "result": result, "attempts": night_queue_store.attempts(job_id, include_logs=True)}
 
 
 @router.post("/queue/{job_id}/run")

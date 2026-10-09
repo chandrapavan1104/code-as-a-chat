@@ -24,6 +24,8 @@ def isolate_agent_run_traces(tmp_path, monkeypatch):
     monkeypatch.setattr(night_queue_store, "DB_PATH", tmp_path / "night_queue.db")
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "conversations.db")
     store._init()
+    from server import media
+    monkeypatch.setattr(media, "UPLOADS_DIR", tmp_path / "uploads")
 
     # reminders_store initializes itself at import time. Import it against a
     # temporary home when collection has not loaded it yet, then redirect it
