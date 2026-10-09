@@ -30,6 +30,10 @@ from server.media import ensure_uploads_dir, is_served_path
 from server.work_orders import WorkOrderSpec
 
 router = APIRouter(prefix="/api", tags=["app"])
+from server import ports_api, reminders_api, library_api
+router.include_router(ports_api.router)
+router.include_router(reminders_api.router)
+router.include_router(library_api.router)
 
 # Cap an inbound image upload. Phone screenshots/photos are a few MB; 25 MB is
 # generous headroom without inviting abuse.
@@ -331,8 +335,8 @@ def remove_note(note_id: int):
 # ── reminders ─────────────────────────────────────────────────────────────────
 
 class ReminderIn(BaseModel):
-    text: str
-    due_at: float                 # unix timestamp
+    text: str = Field(min_length=1, max_length=500)
+    due_at: float = Field(allow_inf_nan=False)  # unix timestamp
     project: str | None = None
     recurrence: str = "none"
     timezone: str = "UTC"
@@ -346,9 +350,19 @@ def list_reminders(limit: int = 100):
 
 @router.post("/reminders", status_code=201)
 def create_reminder(r: ReminderIn):
-    rid = reminders_store.add(r.text, r.due_at, project=r.project,
-                              recurrence=r.recurrence, timezone=r.timezone,
-                              until_note_id=r.until_note_id)
+    if r.due_at <= time.time():
+        raise HTTPException(422, "Choose a future reminder time")
+    text = " ".join(r.text.split())
+    if not text:
+        raise HTTPException(422, "Reminder text cannot be empty")
+    if r.until_note_id is not None and notes_store.get(r.until_note_id) is None:
+        raise HTTPException(422, "Linked note does not exist")
+    try:
+        rid = reminders_store.add(text, r.due_at, project=r.project,
+                                  recurrence=r.recurrence, timezone=r.timezone,
+                                  until_note_id=r.until_note_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return {"id": rid, "text": r.text, "due_at": r.due_at, "project": r.project,
             "recurrence": r.recurrence, "timezone": r.timezone,
             "until_note_id": r.until_note_id}

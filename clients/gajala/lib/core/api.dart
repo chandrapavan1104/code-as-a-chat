@@ -46,6 +46,72 @@ class GajalaApi {
         ),
       );
 
+  String _skillPath(String path) {
+    if (!path.startsWith('/api/') ||
+        path.contains('..') ||
+        path.contains('://')) {
+      throw ArgumentError('Expected an API path');
+    }
+    return path;
+  }
+
+  Future<Map<String, dynamic>> getSkillData(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+  }) async => Map<String, dynamic>.from(
+    (await _dio.get(_skillPath(path), queryParameters: queryParameters)).data,
+  );
+  Future<Map<String, dynamic>> postSkillAction(
+    String path,
+    Map<String, dynamic> data,
+  ) async => Map<String, dynamic>.from(
+    (await _dio.post(_skillPath(path), data: data)).data,
+  );
+  Future<Map<String, dynamic>> patchSkillAction(
+    String path,
+    Map<String, dynamic> data,
+  ) async => Map<String, dynamic>.from(
+    (await _dio.patch(_skillPath(path), data: data)).data,
+  );
+  Future<Map<String, dynamic>> libraryFiles(String path, String? project) =>
+      getSkillData(
+        '/api/library/files',
+        queryParameters: {
+          'path': path,
+          if (project != null) 'project': project,
+        },
+      );
+  Future<Map<String, dynamic>> shareLibraryFile(String path, String? project) =>
+      postSkillAction('/api/library/files/share', {
+        'path': path,
+        'project': project,
+      });
+  Future<Map<String, dynamic>> librarySessions(
+    String engine,
+    String? project,
+  ) => getSkillData(
+    '/api/library/sessions',
+    queryParameters: {
+      'engine': engine,
+      if (project != null) 'project': project,
+    },
+  );
+  Future<Map<String, dynamic>> librarySession(String id, String engine) =>
+      getSkillData(
+        '/api/library/sessions/detail',
+        queryParameters: {'id': id, 'engine': engine},
+      );
+  Future<Map<String, dynamic>> continueLibrarySession(
+    String id,
+    String engine,
+    String? project, {
+    String? clientId,
+  }) => postSkillAction('/api/library/sessions/continue', {
+    'id': id,
+    'engine': engine,
+    'client_id': clientId,
+  });
+
   // ── health / connection test ──────────────────────────────────────────────
   static Future<bool> ping(String baseUrl) async {
     try {

@@ -16,6 +16,11 @@ import 'projects_screen.dart';
 import 'usage_screen.dart';
 import 'mac_screen.dart';
 import 'skills_screen.dart';
+import 'ports_screen.dart';
+import 'files_screen.dart';
+import 'sessions_screen.dart';
+import 'skill_action_screen.dart';
+import 'tasks_screen.dart';
 
 // Display-label overrides for skill tiles (the screen behind is unchanged).
 final _updateRefreshProvider = StateProvider<int>((ref) => 0);
@@ -336,17 +341,47 @@ class UpdateBannerState extends ConsumerState<UpdateBanner>
   }
 }
 
-/// Rich native screen for skills that have one; chat fallback for the rest.
+/// Native controls for structured skills; task forms for command-driven skills.
 Widget screenForSkill(Skill s) {
   switch (s.name) {
-    case 'notes': return const NotesScreen();
-    case 'sysmon': return const SystemScreen();
-    case 'reminders': return const RemindersScreen();
-    case 'diary': return const DiaryScreen();
-    case 'projects': return const ProjectsScreen();
-    case 'usage': return const UsageScreen();
-    case 'mac': return const MacScreen();
-    default: return ChatScreen(command: s.command, title: s.name);
+    case 'notes':
+      return const NotesScreen();
+    case 'sysmon':
+      return const SystemScreen();
+    case 'reminders':
+      return const RemindersScreen();
+    case 'diary':
+      return const DiaryScreen();
+    case 'projects':
+    case 'model':
+      return const ProjectsScreen();
+    case 'queue':
+      return const TasksScreen();
+    case 'phone':
+    case 'device':
+      return const PhoneAbilitiesScreen();
+    case 'usage':
+      return const UsageScreen();
+    case 'mac':
+      return const MacScreen();
+    case 'ports':
+      return const PortsScreen();
+    case 'filemanager':
+    case 'sessions':
+      return Consumer(
+        builder: (context, ref, _) {
+          final api = ref.watch(apiProvider);
+          if (api == null)
+            return const Scaffold(
+              body: Center(child: Text('Connect to your Mac first')),
+            );
+          return s.name == 'filemanager'
+              ? FilesScreen(api: api)
+              : SessionsScreen(api: api);
+        },
+      );
+    default:
+      return SkillActionScreen(skill: s);
   }
 }
 

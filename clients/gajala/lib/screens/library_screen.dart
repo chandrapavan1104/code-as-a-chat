@@ -40,7 +40,7 @@ class LibraryScreen extends ConsumerWidget {
           ),
         ),
         data: (items) => ListView(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           children: [
             for (final group in <String, Set<String>>{
               'Saved information': {
@@ -58,17 +58,26 @@ class LibraryScreen extends ConsumerWidget {
               },
               'Devices and system': {'mac', 'sysmon', 'usage', 'ports'},
             }.entries) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 16, 12, 4),
-                child: Text(
-                  group.key,
-                  style: Theme.of(context).textTheme.titleMedium,
+              if (items.any((s) => group.value.contains(s.name)))
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(0, 12, 0, 6),
+                  child: Text(
+                    group.key,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                 ),
-              ),
-              for (final skill in items.where(
-                (s) => group.value.contains(s.name),
-              ))
-                _entry(context, skill),
+              if (items.any((s) => group.value.contains(s.name)))
+                Card(
+                  margin: EdgeInsets.zero,
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      for (final name in group.value)
+                        for (final skill in items.where((s) => s.name == name))
+                          _entry(context, skill),
+                    ],
+                  ),
+                ),
             ],
             ListTile(
               leading: const Icon(Icons.dashboard_outlined),
@@ -89,6 +98,25 @@ class LibraryScreen extends ConsumerWidget {
   }
 
   Widget _entry(BuildContext context, Skill skill) => ListTile(
+    dense: true,
+    minTileHeight: 48,
+    visualDensity: VisualDensity.standard,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+    leading: Icon(switch (skill.name) {
+      'notes' => Icons.sticky_note_2_outlined,
+      'diary' => Icons.menu_book_outlined,
+      'reminders' => Icons.notifications_outlined,
+      'filemanager' => Icons.folder_outlined,
+      'projects' => Icons.work_outline,
+      'sessions' => Icons.history,
+      'claude' => Icons.code,
+      'codex' => Icons.terminal,
+      'antigravity' => Icons.auto_awesome_outlined,
+      'ports' => Icons.lan_outlined,
+      'mac' => Icons.desktop_mac_outlined,
+      'usage' => Icons.bar_chart,
+      _ => Icons.memory_outlined,
+    }, size: 20),
     title: Text(switch (skill.name) {
       'notes' => 'Notes',
       'sysmon' => 'System',
@@ -96,7 +124,7 @@ class LibraryScreen extends ConsumerWidget {
       'filemanager' => 'Files',
       _ => skill.name[0].toUpperCase() + skill.name.substring(1),
     }),
-    trailing: const Icon(Icons.chevron_right),
+    trailing: const Icon(Icons.chevron_right, size: 20),
     onTap: () => Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => screenForSkill(skill))),

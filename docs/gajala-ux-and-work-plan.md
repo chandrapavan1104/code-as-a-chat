@@ -111,3 +111,21 @@ Track result-open discoverability, missing deliverables, contradictory-state cou
 - [Material text fields](https://m2.material.io/design/components/text-fields.html)
 - Flutter: `chat_screen.dart:742–865,1167`, `chat_content.dart:89`, `tasks_screen.dart:34,459,1265`, `home_shell.dart:22`, `phone_abilities_screen.dart:94`, `core/theme.dart:119`.
 - Server: `night_queue_store.py:51`, `night_shift.py:333,443,505`, `cli_runs_store.py:30`, `api_v2.py:861`, `queue_supervisor.py:59,194`.
+
+
+### Library follow-up — October 8
+
+Implemented compact 48-pixel grouped rows with icons. Native Ports includes filter,
+listener details and confirmed/revalidated process termination. Reminders has an
+edit form, date/time presets, timezone and recurrence controls, linked-note stop
+conditions and cancellation. Files has folder breadcrumbs and durable staged
+preview/download on tap. Sessions browses engine-filtered native history and
+continues an exact session in its original folder/engine. Command-driven skills
+use explicit action selectors or task forms with a project picker and streamed
+result panel. Existing native Work/model/system/phone settings screens remain the
+entry points for their capabilities. Automated validation: 310 server tests,
+153 Flutter tests and changed-screen analysis. Physical-phone acceptance: open
+Library, browse Files, continue a session, edit/cancel a reminder, and inspect a
+port without terminating the API server. Unknown future skills retain a command
+arguments form using their manifest help; dedicated controls can be added as the
+skill's structured API grows.

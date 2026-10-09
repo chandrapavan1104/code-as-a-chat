@@ -35,7 +35,7 @@ def test_config_imports_and_has_token():
 
 def test_api_v2_router_mounts():
     from server.api_v2 import router
-    paths = {r.path for r in router.routes}
+    paths = {r.path for r in router.routes if hasattr(r, "path")}
     assert "/api/system" in paths
     assert "/api/devices" in paths
     assert "/api/queue/{job_id}/refine" in paths

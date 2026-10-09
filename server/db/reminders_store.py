@@ -136,6 +136,48 @@ def list_pending(limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get(reminder_id: int) -> dict | None:
+    _init()
+    with _conn() as c:
+        row = c.execute("SELECT * FROM reminders WHERE id=?", (reminder_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_pending(reminder_id: int, **fields) -> bool:
+    """Edit an unfired reminder without changing its delivery history."""
+    allowed = {"text", "due_at", "recurrence", "timezone", "until_note_id"}
+    fields = {key: value for key, value in fields.items() if key in allowed}
+    if not fields:
+        return get(reminder_id) is not None
+    if "text" in fields:
+        fields["text"] = " ".join(str(fields["text"]).split())
+    if "recurrence" in fields:
+        fields["recurrence"] = (fields["recurrence"] or "none").strip().lower()
+        if fields["recurrence"] not in {"none", "daily"}:
+            raise ValueError("recurrence must be 'none' or 'daily'")
+    if "timezone" in fields:
+        fields["timezone"] = (fields["timezone"] or "UTC").strip()
+        try:
+            ZoneInfo(fields["timezone"])
+        except (KeyError, ValueError):
+            raise ValueError(f"unknown timezone: {fields['timezone']}")
+    if "due_at" in fields:
+        fields["due_at"] = float(fields["due_at"])
+    _init()
+    with _conn() as c:
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        cur = c.execute(
+            f"UPDATE reminders SET {assignments}, app_notified=0 "
+            "WHERE id=? AND fired=0",
+            (*fields.values(), reminder_id),
+        )
+        c.commit()
+        if cur.rowcount:
+            return True
+        return c.execute("SELECT 1 FROM reminders WHERE id=? AND fired=0",
+                         (reminder_id,)).fetchone() is not None
+
+
 def mark_fired(reminder_id: int) -> bool:
     """Legacy one-shot completion API; recurring rows advance instead."""
     return complete_delivery(reminder_id)
