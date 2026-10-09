@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../core/theme.dart';
+import 'quoted_reply.dart';
 
 /// Compact chat input with optional attachment and reply trays.
 class ChatComposer extends StatefulWidget {
@@ -8,6 +9,7 @@ class ChatComposer extends StatefulWidget {
   final bool sending;
   final bool dictating;
   final String? replyPreview;
+  final String replySender;
   final Widget? attachmentPreview;
   final VoidCallback? onCancelReply;
   final VoidCallback? onAddPhoto;
@@ -22,6 +24,7 @@ class ChatComposer extends StatefulWidget {
     required this.sending,
     required this.dictating,
     this.replyPreview,
+    this.replySender = 'Gajala',
     this.attachmentPreview,
     this.onCancelReply,
     this.onAddPhoto,
@@ -90,13 +93,10 @@ class _ChatComposerState extends State<ChatComposer> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.reply, size: 16),
-                  const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      widget.replyPreview!,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    child: QuotedReply(
+                      sender: widget.replySender,
+                      text: widget.replyPreview!,
                     ),
                   ),
                   IconButton(

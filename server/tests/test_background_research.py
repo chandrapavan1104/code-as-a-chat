@@ -54,8 +54,7 @@ def test_background_research_completes_once_and_appends_reply(tmp_path, monkeypa
     assert len(history) == 1  # the shell owns the original user/deferred turns
     assert history[0]["role"] == "assistant"
     assert history[0]["local_request_id"] == f"research-result:{task_id}"
-    assert history[0]["content"].startswith(
-        "Research reply to: Compare private LLM providers\n\n")
+    assert history[0]["content"] == "Finding https://example.com"
 
 
 def test_timeout_has_explicit_durable_outcome(tmp_path, monkeypatch):
@@ -281,3 +280,16 @@ def test_direct_research_command_returns_immediately_and_retry_deduplicates(monk
     assert len(turns) == 2
     assert {turn["local_request_id"] for turn in turns} == {
         "command-result:stable-request"}
+
+
+def test_research_reply_body_uses_structured_quote_instead_of_repeating_question():
+    text = research_runner._terminal_text({"original_prompt": "My very long question", "status": "completed", "result": "The actual report"})
+    assert text == "The actual report"
+    assert "Research reply to:" not in text
+
+
+def test_existing_research_receipt_is_not_rewritten_by_quote_format_change():
+    work = {"id": "old-task", "session_id": "app:phone", "status": "completed", "result": "Report", "original_prompt": "Question"}
+    store.append_local_turn("app:phone", "research-result:old-task", [{"role": "assistant", "content": "Research reply to: Question\n\nReport"}])
+    assert research_runner._append_terminal_reply(work) is False
+    assert store.count("app:phone") == 1

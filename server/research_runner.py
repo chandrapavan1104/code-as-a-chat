@@ -117,9 +117,6 @@ def _research_prompt(work: dict, metadata: dict) -> tuple[str, str | None]:
 
 
 def _terminal_text(work: dict) -> str:
-    original = " ".join((work.get("original_prompt") or "").split())
-    if len(original) > 180:
-        original = original[:179].rstrip() + "…"
     status = work.get("status")
     result = (work.get("result") or "").strip()
     blocker = (work.get("blocker") or "").strip()
@@ -139,7 +136,7 @@ def _terminal_text(work: dict) -> str:
         body = f"Research failed: {blocker or 'The research worker stopped unexpectedly.'}"
         if result:
             body += f"\n\nPartial output:\n{result}"
-    return f"Research reply to: {original}\n\n{body}"
+    return body
 
 
 def _append_terminal_reply(work: dict) -> bool:
@@ -149,6 +146,9 @@ def _append_terminal_reply(work: dict) -> bool:
     receipt = f"research-result:{work['id']}"
     if status == "waiting_for_user":
         receipt += f":waiting:{work.get('revision', 1)}"
+    # A formatting update must never replace an already delivered receipt.
+    if memory.get_local_turn(work["session_id"], receipt):
+        return False
     return memory.append_local_turn(
         work["session_id"], receipt,
         [{"role": "assistant", "content": _terminal_text(work)}],

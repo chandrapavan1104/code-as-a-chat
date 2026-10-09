@@ -59,6 +59,15 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**WhatsApp-style quoted replies (October 8).** Quotes now render inside the
+reply bubble with a colored left bar, separate sender name and bounded two-line
+preview; the composer uses the same treatment. Old saved research replies split
+the embedded question into this quote at display time without rewriting history.
+New research replies rely on their stored source-message relation instead of
+repeating the question in the body. Existing delivery receipts stay immutable.
+14 focused Flutter gesture/layout/quote tests and 11 research tests pass;
+physical-phone appearance remains an acceptance check.
+
 **Chat comfort and visible Work results (October 8).** Gajala opens Chats first,
 with Work / Library / Alerts destinations and consolidated Settings. Right-swipe
 Reply preserves long-press selection; fenced-code messages expose Reply explicitly
@@ -432,6 +441,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-08 — **Reply quotes moved inside the message.** Added a compact sender
+  and preview block with a colored side bar to sent replies and the composer.
+  Already saved research-question prefixes render as quotes without changing
+  receipt/history data; future reports use the explicit source-message link.
+  Focused Flutter and research regression checks pass.
 - 2026-10-08 — **Preserve failure diagnostics at finalization.** Failure handling
   now leaves already captured worker stdout/stderr intact when no replacement
   logs are supplied. A regression exercises timeout output through finalization;
