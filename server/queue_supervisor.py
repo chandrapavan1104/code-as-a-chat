@@ -41,6 +41,14 @@ def _next_engine(job: dict) -> str:
 
 def _failure_kind(text: str) -> str:
     lowered = (text or "").lower()
+    if "not a git repo" in lowered or "not a git repository" in lowered:
+        return "invalid_repo"
+    if "project path is gone" in lowered:
+        return "project_missing"
+    if "could not determine the repository base branch" in lowered:
+        return "git_base_error"
+    if "could not create the isolated job checkout" in lowered:
+        return "worktree_setup"
     if "worker disappeared" in lowered or "worker exited" in lowered:
         return "worker_lost"
     if "timed out" in lowered or "ran past" in lowered or "timeout" in lowered:
@@ -58,11 +66,30 @@ def _failure_kind(text: str) -> str:
 
 def _retryable(job: dict) -> bool:
     text = (job.get("summary") or "").lower()
+    kind = job.get("failure_kind") or _failure_kind(text)
+    if kind in {"invalid_repo", "project_missing", "git_base_error",
+                "attachment_missing", "research_blocked", "research_unverified"}:
+        return False
     if any(marker in text for marker in _HUMAN):
         return False
-    if "project path is gone" in text or "not a git repo" in text:
-        return False
     return any(marker in text for marker in _TRANSIENT) or job.get("tag") == "auto"
+
+
+def _nonretryable_reason(kind: str, summary: str) -> tuple[str, str]:
+    if kind == "invalid_repo":
+        return ("The coding worker stopped because its selected project was not a Git repository.",
+                "Choose a Git repository for this task, then run it again.")
+    if kind == "project_missing":
+        return ("The selected project folder is missing.",
+                "Restore the project folder or select another project, then run again.")
+    if kind == "git_base_error":
+        return ("The repository branch could not be determined.",
+                "Check the repository branch, then run the task again.")
+    if any(marker in summary.lower() for marker in _HUMAN):
+        return ("The worker needs a decision or missing information.",
+                "Review the worker question and provide the needed decision or input.")
+    return (f"Automatic recovery cannot retry this failure: {summary[:250]}",
+            "Review the work order and project, correct the blocker, then run it again.")
 
 
 def _next_window_text() -> str:
@@ -89,6 +116,26 @@ def job_explanation(job: dict) -> dict:
         action = "Change it to Auto when you want the supervisor to own it."
     elif status == "running":
         action = "A worker is implementing and testing it now."
+    elif status == "needs_you" and _failure_kind(str(job.get("summary") or "")) in {
+            "invalid_repo", "project_missing", "git_base_error"}:
+        kind = _failure_kind(str(job.get("summary") or ""))
+        blocker, action = _nonretryable_reason(kind, str(job.get("summary") or ""))
+    elif status == "failed":
+        summary = str(job.get("summary") or "The worker stopped without a detailed error.")
+        kind = job.get("failure_kind") or _failure_kind(summary)
+        if not _retryable({**job, "failure_kind": kind}):
+            blocker, action = _nonretryable_reason(kind, summary)
+        elif attempts >= maximum:
+            blocker = f"Automatic recovery used all {maximum} attempts."
+            action = "Review the attempt details, fix the blocker, then run the task again."
+        elif job.get("tag") == "mine":
+            blocker = f"Mine task failed: {summary[:250]}"
+            action = "Review the attempt details, correct the blocker, then run it again."
+        else:
+            blocker = f"The last attempt failed: {summary[:250]}"
+            action = ("The supervisor will retry this task when its backoff expires."
+                      if job.get("next_retry_at") else
+                      "The supervisor will assess this failure and schedule a safe retry if possible.")
     elif status == "deploying":
         action = "The coordinator is merging, restarting, and health-checking it."
     elif status == "staged" and job.get("tag") == "mine":
@@ -191,6 +238,17 @@ async def supervise_once(now: float | None = None) -> list[str]:
         status = job["status"]
         attempts = job.get("attempt_count") or 0
         maximum = job.get("max_attempts") or 3
+        if status == "failed" and job.get("tag") != "auto":
+            kind = job.get("failure_kind") or _failure_kind(job.get("summary") or "")
+            reason, action = _nonretryable_reason(kind, job.get("summary") or "")
+            if (job.get("failure_kind") != kind or job.get("blocker_reason") != reason
+                    or job.get("next_action") == "Worker is implementing and testing this task."):
+                night_queue_store.update(
+                    jid, failure_kind=kind, blocker_reason=reason,
+                    next_action=action, next_retry_at=None, last_supervised_at=now)
+                actions.append(f"#{jid} explained non-automatic failure")
+            continue
+
         if status == "failed" and job.get("tag") == "auto":
             kind = _failure_kind(job.get("summary") or "")
             if _retryable(job) and attempts < maximum:
@@ -212,13 +270,18 @@ async def supervise_once(now: float | None = None) -> list[str]:
                         next_action=f"Recovered automatically; queued for {engine.title()}.")
                     actions.append(f"#{jid} requeued on {engine}")
                 continue
-            reason = (f"Automatic recovery stopped after {attempts}/{maximum} attempts. "
-                      f"Last failure: {(job.get('summary') or 'unknown')[:300]}")
+            if attempts >= maximum:
+                reason = (f"Automatic recovery used all {attempts}/{maximum} attempts. "
+                          f"Last failure: {(job.get('summary') or 'unknown')[:300]}")
+                action = "Review the work order and last attempt, then choose whether to run it again."
+                event = "retry limit exhausted"
+            else:
+                reason, action = _nonretryable_reason(kind, job.get("summary") or "")
+                event = "non-retryable failure needs review"
             night_queue_store.update(
                 jid, status="needs_you", failure_kind=kind, blocker_reason=reason,
-                next_action="Review the work order or provide one decision; completed work is preserved.",
-                last_supervised_at=now)
-            actions.append(f"#{jid} escalated after retry limit")
+                next_action=action, next_retry_at=None, last_supervised_at=now)
+            actions.append(f"#{jid} escalated: {event}")
             await _notify_exhausted(job, reason)
             continue
 

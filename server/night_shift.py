@@ -25,8 +25,10 @@ git state while jobs on different projects still run concurrently.
 import asyncio
 import datetime as dt
 import logging
+import inspect
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -273,221 +275,437 @@ async def _process_job(job: dict, engine: str) -> None:
             reason = ("Worker exited without reporting a result. The job was "
                       "marked failed instead of remaining stuck in Building.")
             night_queue_store.update(jid, status="failed", ended_at=time.time(),
-                                     summary=reason)
+                                     summary=reason, failure_kind="worker_lost",
+                                     blocker_reason=reason,
+                                     next_action=_failure_action(current, "worker_lost"))
+            attempts = night_queue_store.attempts(jid, include_logs=False)
+            if attempts and attempts[-1]["status"] == "running":
+                night_queue_store.finish_attempt(
+                    attempts[-1]["id"], status="failed", stage=attempts[-1]["stage"],
+                    error=reason)
+            night_queue_store.save_result(jid, kind="failure", text=reason,
+                                          completeness="partial")
+
+
+def _failure_kind(text: str, stage: str) -> str:
+    lowered = (text or "").lower()
+    if "not a git repo" in lowered or "not a git repository" in lowered:
+        return "invalid_repo"
+    if "project path is gone" in lowered or "no such file or directory" in lowered:
+        return "project_missing"
+    if "could not determine the repository base branch" in lowered:
+        return "git_base_error"
+    if "could not create the isolated job checkout" in lowered:
+        return "worktree_setup"
+    if "timed out" in lowered or "ran past" in lowered or "timeout" in lowered:
+        return "timeout"
+    if "auth" in lowered or "unauthorized" in lowered:
+        return "authentication"
+    if stage == "preflight":
+        return "preflight_error"
+    return "worker_error"
+
+
+def _result_kind_for_status(status: str, work_type: str) -> str:
+    if status == "failed": return "failure"
+    if status in {"blocked", "awaiting_input", "needs_you"}: return "question"
+    return "research" if work_type == "research" else "coding"
+
+
+_FILE_MARKER = re.compile(r"\[file:\s*([^\]\r\n]+)\]")
+MAX_WORKER_FILE_BYTES = 200 * 1024 * 1024
+
+
+def _stage_explicit_file_markers(text: str, worktree: Path, job_id: int,
+                                 attempt_no: int) -> tuple[str, list[dict]]:
+    """Stage only worker-declared files from its isolated checkout for phone download."""
+    from server.media import UPLOADS_DIR, ensure_uploads_dir, is_served_path
+    artifacts: list[dict] = []
+    replacements = {}
+    root = worktree.resolve()
+    target_dir = None
+    for match in _FILE_MARKER.finditer(text or ""):
+        raw = match.group(1).strip().strip("\"'")
+        try:
+            source = Path(raw).expanduser().resolve()
+            if source.is_file() and is_served_path(source):
+                target = source
+            else:
+                if not source.is_file() or (source != root and root not in source.parents):
+                    replacements[match.group(0)] = f"[file unavailable: {source.name or 'unknown'}]"
+                    artifacts.append({"kind": "unavailable_file", "name": source.name,
+                                     "reason": "File was outside the job worktree or missing."})
+                    continue
+                size = source.stat().st_size
+                if size > MAX_WORKER_FILE_BYTES:
+                    replacements[match.group(0)] = f"[file unavailable: {source.name} (over 200 MB)]"
+                    artifacts.append({"kind": "unavailable_file", "name": source.name,
+                                     "reason": "File exceeds the 200 MB sharing limit."})
+                    continue
+                if target_dir is None:
+                    target_dir = ensure_uploads_dir() / "queue" / str(job_id) / str(attempt_no)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = source.name.replace("]", "_").replace("\n", "_").replace("\r", "_")
+                target = target_dir / (safe_name or "worker-output")
+                copied = 0
+                with source.open("rb") as src, target.open("wb") as dst:
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        copied += len(chunk)
+                        if copied > MAX_WORKER_FILE_BYTES:
+                            target.unlink(missing_ok=True)
+                            raise ValueError("File grew beyond the 200 MB sharing limit.")
+                        dst.write(chunk)
+                size = copied
+            replacements[match.group(0)] = f"[file: {target}]"
+            artifacts.append({"kind": "file", "path": str(target),
+                              "name": target.name, "size": target.stat().st_size})
+        except (OSError, ValueError) as exc:
+            replacements[match.group(0)] = f"[file unavailable: {Path(raw).name}]"
+            artifacts.append({"kind": "unavailable_file", "name": Path(raw).name,
+                              "reason": str(exc)[:200]})
+    for original, replacement in replacements.items():
+        text = text.replace(original, replacement)
+    return text, artifacts
+
+
+def _attempt_output_callback(attempt_id: int):
+    def record(*, stdout="", stderr="", output="", error=None, exit_code=None):
+        night_queue_store.update_attempt(
+            attempt_id, stdout=stdout, stderr=stderr, output=output,
+            error=error, exit_code=exit_code,
+        )
+    return record
+
+
+async def _run_with_attempt_capture(runner, engine: str, cwd: str, task: str,
+                                    timeout: int, *, on_spawn, attempt: dict):
+    """Use the richer runner hook when available; keep old monkeypatches/callers valid."""
+    kwargs = {"on_spawn": on_spawn}
+    try:
+        params = inspect.signature(runner).parameters.values()
+        if any(p.name == "on_result" or p.kind == inspect.Parameter.VAR_KEYWORD
+               for p in params):
+            kwargs["on_result"] = _attempt_output_callback(attempt["id"])
+    except (TypeError, ValueError):
+        pass
+    result = await runner(engine, cwd, task, timeout, **kwargs)
+    if "on_result" not in kwargs:
+        output = result[0] if result else ""
+        night_queue_store.update_attempt(attempt["id"], output=output)
+    return result
+
+
+def _failure_action(job: dict, kind: str) -> str:
+    if kind == "invalid_repo":
+        return "Choose a valid Git repository for this coding task, then run it again."
+    if kind == "project_missing":
+        return "Restore the project folder or choose another project, then run it again."
+    if kind == "git_base_error":
+        return "Check the repository branch, then run this task again."
+    if job.get("tag") == "mine":
+        return "Review the failure, correct the project or work order, then run it again."
+    return "The supervisor will classify this failure and decide whether a safe retry is possible."
+
+
+async def _fail_job(job: dict, attempt: dict, reason: str, *, stage: str,
+                    kind: str | None = None, output: str = "",
+                    stdout: str = "", stderr: str = "", exit_code: int | None = None,
+                    status: str = "failed") -> None:
+    kind = kind or _failure_kind(reason, stage)
+    completeness = "partial" if output else "none"
+    night_queue_store.save_result(
+        job["id"], kind="failure" if status == "failed" else "question",
+        text=output or reason, completeness=completeness)
+    night_queue_store.update(
+        job["id"], status=status, engine_used=attempt["engine"], ended_at=time.time(),
+        summary=(f"{reason}\n\n{output}".strip() if output and output not in reason else reason),
+        failure_kind=kind if status == "failed" else None,
+        blocker_reason=reason if status != "failed" else reason,
+        next_retry_at=None,
+        next_action=_failure_action(job, kind) if status == "failed" else
+                    "Answer the question or provide the missing input, then resume this task.",
+    )
+    night_queue_store.finish_attempt(
+        attempt["id"], status="failed" if status == "failed" else "waiting_for_user",
+        stage=stage, error=reason, exit_code=exit_code,
+        stdout=stdout, stderr=stderr, output=output)
 
 
 async def _process_job_locked(job: dict, engine: str, repo: str, jid: int) -> None:
-    if not Path(repo).is_dir():
-        night_queue_store.update(jid, status="failed", ended_at=time.time(),
-                                 summary=f"project path is gone: {repo}")
-        await _notify_status(jid, job, "failed", f"project path is gone: {repo}")
-        return
-
-    worker_task, attachment_error = night_exec.task_with_attachments(job)
-    if attachment_error:
-        question = f"{attachment_error}. Reattach the file in the original chat and answer this task again."
-        night_queue_store.update(jid, status="awaiting_input", ended_at=time.time(),
-                                 blocker_reason=attachment_error,
-                                 next_action="Reattach the missing file, then answer the task.",
-                                 summary=question)
-        await _notify_input(jid, job, question)
-        return
-
-    if (job.get("spec_json") or {}).get("work_type") == "research":
-        await _process_research_job(job, engine, repo, jid)
-        return
-
-    rc, status = await _git(repo, "rev-parse", "--git-dir")
-    if rc != 0:
-        night_queue_store.update(jid, status="failed", ended_at=time.time(),
-                                 summary=f"not a git repo ({status.strip()[:160]})")
-        await _notify_status(jid, job, "failed", "not a git repo")
-        return
-
-    rc, base = await _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    base = base.strip() or "main"
-    if rc != 0:
-        night_queue_store.update(jid, status="failed", ended_at=time.time(),
-                                 summary="Could not determine the repository base branch.")
-        await _notify_status(jid, job, "failed", "could not determine base branch")
-        return
+    attempt = night_queue_store.begin_attempt(jid, engine)
+    worktree: Path | None = None
     branch = f"night/{jid}-{_slug(job['task'])}"
-    live = deployment_store.latest_live(repo, base)
-    base_commit = (live or {}).get("deployed_sha") or base
-    worktree, worktree_error = await _prepare_worktree(
-        repo, jid, branch, base_commit)
-    if worktree is None:
-        msg = f"Could not create the isolated job checkout: {worktree_error}"
-        night_queue_store.update(jid, status="failed", ended_at=time.time(),
-                                 summary=msg)
-        await _notify_status(jid, job, "failed", msg)
-        return
-
     try:
+        if not Path(repo).is_dir():
+            reason = f"project path is gone: {repo}"
+            await _fail_job(job, attempt, reason, stage="preflight",
+                            kind="project_missing")
+            await _notify_status(jid, job, "failed", reason)
+            return
+
+        worker_task, attachment_error = night_exec.task_with_attachments(job)
+        if attachment_error:
+            question = f"{attachment_error}. Reattach the file in the original chat and answer this task again."
+            night_queue_store.save_result(jid, kind="question", text=question)
+            night_queue_store.update(jid, status="awaiting_input", ended_at=time.time(),
+                                     blocker_reason=attachment_error,
+                                     next_action="Reattach the missing file, then answer the task.",
+                                     failure_kind=None, next_retry_at=None, summary=question)
+            night_queue_store.finish_attempt(attempt["id"], status="waiting_for_user",
+                                             stage="input_validation", error=attachment_error)
+            await _notify_input(jid, job, question)
+            return
+
+        if (job.get("spec_json") or {}).get("work_type") == "research":
+            await _process_research_job(job, engine, repo, jid, attempt=attempt,
+                                        worker_task=worker_task)
+            return
+
+        night_queue_store.update_attempt(attempt["id"], stage="repository_preflight")
+        rc, status = await _git(repo, "rev-parse", "--git-dir")
+        if rc != 0:
+            reason = f"not a git repo ({status.strip()[:160]})"
+            await _fail_job(job, attempt, reason, stage="repository_preflight",
+                            kind="invalid_repo", stderr=status)
+            await _notify_status(jid, job, "failed", reason)
+            return
+
+        rc, base = await _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+        base = base.strip() or "main"
+        if rc != 0:
+            reason = "Could not determine the repository base branch."
+            await _fail_job(job, attempt, reason, stage="repository_preflight",
+                            kind="git_base_error", stderr=base)
+            await _notify_status(jid, job, "failed", reason)
+            return
+
+        night_queue_store.update_attempt(attempt["id"], stage="worktree_setup")
+        live = deployment_store.latest_live(repo, base)
+        base_commit = (live or {}).get("deployed_sha") or base
+        worktree, worktree_error = await _prepare_worktree(repo, jid, branch, base_commit)
+        if worktree is None:
+            reason = f"Could not create the isolated job checkout: {worktree_error}"
+            await _fail_job(job, attempt, reason, stage="worktree_setup",
+                            kind="worktree_setup", stderr=worktree_error)
+            await _notify_status(jid, job, "failed", reason)
+            return
+
         started = time.time()
 
         def _hold(proc):
             if jid in _running:
                 _running[jid]["proc"] = proc
 
-        summary, total, billable, error = await night_exec.run_job(
-            engine, str(worktree), worker_task,
-            getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-            on_spawn=_hold)
+        night_queue_store.update_attempt(attempt["id"], stage="agent_run")
+        summary, total, billable, error = await _run_with_attempt_capture(
+            night_exec.run_job, engine, str(worktree), worker_task,
+            getattr(config, "NIGHT_JOB_TIMEOUT", 1800), on_spawn=_hold, attempt=attempt)
         _record_run(repo, engine, started, error, total, billable)
+        summary, file_artifacts = _stage_explicit_file_markers(
+            summary, worktree, jid, attempt["attempt_no"])
+        night_queue_store.update_attempt(attempt["id"], output=summary)
 
-        # Stop requested mid-run: the subprocess was killed. Clean up and park it.
         if jid in _stop_requested:
             await _discard_worktree(repo, worktree, branch, delete_branch=True)
+            night_queue_store.save_result(jid, kind="coding", text=summary,
+                                          completeness="partial" if summary else "none")
             night_queue_store.update(jid, status="stopped", ended_at=time.time(),
-                                     summary="Stopped by you.")
+                                     summary="Stopped by you.", next_retry_at=None,
+                                     failure_kind=None, blocker_reason=None,
+                                     next_action="Run again when you are ready.")
+            night_queue_store.finish_attempt(attempt["id"], status="cancelled",
+                                             stage="agent_run", error="Stopped by you.",
+                                             output=summary)
             return
 
+        night_queue_store.update_attempt(attempt["id"], stage="inspect_changes")
         _, status2 = await _git(str(worktree), "status", "--porcelain")
         changed = _changed_files(status2)
-
-        # No change: the agent either errored, or deliberately stopped to ask you
-        # a question (a design/product decision). The latter becomes an interactive
-        # 'awaiting_input' item — answer it and the job re-runs with your answer.
         if not changed:
             await _discard_worktree(repo, worktree, branch, delete_branch=True)
             if error:
-                night_queue_store.update(
-                    jid, status="failed", tokens_total=total,
-                    tokens_billable=billable, engine_used=engine,
-                    ended_at=time.time(),
-                    summary=f"Run error: {error}\n\n{summary}".strip())
+                reason = f"Run error: {error}"
+                await _fail_job(job, attempt, reason, stage="agent_run", kind=_failure_kind(error, "agent_run"),
+                                output=summary, stdout="", stderr=error)
+                night_queue_store.update(jid, tokens_total=total, tokens_billable=billable,
+                                         engine_used=engine)
                 await _notify_status(jid, job, "failed", error)
             else:
                 question = summary or "I need a decision before I can build this."
-                night_queue_store.update(
-                    jid, status="awaiting_input", tokens_total=total,
-                    tokens_billable=billable, engine_used=engine,
-                    ended_at=time.time(), summary=question)
+                night_queue_store.save_result(jid, kind="question", text=question)
+                night_queue_store.update(jid, status="awaiting_input", tokens_total=total,
+                                         tokens_billable=billable, engine_used=engine,
+                                         ended_at=time.time(), summary=question,
+                                         blocker_reason="The worker made no changes and needs a decision or more detail.",
+                                         next_action="Answer the question, then resume this task.",
+                                         failure_kind=None, next_retry_at=None)
+                night_queue_store.finish_attempt(attempt["id"], status="waiting_for_user",
+                                                 stage="inspect_changes", output=summary)
                 await _notify_input(jid, job, question)
             return
 
+        night_queue_store.update_attempt(attempt["id"], stage="commit_changes")
         await _git(str(worktree), "add", "-A")
         commit_rc, commit_output = await _git(
-            str(worktree), "commit", "-m", f"night(agent): {job['task'][:60]}",
-            timeout=30)
+            str(worktree), "commit", "-m", f"night(agent): {job['task'][:60]}", timeout=30)
         if commit_rc != 0:
             raise RuntimeError(f"could not commit job changes: {commit_output.strip()[:300]}")
 
         this_repo = _is_this_repo(repo)
         app_only = this_repo and all(f.startswith("clients/gajala/") for f in changed)
-
         final_status = "staged"
         deploy_note = ""
         deployed_ok = False
         if app_only:
-            # Build from the isolated checkout so the APK contains this branch,
-            # while the owner's active checkout remains completely untouched.
+            night_queue_store.update_attempt(attempt["id"], stage="build_apk")
             from server.skills.build_app import build_and_deploy
             deployed_ok, msg = await build_and_deploy(
-                timeout=getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-                source_repo=worktree)
+                timeout=getattr(config, "NIGHT_JOB_TIMEOUT", 1800), source_repo=worktree)
             deploy_note = msg
             final_status = "deployed" if deployed_ok else "staged"
 
         await _discard_worktree(repo, worktree, branch, delete_branch=False)
-
-        rc, diffstat = await _git(repo, "diff", f"{base_commit}..{branch}", "--stat")
+        worktree = None
+        _, diffstat = await _git(repo, "diff", f"{base_commit}..{branch}", "--stat")
+        full_result = "\n\n".join(p for p in (summary, deploy_note, diffstat.strip()) if p).strip()
+        artifacts = [{"kind": "git_branch", "ref": branch, "files_changed": changed},
+                     *file_artifacts]
+        night_queue_store.save_result(jid, kind="coding", text=full_result,
+                                      completeness="complete" if full_result else "none",
+                                      artifacts=artifacts)
         night_queue_store.update(
             jid, status=final_status, branch=branch, base=base,
             files_changed=changed, engine_used=engine,
             tokens_total=total, tokens_billable=billable, ended_at=time.time(),
-            summary=("\n\n".join(p for p in (summary, deploy_note, diffstat.strip()[:600])
-                                 if p)).strip())
-
+            summary=full_result, failure_kind=None, blocker_reason=None,
+            next_retry_at=None,
+            next_action="Implementation is ready for deployment review." if final_status == "staged"
+                        else "APK deployed; install and verify it on the phone.")
+        night_queue_store.finish_attempt(attempt["id"], status="succeeded",
+                                         stage="complete", output=summary)
         if job.get("origin") == "backlog":
             _mark_backlog_done(repo, job["task"])
-
         await _notify_status(jid, job, final_status, summary or "", deployed=deployed_ok)
-
-        # `auto` is end-to-end authorization: after an agent produces a committed
-        # branch, merge/deploy it through the serialized verifier. A busy deploy
-        # leaves this staged; _cycle retries it durably on the next tick.
         if job.get("tag") == "auto":
             from server.skills.queue import _ship
             try:
                 _ship(jid, source_base_sha=base_commit)
-            except Exception as exc:  # branch is safely staged; next tick retries
+            except Exception as exc:
                 log.warning("automatic deploy of #%s deferred: %s", jid, exc)
-    except Exception as exc:  # noqa: BLE001 — never let one job kill the runner
+    except asyncio.CancelledError:
+        if worktree is not None:
+            await _discard_worktree(repo, worktree, branch, delete_branch=True)
+        night_queue_store.finish_attempt(attempt["id"], status="cancelled",
+                                         stage="cancelled", error="Worker task cancelled.")
+        raise
+    except Exception as exc:  # noqa: BLE001 — one job must not kill the runner
         log.error("night job %s crashed: %s", jid, exc)
-        await _discard_worktree(repo, worktree, branch, delete_branch=True)
-        night_queue_store.update(jid, status="failed", ended_at=time.time(),
-                                 summary=f"night job crashed: {exc}")
+        if worktree is not None:
+            try:
+                await _discard_worktree(repo, worktree, branch, delete_branch=True)
+            except Exception:
+                pass
+        reason = f"night job crashed: {exc}"
+        await _fail_job(job, attempt, reason, stage="runtime",
+                        kind=_failure_kind(reason, "runtime"))
         await _notify_status(jid, job, "failed", str(exc))
 
 
 async def _process_research_job(
-        job: dict, engine: str, cwd: str, jid: int) -> None:
-    """Research produces a report, so it needs neither Git nor changed files."""
+        job: dict, engine: str, cwd: str, jid: int, *, attempt: dict | None = None,
+        worker_task: str | None = None) -> None:
+    """Research produces a durable report and needs no Git worktree."""
+    if attempt is None:
+        attempt = night_queue_store.begin_attempt(jid, engine)
     started = time.time()
 
     def _hold(proc):
         if jid in _running:
             _running[jid]["proc"] = proc
 
-    worker_task, attachment_error = night_exec.task_with_attachments(job)
-    if attachment_error:
-        question = f"{attachment_error}. Reattach the file in the original chat and answer this task again."
-        night_queue_store.update(jid, status="awaiting_input", ended_at=time.time(),
-                                 blocker_reason=attachment_error,
-                                 next_action="Reattach the missing file, then answer the task.",
-                                 summary=question)
-        await _notify_input(jid, job, question)
-        return
-    summary, total, billable, error = await night_exec.run_research_job(
-        engine, cwd, worker_task, getattr(config, "NIGHT_JOB_TIMEOUT", 1800),
-        on_spawn=_hold,
-    )
+    if worker_task is None:
+        worker_task, attachment_error = night_exec.task_with_attachments(job)
+        if attachment_error:
+            await _fail_job(job, attempt, attachment_error, stage="input_validation",
+                            kind="attachment_missing", status="awaiting_input")
+            return
+    night_queue_store.update_attempt(attempt["id"], stage="research_run")
+    summary, total, billable, error = await _run_with_attempt_capture(
+        night_exec.run_research_job, engine, cwd, worker_task,
+        getattr(config, "NIGHT_JOB_TIMEOUT", 1800), on_spawn=_hold, attempt=attempt)
     _record_run(cwd, engine, started, error, total, billable)
     if jid in _stop_requested:
-        night_queue_store.update(
-            jid, status="stopped", ended_at=time.time(), summary="Stopped by you."
-        )
+        night_queue_store.save_result(jid, kind="research", text=summary,
+                                      completeness="partial" if summary else "none")
+        night_queue_store.update(jid, status="stopped", ended_at=time.time(), summary="Stopped by you.",
+                                 failure_kind=None, blocker_reason=None, next_retry_at=None,
+                                 next_action="Run again when you are ready.")
+        night_queue_store.finish_attempt(attempt["id"], status="cancelled",
+                                         stage="research_run", error="Stopped by you.", output=summary)
         return
     if error:
         reason = f"Research agent error: {error}"
-        night_queue_store.update(
-            jid, status="failed", engine_used=engine, tokens_total=total,
-            tokens_billable=billable, ended_at=time.time(),
-            summary=f"{reason}\n\n{summary}".strip(),
-        )
+        await _fail_job(job, attempt, reason, stage="research_run",
+                        kind=_failure_kind(error, "research_run"), output=summary,
+                        stderr=error)
+        night_queue_store.update(jid, engine_used=engine, tokens_total=total,
+                                 tokens_billable=billable)
         await _notify_status(jid, job, "failed", reason)
         return
     outcome = night_exec.parse_research_outcome(summary)
     if outcome.status == "waiting_input":
         question = outcome.question or outcome.report or "Research needs your input."
+        night_queue_store.save_result(jid, kind="question", text=question)
         night_queue_store.update(jid, status="awaiting_input", engine_used=engine,
             tokens_total=total, tokens_billable=billable, ended_at=time.time(),
-            summary=question, next_action="Answer the research question, then retry this task.")
+            summary=question, blocker_reason="Research is waiting for your input.",
+            next_action="Answer the research question, then retry this task.",
+            failure_kind=None, next_retry_at=None)
+        night_queue_store.finish_attempt(attempt["id"], status="waiting_for_user",
+                                         stage="research_review", output=summary)
         await _notify_input(jid, job, question)
         return
     if outcome.status == "blocked":
         reason = outcome.reason or "Research was blocked before producing a report."
+        text = outcome.report or summary or reason
+        night_queue_store.save_result(jid, kind="research", text=text, completeness="partial")
         night_queue_store.update(jid, status="blocked", engine_used=engine,
             tokens_total=total, tokens_billable=billable, ended_at=time.time(),
-            summary=reason, blocker_reason=reason,
-            next_action="Resolve the blocker, then retry the task.")
+            summary=text, blocker_reason=reason,
+            next_action="Resolve the blocker, then retry the task.",
+            failure_kind="research_blocked", next_retry_at=None)
+        night_queue_store.finish_attempt(attempt["id"], status="blocked",
+                                         stage="research_review", error=reason, output=summary)
         await _notify_status(jid, job, "blocked", reason)
         return
     if outcome.status == "unverified":
         reason = outcome.reason or "Research findings were not sufficiently verified."
+        text = outcome.report or summary or reason
+        night_queue_store.save_result(jid, kind="research", text=text, completeness="partial")
         night_queue_store.update(jid, status="unverified", engine_used=engine,
             tokens_total=total, tokens_billable=billable, ended_at=time.time(),
-            summary=outcome.report or reason, blocker_reason=reason,
-            next_action="Review sources or rerun with a narrower task.")
+            summary=text, blocker_reason=reason,
+            next_action="Review sources or rerun with a narrower task.",
+            failure_kind="research_unverified", next_retry_at=None)
+        night_queue_store.finish_attempt(attempt["id"], status="unverified",
+                                         stage="research_review", error=reason, output=summary)
         await _notify_status(jid, job, "unverified", reason)
         return
     report = outcome.report.strip()
+    artifact = [{"kind": "research_report", "ref": f"queue:{jid}:result"}]
+    night_queue_store.save_result(jid, kind="research", text=report,
+                                  completeness="complete", artifacts=artifact)
     night_queue_store.update(
         jid, status="completed", engine_used=engine, tokens_total=total,
         tokens_billable=billable, ended_at=time.time(), summary=report,
+        failure_kind=None, blocker_reason=None, next_retry_at=None,
+        next_action="Research report is ready in task details.",
     )
+    night_queue_store.finish_attempt(attempt["id"], status="succeeded",
+                                     stage="complete", output=summary)
     await _notify_status(jid, job, "completed", "Research report is ready.")
 
 

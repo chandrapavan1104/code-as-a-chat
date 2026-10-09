@@ -36,6 +36,9 @@ class FakeApi extends GajalaApi {
   }) async => history;
 
   @override
+  Future<List<AssistantWork>> assistantWork(String sessionId) async => [];
+
+  @override
   Future<String> classifyWork(String id, String prompt) async => relation;
 
   @override
@@ -109,6 +112,37 @@ void main() {
       await Future.wait([first, queued]);
       expect(api.steerCalls, 0);
       expect(api.prompts.last, contains('/uploads/photo.jpg'));
+      controller.dispose();
+    },
+  );
+
+  test(
+    'background queue results refresh without research jobs and deduplicate',
+    () async {
+      final api = FakeApi();
+      final controller = ChatController(
+        api,
+        const ChatKey('shell', 'app:test'),
+        outbox: _tempOutbox(),
+      );
+      api.history = [
+        ChatMessage(
+          'bot',
+          'Work report',
+          messageId: 10,
+          localRequestId: 'queue-result:42:hash',
+          replyToMessageId: 9,
+        ),
+      ];
+      await controller.refreshBackgroundResearch();
+      await controller.refreshBackgroundResearch();
+      expect(
+        controller.state.messages.where(
+          (m) => m.localRequestId == 'queue-result:42:hash',
+        ),
+        hasLength(1),
+      );
+      expect(controller.state.messages.last.replyToMessageId, 9);
       controller.dispose();
     },
   );

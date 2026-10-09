@@ -19,13 +19,15 @@ import 'screens/voice_sheet.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  ErrorReporter.install();   // capture crashes → server → the fix agent
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-  ));
+  ErrorReporter.install(); // capture crashes → server → the fix agent
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+    ),
+  );
   await Push.init();
-  await initHomeWidgets();   // register the widget background callback
+  await initHomeWidgets(); // register the widget background callback
   runApp(const ProviderScope(child: GajalaApp()));
 }
 
@@ -60,16 +62,24 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
   void initState() {
     super.initState();
     _outboxTimer = Timer.periodic(
-        const Duration(seconds: 30), (_) => _replayOutbox());
+      const Duration(seconds: 30),
+      (_) => _replayOutbox(),
+    );
     _lifecycle = AppLifecycleListener(onResume: _replayOutbox);
     // Tapping a reply notification (foreground, background, or cold launch)
     // deep-links into the chat.
-    Push.onOpenChat = (_) {
+    Push.onOpenChat = (sessionId) {
       final nav = Push.navigatorKey.currentState;
       if (nav == null) return;
-      nav.push(MaterialPageRoute(
-        builder: (_) => const ChatScreen(command: 'shell', title: 'Gajala'),
-      ));
+      nav.push(
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            command: 'shell',
+            title: 'Gajala',
+            sessionId: sessionId,
+          ),
+        ),
+      );
     };
     // A foreground push refreshes the Tasks list + Alerts badge live.
     Push.onPush = () {
@@ -82,7 +92,7 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
     AssistLaunch.listen(_openVoice);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       Push.handleLaunchMessage();
-      handleWidgetLaunch();   // route Ask / Dump widget deep-links
+      handleWidgetLaunch(); // route Ask / Dump widget deep-links
       if (await AssistLaunch.consumeInitial()) await _openVoice();
     });
   }

@@ -89,7 +89,7 @@ class _PhoneAbilitiesScreenState extends State<PhoneAbilitiesScreen> {
         const Divider(height: 32),
         _heading(context, 'Actions',
             'Alarms, timers, music, apps, flashlight, messages you send yourself, '
-            'calls and calendar events (confirmed on screen) always work. These '
+            'calls and calendar events depend on Android permissions and the target app. These '
             'three need your OK:'),
         for (final a in sensitiveActions)
           SwitchListTile(

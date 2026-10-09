@@ -23,6 +23,8 @@ Statuses:
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -88,6 +90,15 @@ def init() -> None:
             "last_supervised_at": "REAL",
             "awareness_json": "TEXT",
             "awareness_checked_at": "REAL",
+            "session_id": "TEXT",
+            "origin_message_id": "INTEGER",
+            "request_id": "TEXT",
+            "result_text": "TEXT",
+            "result_kind": "TEXT",
+            "result_completeness": "TEXT",
+            "result_artifacts": "TEXT NOT NULL DEFAULT '[]'",
+            "result_saved_at": "REAL",
+            "result_delivered_at": "REAL",
         }
         for name, kind in additions.items():
             if name not in columns:
@@ -127,6 +138,48 @@ def init() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status, priority DESC, id)"
         )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_session_request "
+            "ON jobs(session_id, request_id) WHERE session_id IS NOT NULL "
+            "AND request_id IS NOT NULL"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS job_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                attempt_no INTEGER NOT NULL,
+                engine TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                error TEXT,
+                exit_code INTEGER,
+                stdout TEXT,
+                stderr TEXT,
+                output TEXT,
+                stdout_truncated INTEGER NOT NULL DEFAULT 0,
+                stderr_truncated INTEGER NOT NULL DEFAULT 0,
+                output_truncated INTEGER NOT NULL DEFAULT 0,
+                logs_expired INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(job_id, attempt_no)
+            )
+        """)
+        attempt_columns = {row[1] for row in conn.execute("PRAGMA table_info(job_attempts)")}
+        if "logs_expired" not in attempt_columns:
+            conn.execute("ALTER TABLE job_attempts ADD COLUMN logs_expired INTEGER NOT NULL DEFAULT 0")
+        # Retain attempt metadata indefinitely, but keep raw diagnostics only for
+        # the newest twenty attempts per job and for at most thirty days.
+        conn.execute("""
+            UPDATE job_attempts SET stdout=NULL, stderr=NULL, output=NULL, logs_expired=1
+            WHERE logs_expired=0 AND (
+                started_at < ? OR id NOT IN (
+                    SELECT id FROM job_attempts AS recent
+                    WHERE recent.job_id=job_attempts.job_id
+                    ORDER BY recent.attempt_no DESC LIMIT 20
+                )
+            )
+        """, (time.time() - 30 * 24 * 60 * 60,))
         conn.commit()
 
 
@@ -140,7 +193,7 @@ def _row(r: sqlite3.Row | None) -> dict | None:
         d["files_changed"] = []
     for name, fallback in (("spec_json", None), ("depends_on", []),
                            ("closure_history", []), ("attempted_engines", []),
-                           ("awareness_json", {})):
+                           ("awareness_json", {}), ("result_artifacts", [])):
         try:
             d[name] = json.loads(d[name]) if d.get(name) else fallback
         except (TypeError, json.JSONDecodeError):
@@ -153,7 +206,9 @@ def _row(r: sqlite3.Row | None) -> dict | None:
 
 def add(*, project: str, task: str, tag: str = "auto", engine: str = "auto",
         priority: int = 0, origin: str = "queue", spec: dict | None = None,
-        depends_on: list[int] | None = None, source_note_id: int | None = None) -> int:
+        depends_on: list[int] | None = None, source_note_id: int | None = None,
+        session_id: str | None = None, origin_message_id: int | None = None,
+        request_id: str | None = None) -> int:
     init()
     from server.work_orders import migrate_spec
     if spec and not spec.get("title"):
@@ -169,13 +224,35 @@ def add(*, project: str, task: str, tag: str = "auto", engine: str = "auto",
         tag = "mine"
     status = "held" if tag == "mine" else "queued"
     with _conn() as conn:
+        if session_id and request_id:
+            conn.execute("BEGIN IMMEDIATE")
+        if session_id and request_id:
+            existing = conn.execute(
+                "SELECT * FROM jobs WHERE session_id=? AND request_id=?",
+                (session_id, request_id),
+            ).fetchone()
+            if existing:
+                old = _row(existing)
+                expected = (project, task, tag, engine, priority, origin,
+                            json.dumps(parsed.model_dump()), json.dumps(depends_on or []),
+                            source_note_id, origin_message_id)
+                actual = (old["project"], old["task"], old["tag"], old["engine"],
+                          old["priority"], old["origin"], json.dumps(old["spec_json"]),
+                          json.dumps(old["depends_on"]), old["source_note_id"],
+                          old["origin_message_id"])
+                if expected != actual:
+                    conn.rollback()
+                    raise ValueError("request_id was already used for a different queue task")
+                conn.commit()
+                return int(old["id"])
         cur = conn.execute(
             "INSERT INTO jobs (project, task, tag, engine, priority, status, "
-            "origin, spec_json, depends_on, source_note_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "origin, spec_json, depends_on, source_note_id, session_id, "
+            "origin_message_id, request_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project, task, tag, engine, priority, status, origin,
              json.dumps(parsed.model_dump()), json.dumps(depends_on or []),
-             source_note_id, time.time()),
+             source_note_id, session_id, origin_message_id, request_id, time.time()),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -248,7 +325,7 @@ def claim_next(engine: str) -> dict | None:
             conn.execute(
                 "UPDATE jobs SET status='running', started_at=?, engine_used=?, "
                 "attempt_count=COALESCE(attempt_count,0)+1, attempted_engines=?, "
-                "failure_kind=NULL, blocker_reason=NULL, "
+                "failure_kind=NULL, blocker_reason=NULL, ended_at=NULL, "
                 "next_action='Worker is implementing and testing this task.', "
                 "next_retry_at=NULL WHERE id=?",
                 (now, engine, json.dumps(attempted), row["id"]),
@@ -291,11 +368,23 @@ def fail_orphaned_running(active_job_ids: set[int] | None = None,
                       "restarted or the worker crashed). The job was released "
                       "instead of remaining stuck in Building.")
             conn.execute(
-                "UPDATE jobs SET status='failed', ended_at=?, summary=? "
-                "WHERE id=? AND status='running'", (now, reason, row["id"]),
+                "UPDATE jobs SET status='failed', ended_at=?, summary=?, "
+                "failure_kind='worker_lost', blocker_reason=?, next_retry_at=NULL, "
+                "next_action='The worker disappeared. The supervisor will assess a safe retry.' "
+                "WHERE id=? AND status='running'", (now, reason, reason, row["id"]),
             )
             value = _row(row)
-            value.update(status="failed", ended_at=now, summary=reason)
+            latest = conn.execute(
+                "SELECT id FROM job_attempts WHERE job_id=? AND status='running' "
+                "ORDER BY attempt_no DESC LIMIT 1", (row["id"],)
+            ).fetchone()
+            if latest:
+                conn.execute(
+                    "UPDATE job_attempts SET status='failed', stage='worker_lost', ended_at=?, error=? WHERE id=?",
+                    (now, reason, latest["id"]),
+                )
+            value.update(status="failed", ended_at=now, summary=reason,
+                         failure_kind="worker_lost", blocker_reason=reason)
             recovered.append(value)
         conn.commit()
     return recovered
@@ -310,7 +399,7 @@ def start_attempt(job_id: int, engine: str) -> None:
         job_id, status="running", started_at=time.time(), engine_used=engine,
         attempt_count=(job.get("attempt_count") or 0) + 1,
         attempted_engines=attempted, failure_kind=None, blocker_reason=None,
-        next_action="Worker is implementing and testing this task.",
+        ended_at=None, next_action="Worker is implementing and testing this task.",
         next_retry_at=None,
     )
 
@@ -322,7 +411,9 @@ _UPDATABLE = {
     "previous_status", "closure_history", "source_note_id",
     "attempt_count", "max_attempts", "attempted_engines", "failure_kind",
     "blocker_reason", "next_action", "next_retry_at", "last_supervised_at",
-    "awareness_json", "awareness_checked_at",
+    "awareness_json", "awareness_checked_at", "session_id", "origin_message_id",
+    "request_id", "result_text", "result_kind", "result_completeness",
+    "result_artifacts", "result_saved_at",
 }
 
 
@@ -330,10 +421,19 @@ def update(job_id: int, **fields) -> None:
     fields = {k: v for k, v in fields.items() if k in _UPDATABLE}
     if not fields:
         return
+    if fields.get("status") in {"queued", "running"}:
+        fields.setdefault("failure_kind", None)
+        fields.setdefault("blocker_reason", None)
+        fields.setdefault("next_retry_at", None)
+        fields.setdefault("ended_at", None)
+    if fields.get("status") in {"completed", "shipped", "deployed", "closed"}:
+        fields.setdefault("failure_kind", None)
+        fields.setdefault("blocker_reason", None)
+        fields.setdefault("next_retry_at", None)
     if "files_changed" in fields and not isinstance(fields["files_changed"], str):
         fields["files_changed"] = json.dumps(fields["files_changed"])
     for name in ("spec_json", "depends_on", "closure_history", "attempted_engines",
-                 "awareness_json"):
+                 "awareness_json", "result_artifacts"):
         if name in fields and not isinstance(fields[name], str):
             fields[name] = json.dumps(fields[name])
     init()
@@ -343,6 +443,220 @@ def update(job_id: int, **fields) -> None:
                      (*fields.values(), job_id))
         conn.commit()
 
+
+
+# Bound logs retained for debugging; final result text is stored separately and
+# may be much larger because research reports are deliverables.
+_ATTEMPT_LOG_LIMIT = 16_000
+_ATTEMPT_OUTPUT_LIMIT = 32_000
+_RESULT_LIMIT = 500_000
+_ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_AUTH_HEADER = re.compile(r"(?im)(authorization\s*:\s*(?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+")
+_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}")
+_SECRET = re.compile(
+    r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret|credential|private[_-]?key)[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;}]+)"
+)
+_PRIVATE_KEY = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", re.S)
+_KNOWN_KEY = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,})\b")
+
+
+def _safe_text(value: str | None, limit: int) -> tuple[str, bool]:
+    text = _ANSI.sub("", str(value or ""))
+    text = _PRIVATE_KEY.sub("[REDACTED_PRIVATE_KEY]", text)
+    text = _AUTH_HEADER.sub(r"\1[REDACTED]", text)
+    text = _BEARER.sub("Bearer [REDACTED]", text)
+    text = _SECRET.sub(r"\1[REDACTED]", text)
+    text = _KNOWN_KEY.sub("[REDACTED_KEY]", text)
+    return text[:limit], len(text) > limit
+
+
+def begin_attempt(job_id: int, engine: str, *, stage: str = "preflight") -> dict:
+    """Create the durable attempt timeline row before any worker side effects."""
+    init()
+    now = time.time()
+    with _conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT attempt_count, attempted_engines FROM jobs WHERE id=?",
+                           (job_id,)).fetchone()
+        if row is None:
+            conn.execute("ROLLBACK")
+            raise KeyError(f"unknown job {job_id}")
+        prior = conn.execute("SELECT COALESCE(MAX(attempt_no),0) FROM job_attempts WHERE job_id=?",
+                             (job_id,)).fetchone()[0]
+        attempt_no = max(int(prior or 0) + 1, int(row["attempt_count"] or 0))
+        try:
+            attempted = json.loads(row["attempted_engines"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            attempted = []
+        # claim_next/start_attempt normally records this before the worker starts.
+        if int(row["attempt_count"] or 0) < attempt_no:
+            attempted.append(engine)
+        cur = conn.execute(
+            "INSERT INTO job_attempts(job_id,attempt_no,engine,stage,status,started_at) "
+            "VALUES(?,?,?,?,?,?)", (job_id, attempt_no, engine, stage, "running", now),
+        )
+        conn.execute(
+            "UPDATE jobs SET attempt_count=MAX(COALESCE(attempt_count,0),?), "
+            "attempted_engines=?, status='running', started_at=?, ended_at=NULL, "
+            "engine_used=?, failure_kind=NULL, blocker_reason=NULL, next_retry_at=NULL, "
+            "next_action=? WHERE id=?",
+            (attempt_no, json.dumps(attempted), now, engine,
+             f"Attempt {attempt_no} started; preparing the project.", job_id),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid, "job_id": job_id, "attempt_no": attempt_no,
+                "engine": engine, "stage": stage, "status": "running", "started_at": now}
+
+
+def update_attempt(attempt_id: int, *, stage: str | None = None,
+                   stdout: str | None = None, stderr: str | None = None,
+                   output: str | None = None, error: str | None = None,
+                   exit_code: int | None = None, status: str | None = None,
+                   ended_at: float | None = None) -> None:
+    values = {}
+    if stage is not None: values["stage"] = stage
+    if error is not None: values["error"] = _safe_text(error, 2000)[0]
+    if exit_code is not None: values["exit_code"] = int(exit_code)
+    if status is not None: values["status"] = status
+    if ended_at is not None: values["ended_at"] = ended_at
+    for name, value, limit in (("stdout", stdout, _ATTEMPT_LOG_LIMIT),
+                               ("stderr", stderr, _ATTEMPT_LOG_LIMIT),
+                               ("output", output, _ATTEMPT_OUTPUT_LIMIT)):
+        if value is not None:
+            text, truncated = _safe_text(value, limit)
+            values[name] = text
+            values[name + "_truncated"] = int(truncated)
+    if not values: return
+    init()
+    with _conn() as conn:
+        conn.execute("UPDATE job_attempts SET " + ",".join(f"{k}=?" for k in values) + " WHERE id=?",
+                     (*values.values(), attempt_id))
+        conn.commit()
+
+
+def finish_attempt(attempt_id: int, *, status: str, stage: str,
+                   error: str | None = None, exit_code: int | None = None,
+                   stdout: str | None = None, stderr: str | None = None,
+                   output: str | None = None) -> None:
+    update_attempt(attempt_id, status=status, stage=stage, error=error,
+                   exit_code=exit_code, stdout=stdout, stderr=stderr,
+                   output=output, ended_at=time.time())
+
+
+def attempts(job_id: int, *, include_logs: bool = False) -> list[dict]:
+    init()
+    columns = ("*" if include_logs else
+               "id,job_id,attempt_no,engine,stage,status,started_at,ended_at,error,exit_code,")
+    if not include_logs:
+        columns += "stdout_truncated,stderr_truncated,output_truncated"
+    with _conn() as conn:
+        rows = conn.execute(f"SELECT {columns} FROM job_attempts WHERE job_id=? ORDER BY attempt_no",
+                            (job_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_result(job_id: int, *, kind: str, text: str,
+                completeness: str = "complete",
+                artifacts: list[dict] | None = None) -> dict:
+    safe, truncated = _safe_text(text, _RESULT_LIMIT)
+    if truncated and completeness == "complete":
+        completeness = "partial"
+    init()
+    staged_artifacts = list(artifacts or [])
+    if safe and kind in {"research", "coding"}:
+        try:
+            from server.media import ensure_uploads_dir
+            import os
+            target_dir = ensure_uploads_dir() / "queue" / str(job_id)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(safe.encode("utf-8")).hexdigest()[:16]
+            target = target_dir / f"result-{digest}.md"
+            temporary = target.with_suffix(".md.tmp")
+            temporary.write_text(safe, encoding="utf-8")
+            os.replace(temporary, target)
+            staged_artifacts = [a for a in staged_artifacts
+                                if not (a.get("kind") == "file" and a.get("name") == "result.md")]
+            staged_artifacts.append({"kind": "file", "path": str(target),
+                                     "name": "result.md", "size": target.stat().st_size})
+        except OSError:
+            pass
+    now = time.time()
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET result_text=?, result_kind=?, result_completeness=?, "
+            "result_artifacts=?, result_saved_at=? WHERE id=?",
+            (safe, kind, completeness, json.dumps(staged_artifacts), now, job_id),
+        )
+        conn.commit()
+    return {"available": bool(safe), "kind": kind if safe else "unknown",
+            "completeness": completeness if safe else "none",
+            "artifact_count": len(staged_artifacts), "saved_at": now}
+
+
+def result(job_id: int) -> dict | None:
+    """Return the full durable result, with legacy summary fallback."""
+    job = get(job_id)
+    if not job:
+        return None
+    text = job.get("result_text") or job.get("summary") or ""
+    kind = job.get("result_kind")
+    if not kind:
+        work_type = (job.get("spec_json") or {}).get("work_type")
+        kind = ("failure" if job.get("status") == "failed" else
+                "question" if job.get("status") in {"awaiting_input", "needs_you", "blocked"} else
+                "research" if work_type == "research" else "coding" if text else "unknown")
+    if job.get("result_completeness"):
+        completeness = job["result_completeness"]
+    elif not text:
+        completeness = "none"
+    elif job.get("status") in {"completed", "shipped", "deployed"}:
+        completeness = "legacy"
+    else:
+        completeness = "partial"
+    return {"job_id": job_id, "available": bool(text), "kind": kind,
+            "completeness": completeness, "text": text,
+            "artifacts": job.get("result_artifacts") or []}
+
+
+def result_metadata(job: dict) -> dict:
+    text = job.get("result_text") or job.get("summary") or ""
+    completeness = job.get("result_completeness")
+    if not completeness:
+        completeness = ("legacy" if text and job.get("status") in
+                        {"completed", "shipped", "deployed"} else
+                        "partial" if text else "none")
+    return {"available": bool(text),
+            "kind": job.get("result_kind") or ("failure" if job.get("status") == "failed" else "unknown"),
+            "completeness": completeness,
+            "artifact_count": len(job.get("result_artifacts") or [])}
+
+
+def result_receipt_candidates(limit: int = 100) -> list[dict]:
+    """Completed, linked jobs available for the separate idempotent chat outbox."""
+    init()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE session_id IS NOT NULL AND origin_message_id IS NOT NULL "
+            "AND result_text IS NOT NULL AND result_saved_at IS NOT NULL "
+            "AND (result_delivered_at IS NULL OR result_delivered_at < result_saved_at) "
+            "AND status IN ('completed','failed','blocked','unverified','needs_you',"
+            "'shipped','deployed','staged','awaiting_input','closed') "
+            "ORDER BY result_saved_at ASC, id ASC LIMIT ?",
+            (max(1, min(limit, 500)),),
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
+def mark_result_delivered(job_id: int, saved_at: float) -> None:
+    """Acknowledge one exact result version after its outbox receipt commits."""
+    init()
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET result_delivered_at=MAX(COALESCE(result_delivered_at,0),?) "
+            "WHERE id=? AND result_saved_at=?",
+            (saved_at, job_id, saved_at),
+        )
+        conn.commit()
 
 def dependency_status(job: dict) -> list[dict]:
     """Dependency rows with enough state for API/UI explanations."""

@@ -513,6 +513,11 @@ class GajalaApi {
     );
   }
 
+  Future<QueueJobResult> queueJobResult(int id) async {
+    final r = await _dio.get('/api/queue/$id/result');
+    return QueueJobResult.fromJson(Map<String, dynamic>.from(r.data));
+  }
+
   Future<Map<String, dynamic>> superviseQueue() async =>
       Map<String, dynamic>.from((await _dio.post('/api/queue/supervise')).data);
 

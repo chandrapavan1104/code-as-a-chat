@@ -1,6 +1,6 @@
+import 'dart:convert';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'api.dart';
@@ -30,10 +30,12 @@ Future<void> _bgHandler(RemoteMessage message) async {
 
 class Push {
   static bool _inited = false;
+  static Map<String, dynamic>? _pendingRoute;
 
   /// Navigator used to deep-link into a chat when a reply notification is tapped.
   /// Wired to MaterialApp.navigatorKey in main.dart.
-  static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  static final GlobalKey<NavigatorState> navigatorKey =
+      GlobalKey<NavigatorState>();
 
   /// Session id of the chat the user is currently viewing in the foreground.
   /// ChatScreen sets this while active and clears it on leave/background. When a
@@ -47,6 +49,7 @@ class Push {
 
   /// main.dart wires these to select the Tasks / Alerts tab on a push tap.
   static void Function()? onOpenTasks;
+  static void Function(int jobId)? onOpenWork;
   static void Function()? onOpenNotifications;
 
   /// main.dart wires this to refresh queue/notification providers when any push
@@ -66,7 +69,9 @@ class Push {
         onDidReceiveNotificationResponse: _onLocalTap,
       );
       await _localNotifications
-          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
           ?.createNotificationChannel(_channel);
       // Show foreground pushes as a real system notification + let the app
       // refresh the badge/lists.
@@ -107,37 +112,89 @@ class Push {
       n.title ?? 'Gajala',
       n.body ?? '',
       const NotificationDetails(
-        android: AndroidNotificationDetails('gajala_default', 'Gajala',
-            channelDescription: 'Reminders and messages from Gajala',
-            importance: Importance.high, priority: Priority.high, icon: '@mipmap/ic_launcher'),
+        android: AndroidNotificationDetails(
+          'gajala_default',
+          'Gajala',
+          channelDescription: 'Reminders and messages from Gajala',
+          importance: Importance.high,
+          priority: Priority.high,
+          icon: '@mipmap/ic_launcher',
+        ),
       ),
-      payload: m.data['session_id'] as String?,
+      payload: jsonEncode(m.data),
     );
   }
 
   /// Tap on a notification we showed ourselves (app was foreground when it came).
   static void _onLocalTap(NotificationResponse r) {
-    final sid = r.payload;
-    if (sid != null && sid.isNotEmpty) onOpenChat?.call(sid);
+    final payload = r.payload;
+    if (payload == null || payload.isEmpty) return;
+    try {
+      final data = jsonDecode(payload);
+      if (data is Map) {
+        routeData(Map<String, dynamic>.from(data));
+        return;
+      }
+    } catch (_) {
+      /* Old notifications contain only a session ID. */
+    }
+    onOpenChat?.call(payload);
   }
 
   /// Tap on a system-tray push (app was backgrounded / killed). Routes by type:
   /// a chat reply opens the chat; a queue question / job status / night report /
   /// update / reminder opens the Alerts inbox (Tasks/answer are one tap away).
   static void _onOpened(RemoteMessage m) {
-    final type = m.data['type'];
-    final sid = m.data['session_id'];
+    routeData(m.data);
+  }
+
+  @visibleForTesting
+  static void routeData(Map<String, dynamic> data) {
+    final type = data['type'];
+    final sid = data['session_id'];
     if (type == 'chat_reply' && sid is String && sid.isNotEmpty) {
-      onOpenChat?.call(sid);
+      if (onOpenChat == null) {
+        _pendingRoute = data;
+      } else {
+        onOpenChat!(sid);
+      }
       return;
     }
-    if (type == 'queue_status' || type == 'night_report') {
-      onOpenTasks?.call();
+    if (type == 'queue_status') {
+      final id = int.tryParse('${data['ref_id'] ?? ''}');
+      if (id != null && onOpenWork != null) {
+        onOpenWork!(id);
+      } else if (onOpenTasks != null) {
+        onOpenTasks!();
+      } else {
+        _pendingRoute = data;
+      }
       return;
     }
-    if (type == 'queue_input' || type == 'gajala_update' || type == 'reminder') {
-      onOpenNotifications?.call();
+    if (type == 'night_report') {
+      if (onOpenTasks == null) {
+        _pendingRoute = data;
+      } else {
+        onOpenTasks!();
+      }
+      return;
     }
+    if (type == 'queue_input' ||
+        type == 'gajala_update' ||
+        type == 'reminder') {
+      if (onOpenNotifications == null) {
+        _pendingRoute = data;
+      } else {
+        onOpenNotifications!();
+      }
+    }
+  }
+
+  /// The connected shell may mount after a cold-launch push arrives.
+  static void flushPendingRoute() {
+    final data = _pendingRoute;
+    _pendingRoute = null;
+    if (data != null) routeData(data);
   }
 
   /// Ask for notification permission, fetch the FCM token, and register it with
