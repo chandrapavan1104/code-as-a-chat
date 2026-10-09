@@ -412,7 +412,7 @@ def _failure_action(job: dict, kind: str) -> str:
 
 async def _fail_job(job: dict, attempt: dict, reason: str, *, stage: str,
                     kind: str | None = None, output: str = "",
-                    stdout: str = "", stderr: str = "", exit_code: int | None = None,
+                    stdout: str | None = None, stderr: str | None = None, exit_code: int | None = None,
                     status: str = "failed") -> None:
     kind = kind or _failure_kind(reason, stage)
     completeness = "partial" if output else "none"
