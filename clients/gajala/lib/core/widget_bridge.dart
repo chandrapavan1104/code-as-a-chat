@@ -129,8 +129,10 @@ Future<void> _macAction(
       return;
     }
     // No session_id → this quick action stays out of chat history.
-    final response =
-        await dio.post('/run', data: {'command': 'mac', 'prompt': action});
+    final response = await dio.post(
+      '/run',
+      data: {'command': 'mac', 'prompt': action},
+    );
     final failure = macActionFailure(response.data);
     if (failure != null) {
       await _setMacStatus('Failed — ${failure.replaceFirst('[mac] ', '')}');
@@ -161,10 +163,11 @@ Future<void> refreshCodaurWidget() async {
           .indexOf((a['provider'] ?? '').toString())
           .compareTo(order.indexOf((b['provider'] ?? '').toString())),
     );
-    final visible = providers
-        .where((p) => order.contains(p['provider']))
-        .take(4)
-        .toList();
+    final visible = [
+      for (final provider in order)
+        providers.where((p) => p['provider'] == provider).firstOrNull ??
+            {'provider': provider},
+    ];
     var todayTotal = 0.0;
     for (var i = 0; i < 4; i++) {
       final p = i < visible.length ? visible[i] : <String, dynamic>{};
@@ -175,6 +178,29 @@ Future<void> refreshCodaurWidget() async {
           p['primary_pct'] ??
           (limits != null && limits.isNotEmpty ? limits.first['pct'] : null);
       final provider = (p['provider'] ?? '').toString();
+      final primary = p['primary_pct'] ?? (provider == 'gemini' ? pct : null);
+      await HomeWidget.saveWidgetData<String>(
+        'codaur_primary_label${i + 1}',
+        provider == 'gemini' && p['primary_pct'] == null ? 'Day' : '5h',
+      );
+      final secondary = p['secondary_pct'];
+      final stale = p['quota_stale'] == true;
+      await HomeWidget.saveWidgetData<int>(
+        'codaur_primary_pct${i + 1}',
+        !stale && primary is num ? primary.clamp(0, 100).round() : 0,
+      );
+      await HomeWidget.saveWidgetData<int>(
+        'codaur_secondary_pct${i + 1}',
+        !stale && secondary is num ? secondary.clamp(0, 100).round() : 0,
+      );
+      await HomeWidget.saveWidgetData<bool>(
+        'codaur_has_primary${i + 1}',
+        !stale && primary is num,
+      );
+      await HomeWidget.saveWidgetData<bool>(
+        'codaur_has_secondary${i + 1}',
+        !stale && secondary is num,
+      );
       await HomeWidget.saveWidgetData<String>(
         'codaur_name${i + 1}',
         provider.isEmpty ? '—' : _providerLabel(provider),
@@ -185,11 +211,7 @@ Future<void> refreshCodaurWidget() async {
       );
       await HomeWidget.saveWidgetData<String>(
         'codaur_limit${i + 1}',
-        pct is num
-            ? '${pct.toStringAsFixed(0)}%'
-            : provider == 'qwen'
-            ? 'LOCAL'
-            : '—',
+        widgetQuotaLabel(p),
       );
       await HomeWidget.saveWidgetData<int>(
         'codaur_progress${i + 1}',
@@ -206,14 +228,28 @@ Future<void> refreshCodaurWidget() async {
     );
     await HomeWidget.saveWidgetData<String>(
       'codaur_updated',
-      'SYNC ${_clock()}',
+      'Updated ${_clock()}',
     );
+    await HomeWidget.saveWidgetData<int>(
+      'codaur_updated_epoch',
+      DateTime.now().millisecondsSinceEpoch,
+    );
+    await HomeWidget.saveWidgetData<bool>('codaur_stale', false);
+    await HomeWidget.saveWidgetData<String>('codaur_error', '');
     await HomeWidget.updateWidget(
       name: _codaurWidget,
       androidName: _codaurWidget,
     );
   } catch (_) {
-    /* leave the last glance in place */
+    await HomeWidget.saveWidgetData<bool>('codaur_stale', true);
+    await HomeWidget.saveWidgetData<String>(
+      'codaur_error',
+      'Refresh failed · tap retry',
+    );
+    await HomeWidget.updateWidget(
+      name: _codaurWidget,
+      androidName: _codaurWidget,
+    );
   }
 }
 
@@ -231,4 +267,20 @@ String _humanTokens(dynamic n) {
 String _clock() {
   final t = DateTime.now();
   return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}
+
+/// Keep missing quota distinct from zero and local token activity.
+String widgetQuotaLabel(Map<String, dynamic> provider) {
+  if (provider['provider'] == 'qwen') return 'Local · no quota';
+  if (provider['quota_stale'] == true) return 'Quota unavailable · retry';
+  final primary = provider['primary_pct'];
+  final secondary = provider['secondary_pct'];
+  if (primary is num || secondary is num) {
+    return '5h ${primary is num ? '${primary.round()}%' : '—'} · Week ${secondary is num ? '${secondary.round()}%' : '—'}';
+  }
+  final limits = provider['limits'];
+  if (limits is List && limits.isNotEmpty && limits.first['pct'] is num) {
+    return '${limits.first['label']} ${(limits.first['pct'] as num).round()}%';
+  }
+  return 'Quota unavailable';
 }

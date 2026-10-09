@@ -1,21 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Dense midnight telemetry panel: live usage rows, quota meters, refresh. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center_vertical"
     android:background="@drawable/widget_card_bg"
+    android:orientation="vertical"
     android:padding="8dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingBottom="5dp">
-
+        android:orientation="horizontal">
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -24,42 +20,61 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="CODAUR"
+                android:fontFamily="sans-serif-medium"
+                android:text="Codaur"
                 android:textColor="@color/widget_text"
-                android:textSize="17sp"
-                android:letterSpacing="0.12"
-                android:fontFamily="monospace"
+                android:textSize="16sp"
                 android:textStyle="bold" />
             <TextView
                 android:id="@+id/codaur_summary"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="4 MODELS  ·  LIVE TOKEN DECK"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="Provider usage · refresh to update"
                 android:textColor="@color/widget_text_dim"
-                android:textSize="9sp"
-                android:letterSpacing="0.05"
-                android:fontFamily="monospace"
-                android:maxLines="1" />
+                android:textSize="10sp" />
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/codaur_updated"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text=""
-            android:textColor="@color/widget_accent"
-            android:textSize="9sp"
-            android:fontFamily="monospace"
-            android:paddingEnd="6dp"
-            android:maxLines="1" />
+            android:gravity="end|center_vertical"
+            android:orientation="vertical"
+            android:paddingEnd="4dp">
+            <TextView
+                android:id="@+id/codaur_updated"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:maxLines="1"
+                android:text="Updated —"
+                android:textColor="@color/widget_text_dim"
+                android:textSize="9sp" />
+            <TextView
+                android:id="@+id/codaur_stale_badge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/widget_stale_bg"
+                android:paddingHorizontal="5dp"
+                android:paddingVertical="1dp"
+                android:text="STALE"
+                android:textColor="@color/widget_warn"
+                android:textSize="8sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+
         <ImageView
             android:id="@+id/codaur_refresh"
-            android:layout_width="30dp"
-            android:layout_height="30dp"
-            android:padding="8dp"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="4dp"
             android:background="@drawable/widget_refresh_bg"
-            android:src="@drawable/ic_widget_refresh"
-            android:contentDescription="Refresh usage" />
+            android:contentDescription="Refresh Codaur usage"
+            android:padding="10dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_widget_refresh" />
     </LinearLayout>
 
     <include layout="@layout/widget_usage_row_codex" />

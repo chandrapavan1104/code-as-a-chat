@@ -1,23 +1,101 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent" android:layout_height="31dp"
-    android:layout_marginBottom="2dp" android:paddingHorizontal="8dp"
+    android:layout_width="match_parent"
+    android:layout_height="44dp"
+    android:layout_marginTop="3dp"
     android:background="@drawable/widget_provider_row_bg"
-    android:orientation="horizontal" android:gravity="center_vertical">
-    <ImageView
-        android:layout_width="6dp"
-        android:layout_height="6dp"
-        android:contentDescription="@null"
-        android:src="@drawable/widget_dot_codex" />
-    <TextView android:id="@+id/codaur_name1" android:layout_width="56dp" android:layout_height="wrap_content"
-        android:layout_marginStart="7dp" android:text="CODEX" android:textColor="@color/widget_text"
-        android:textSize="11sp" android:fontFamily="monospace" android:textStyle="bold" />
-    <TextView android:id="@+id/codaur_tokens1" android:layout_width="0dp" android:layout_height="wrap_content"
-        android:layout_weight="1" android:text="—" android:textColor="@color/widget_text_dim" android:textSize="10sp" />
-    <ProgressBar android:id="@+id/codaur_progress1" style="?android:attr/progressBarStyleHorizontal"
-        android:layout_width="50dp" android:layout_height="4dp" android:max="100" android:progress="0"
-        android:progressTint="@color/widget_codex" android:progressBackgroundTint="@color/widget_surface_alt" />
-    <TextView android:id="@+id/codaur_limit1" android:layout_width="38dp" android:layout_height="wrap_content"
-        android:gravity="end" android:text="—" android:textColor="@color/widget_codex" android:textSize="10sp"
-        android:fontFamily="monospace" android:textStyle="bold" />
+    android:orientation="vertical"
+    android:paddingHorizontal="7dp"
+    android:paddingVertical="4dp">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="16dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <ImageView
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:contentDescription="@null"
+            android:src="@drawable/widget_dot_codex" />
+        <TextView
+            android:id="@+id/codaur_name1"
+            android:layout_width="58dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:text="Codex"
+            android:textColor="@color/widget_text"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+        <TextView
+            android:id="@+id/codaur_tokens1"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:gravity="end"
+            android:maxLines="1"
+            android:text="Tokens today —"
+            android:textColor="@color/widget_text_dim"
+            android:textSize="9sp" />
+    </LinearLayout>
+    <LinearLayout
+        android:id="@+id/codaur_windows1"
+        android:layout_width="match_parent"
+        android:layout_height="16dp"
+        android:layout_marginTop="2dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <TextView
+            android:id="@+id/codaur_primary_label1"
+            android:layout_width="42dp"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="5h —"
+            android:textColor="@color/widget_codex"
+            android:textSize="9sp"
+            android:textStyle="bold" />
+        <ProgressBar
+            android:id="@+id/codaur_primary_progress1"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="0dp"
+            android:layout_height="4dp"
+            android:layout_weight="1"
+            android:max="100"
+            android:progress="0"
+            android:progressBackgroundTint="@color/widget_surface_alt"
+            android:progressTint="@color/widget_codex" />
+        <TextView
+            android:id="@+id/codaur_secondary_label1"
+            android:layout_width="48dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="5dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="Week —"
+            android:textColor="@color/widget_codex"
+            android:textSize="9sp"
+            android:textStyle="bold" />
+        <ProgressBar
+            android:id="@+id/codaur_secondary_progress1"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="0dp"
+            android:layout_height="4dp"
+            android:layout_weight="1"
+            android:max="100"
+            android:progress="0"
+            android:progressBackgroundTint="@color/widget_surface_alt"
+            android:progressTint="@color/widget_codex" />
+    </LinearLayout>
+    <TextView
+        android:id="@+id/codaur_local1"
+        android:layout_width="match_parent"
+        android:layout_height="16dp"
+        android:gravity="center_vertical"
+        android:text="LOCAL · no subscription quota"
+        android:textColor="@color/widget_qwen"
+        android:textSize="9sp"
+        android:visibility="gone" />
 </LinearLayout>

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="widget_actions_desc">Mac Mini remote: lock, wake, ask Gajala, or capture a brain dump.</string>
-    <string name="widget_codaur_desc">Live Codaur tokens and quota meters for Codex, Claude, Gemini, and local Qwen.</string>
+    <string name="widget_actions_desc">Mac Mini remote actions: lock, wake, ask Gajala, or capture a brain dump.</string>
+    <string name="widget_codaur_desc">Codaur token activity and separate five-hour and weekly subscription quota windows for Codex, Claude, and Gemini. Qwen is local.</string>
     <string name="youtube_music_control_description">Lets Gajala search YouTube Music and select a matching song only when you ask it to play music. It rejects results labelled as ads or sponsored content and cannot inspect or control other apps.</string>
 </resources>

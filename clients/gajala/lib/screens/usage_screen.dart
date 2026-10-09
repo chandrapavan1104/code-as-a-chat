@@ -162,6 +162,22 @@ class _ProviderCard extends StatelessWidget {
                 ],
               ],
             ),
+            if (p['quota_error'] != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  p['quota_error'].toString(),
+                  style: TextStyle(color: context.pal.textDim, fontSize: 12),
+                ),
+              ),
+            if (p['quota_updated_at'] is num)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'Quota checked ${DateTime.fromMillisecondsSinceEpoch(((p['quota_updated_at'] as num) * 1000).round()).toLocal().toString().substring(0, 16)}',
+                  style: TextStyle(color: context.pal.textDim, fontSize: 11),
+                ),
+              ),
             const SizedBox(height: 10),
             for (int i = 0; i < limits.length; i++) ...[
               if (i > 0) const SizedBox(height: 8),
