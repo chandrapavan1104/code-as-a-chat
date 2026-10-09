@@ -12,7 +12,8 @@ from pathlib import Path
 
 @pytest.fixture(autouse=True)
 def isolate_agent_run_traces(tmp_path, monkeypatch):
-    from server import config
+    from server import config, claude_quota
+    monkeypatch.setattr(claude_quota, "refresh", lambda cwd: None)
     from server import brain_health
     monkeypatch.setattr(brain_health, "_failures", {})
     monkeypatch.setattr(config, "JEV_ENABLED", False)

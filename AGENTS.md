@@ -59,6 +59,21 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Widgets and Claude quota refresh (October 9).** Codaur's home-screen widget
+separates token activity from 5-hour/weekly quota meters, shows unavailable values
+and refresh failures explicitly, and includes relative update age. Mac controls
+use a compact labeled 2x2 layout. Claude's old statusLine-only snapshot stopped
+updating during headless runs; the server now refreshes through a bounded native
+Claude `/usage` terminal without sending model prompts or reading credentials.
+Only rounded native quota percentages, available reset times and capture time
+are saved. Refreshes coalesce for five minutes; stale capture values are hidden,
+and trust/login/CLI failures are visible. The Codaur app shows quota freshness.
+The terminal parser is pyte; deployment requires the updated requirements.
+Native quota refresh and both resulting API windows verified on the Mac.
+Validation: 315 server tests and 158 Flutter tests pass; changed Dart analysis
+is clean. Signed Android build 1791564026 compiles the Kotlin/resources.
+Physical-phone launcher appearance remains an acceptance check.
+
 **Native Library controls (October 8).** Library uses compact grouped cards with
 48-pixel icon rows and intentional ordering. Ports has filtering, process details
 and confirmed SIGTERM with live listener/PID revalidation. Reminders supports
@@ -455,6 +470,12 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-09 — **Redesigned widgets and repaired Claude quotas.** Added separate
+  quota meters, unknown/stale states, update age and clearer Mac action tiles.
+  Replaced dependence on old interactive statusLine captures with bounded native
+  `/usage` refresh, preserving login credentials and avoiding model prompts.
+  Added capture freshness, failure throttling, reset expiry and widget label
+  regressions; native refresh and Codaur 5-hour/weekly output verified.
 - 2026-10-08 — **Compact Library and skill-specific controls.** Replaced roomy
   Library rows and generic chat fallbacks with native Ports/Files/Sessions,
   a full reminder editor, and explicit command/task forms. Added authenticated

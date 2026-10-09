@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from server import config as cfg
-from server import fcm, workspace
+from server import fcm, workspace, claude_quota
 from server.db import notes_store, diary_store, reminders_store
 from server.db import devices_store
 from server.db import store as memory
@@ -666,9 +666,14 @@ def _limit_is_current(limit: dict) -> bool:
     if resets_at is None:
         return True
     try:
-        return float(resets_at) > time.time()
-    except (TypeError, ValueError):
-        return True
+        try:
+            stamp = float(resets_at)
+        except (TypeError, ValueError):
+            from datetime import datetime
+            stamp = datetime.fromisoformat(str(resets_at).replace('Z', '+00:00')).timestamp()
+        return stamp > time.time()
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _rate_pcts(rep: dict) -> tuple:
@@ -778,6 +783,7 @@ def _codaur_report() -> dict:
         if cached and now - cached[0] <= _CODAUR_CACHE_SECONDS:
             return cached[1]
         try:
+            claude_quota.refresh(str(cfg.REPO_DIR))
             result = subprocess.run(
                 ["codaur", "--provider", "all", "--json"],
                 capture_output=True, text=True, timeout=60,
@@ -824,8 +830,12 @@ def usage(response: Response):
             continue
         snap = rep.get("latestRateLimitSnapshot") or {}
         totals = rep.get("totals") or {}
+        quota_meta = claude_quota.metadata() if provider == 'claude' else {}
+        if quota_meta.get('quota_stale'):
+            rep = {**rep, 'limitUsage': [], 'latestRateLimitSnapshot': {}}
         primary_pct, secondary_pct = _rate_pcts(rep)
         providers.append({
+            **quota_meta,
             "provider": provider,
             # Native plan (codex) if present, else the codaur-configured plan.
             "plan": ("Local" if provider == "qwen" else
