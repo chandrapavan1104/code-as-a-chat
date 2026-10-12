@@ -493,3 +493,13 @@ def test_garage_ack_does_not_repeat_when_final_position_unverified(monkeypatch):
     result=asyncio.run(home_control.perform(home_control.HomeAction(action='garage',target='garage',state=True),garage_confirmed=True))
     assert result.status=='unverified'
     assert len(calls)==1
+
+
+def test_explicit_read_only_user_request_cannot_become_mutation(monkeypatch):
+    from server.skills.home import HomeSkill
+    async def never(*args,**kwargs):
+        raise AssertionError('No home request may execute')
+    monkeypatch.setattr(home_control,'perform',never)
+    result=asyncio.run(HomeSkill().run('switch "Br3 Light" on',source_prompt='Read-only: list the home lights. Do not change devices.'))
+    assert result.status=='blocked'
+    assert 'read-only' in result.message

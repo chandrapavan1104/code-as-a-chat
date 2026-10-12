@@ -36,7 +36,7 @@ thermostat fields only from reports newer than the acknowledged command. Stale
 panel state blocks commands. Unreachable switches, partial room changes and
 uncertain transport outcomes stay visible; multi-device work is bounded.
 
-Validation: 340 server tests, 172 Flutter tests and 3 simulated Z-Wave observation
+Validation: 341 server tests, 173 Flutter tests and 3 simulated Z-Wave observation
 tests pass. The Home screen analyzes cleanly. Live GETs verified 48 switches,
 42 with confirmed reads, two thermostats and one garage without sending any
 physical test command. Physical-phone and hardware action acceptance remain:

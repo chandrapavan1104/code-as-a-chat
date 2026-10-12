@@ -174,7 +174,7 @@ LocalIntent? parseLocalIntent(String utterance, {DateTime? now}) {
   if (google != null) return AskGoogle(google.group(1)!.trim());
 
   // Household commands belong to Gogon; "open garage" is not an app launch.
-  if (RegExp(r'^(?:please )?(?:open|close|shut|turn|switch|dim|set|raise|lower)\b.*\b(?:garage|thermostat|lights?|fans?)\b').hasMatch(t)) {
+  if (isHomeControlRequest(t)) {
     return null;
   }
 
@@ -386,3 +386,9 @@ String speakable(String reply, {int maxChars = 600}) {
   final head = end > maxChars ~/ 3 ? cut.substring(0, end + 1) : '$cut…';
   return '$head The rest is in the chat.';
 }
+
+
+/// Physical home commands cannot be fulfilled by the offline text model.
+bool isHomeControlRequest(String utterance) => RegExp(
+  r'^(?:please )?(?:open|close|shut|turn|switch|dim|set|raise|lower)\b.*\b(?:garage|thermostat|lights?|fans?)\b',
+).hasMatch(_normalize(utterance));

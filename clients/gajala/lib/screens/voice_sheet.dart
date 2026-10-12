@@ -368,6 +368,11 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
       );
     }
 
+    if (isHomeControlRequest(heard)) {
+      return _Exchange(heard,
+        "I can't reach your Mac to control the home. No home action was sent.",
+        'Offline');
+    }
     final brain = OfflineBrain.instance;
     if (!await brain.isInstalled()) {
       return _Exchange(

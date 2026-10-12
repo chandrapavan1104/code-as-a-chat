@@ -25,6 +25,14 @@ void main() {
     }
   });
 
+  test('Offline model cannot fulfill home commands', () {
+    expect(isHomeControlRequest('Open the garage door'), isTrue);
+    expect(isHomeControlRequest('Turn off kitchen lights'), isTrue);
+    expect(isHomeControlRequest('Play garage rock'), isFalse);
+    expect(isHomeControlRequest('Open GarageBand'), isFalse);
+    expect(isHomeControlRequest('Turn on flashlight'), isFalse);
+  });
+
   group('alarms', () {
     test('explicit am/pm', () {
       expect(parseLocalIntent('Set an alarm for 7:30 a.m.', now: evening), const SetAlarm(7, 30));

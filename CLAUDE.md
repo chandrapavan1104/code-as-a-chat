@@ -68,10 +68,12 @@ execute in Gogon in local time, with deterministic equivalent-schedule IDs.
 Garage movement requires fresh on-phone physical-presence confirmation; direct
 UI tickets expire after 30 seconds and are consumed before execution. Final
 position requires a newer door-sensor report, otherwise it remains unverified.
-No alarm arm/disarm, sensor bypass or door locks are exposed. Gogon now reports
+Offline voice home commands report no action sent instead of using the text
+model to invent completion. No alarm arm/disarm, sensor bypass or door locks
+are exposed. Gogon now reports
 actual read timestamps separately from optimistic command acknowledgement.
 Stale panel data blocks commands; unknown/unreachable/partial results stay visible.
-340 server, 172 Flutter and 3 simulated driver tests pass; Home analysis is clean.
+341 server, 173 Flutter and 3 simulated driver tests pass; Home analysis is clean.
 Live catalogs and read provenance verified; physical actions were not exercised.
 Usage and phone acceptance steps: `docs/gogon-home-integration.md`.
 
@@ -490,7 +492,7 @@ paths, git branch and remote, and a failed switch fails loudly.
   controls, lighting schedules and guarded garage approvals over the existing
   local service. Added actual device-read provenance to Gogon, conservative
   completion states, stale/unknown handling and a household voice-routing guard.
-  340 server/172 Flutter/3 driver tests pass; read-only live catalogs verified.
+  341 server/173 Flutter/3 driver tests pass; read-only live catalogs verified.
 - 2026-10-09 — **Redesigned widgets and repaired Claude quotas.** Added separate
   quota meters, unknown/stale states, update age and clearer Mac action tiles.
   Replaced dependence on old interactive statusLine captures with bounded native
