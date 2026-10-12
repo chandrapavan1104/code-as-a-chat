@@ -5,6 +5,7 @@ import '../core/api.dart';
 import '../core/state.dart';
 import 'dashboard_screen.dart';
 import 'settings_screen.dart';
+import 'home_screen.dart';
 
 /// A stable home for saved information and less frequent controls.
 class LibraryScreen extends ConsumerWidget {
@@ -78,6 +79,30 @@ class LibraryScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
+              if (group.key == 'Devices and system') ...[
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(0, 12, 0, 6),
+                  child: Text(
+                    'Home',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                  ),
+                ),
+                Card(
+                  margin: EdgeInsets.zero,
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    dense: true,
+                    minTileHeight: 48,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                    leading: const Icon(Icons.home_outlined, size: 20),
+                    title: const Text('Home'),
+                    trailing: const Icon(Icons.chevron_right, size: 20),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => homeScreenRoute()),
+                    ),
+                  ),
+                ),
+              ],
             ],
             ListTile(
               leading: const Icon(Icons.dashboard_outlined),
@@ -115,6 +140,7 @@ class LibraryScreen extends ConsumerWidget {
       'ports' => Icons.lan_outlined,
       'mac' => Icons.desktop_mac_outlined,
       'usage' => Icons.bar_chart,
+      'home' => Icons.home_outlined,
       _ => Icons.memory_outlined,
     }, size: 20),
     title: Text(switch (skill.name) {

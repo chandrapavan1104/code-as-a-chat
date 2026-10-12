@@ -14,6 +14,10 @@ void main() {
       'search my notes for passwords policy',
       'switch to the deaf terminal project',
       'lock the mac',
+      'open the garage door',
+      'close garage',
+      'turn off bedroom lights',
+      'set the thermostat to 74',
       'how are you today',
       '',
     ]) {

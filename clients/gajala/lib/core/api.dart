@@ -446,6 +446,34 @@ class GajalaApi {
   Future<Map<String, dynamic>> voiceModelInfo() async =>
       Map<String, dynamic>.from((await _dio.get('/api/voice/model')).data);
 
+  /// Read the current home-device inventory and connectivity status.
+  Future<Map<String, dynamic>> homeStatus() async =>
+      Map<String, dynamic>.from((await _dio.get('/api/home')).data);
+
+  /// Send one explicit switch, climate, or all-off action.
+  Future<Map<String, dynamic>> homeAction(Map<String, dynamic> action) async =>
+      Map<String, dynamic>.from(
+        (await _dio.post('/api/home/action', data: action)).data,
+      );
+
+  Future<Map<String, dynamic>> requestGarageAction({
+    required String target,
+    required bool open,
+  }) async => Map<String, dynamic>.from(
+    (await _dio.post(
+      '/api/home/garage/request',
+      data: {'target': target, 'open': open},
+    )).data,
+  );
+
+  Future<Map<String, dynamic>> confirmGarageAction(String token) async =>
+      Map<String, dynamic>.from(
+        (await _dio.post(
+          '/api/home/garage/confirm',
+          data: {'token': token, 'present': true},
+        )).data,
+      );
+
   String get voiceModelUrl => '${_dio.options.baseUrl}/api/voice/model/file';
 
   /// Absolute URL the app uses to fetch a server-side image path.

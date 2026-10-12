@@ -30,10 +30,11 @@ from server.media import ensure_uploads_dir, is_served_path
 from server.work_orders import WorkOrderSpec
 
 router = APIRouter(prefix="/api", tags=["app"])
-from server import ports_api, reminders_api, library_api
+from server import ports_api, reminders_api, library_api, home_api
 router.include_router(ports_api.router)
 router.include_router(reminders_api.router)
 router.include_router(library_api.router)
+router.include_router(home_api.router)
 
 # Cap an inbound image upload. Phone screenshots/photos are a few MB; 25 MB is
 # generous headroom without inviting abuse.
