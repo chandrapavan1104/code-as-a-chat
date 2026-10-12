@@ -1,5 +1,6 @@
 """The home's device catalog resolves targets; phone confirmations guard garage movement."""
 import json
+import re
 import shlex
 from pydantic import ValidationError
 from server import home_control, phone_bridge
@@ -61,6 +62,10 @@ therefore connected/Ready does not mean the house is protected.'''
             body=parse(prompt)
         except (ValueError,ValidationError) as exc:
             return SkillResult('blocked',str(exc))
+        source=kwargs.get('source_prompt') or ''
+        if body.action not in ('status','list','history','automations') and re.search(
+                r'\bread[- ]only\b|\b(?:do not|don\'t|without)\b.{0,100}\b(?:change|operate|control|move)\b',source,re.I):
+            return SkillResult('blocked','The owner requested read-only home access; no command was sent')
         if body.action=='garage':
             try:
                 await home_control.require_online()
