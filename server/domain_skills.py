@@ -12,6 +12,10 @@ class DomainSkill:
     version: int = 1
 
 SKILLS = (
+    DomainSkill('home', ('lights','light','fan','fans','thermostat','garage','dimmer','gogon','house'),
+        'Retrieve the actual home catalog; resolve exact room/device and clarify ambiguity. Use home service, not phone intents. Garage requires fresh on-phone presence confirmation.',
+        'Actual device read confirms the requested state; an acknowledgement, stale cache or a moving garage is not completion. No locks/alarm/bypass.',
+        ('home',)),
     DomainSkill('research', ('research', 'compare', 'providers', 'sources'),
         'Resolve the report/question and constraints. Refresh current evidence. Delegate long public research as a durable job.',
         'A sourced report is saved as a reply; accepted/running is not completed.',

@@ -21,6 +21,7 @@ import 'files_screen.dart';
 import 'sessions_screen.dart';
 import 'skill_action_screen.dart';
 import 'tasks_screen.dart';
+import 'home_screen.dart';
 
 // Display-label overrides for skill tiles (the screen behind is unchanged).
 final _updateRefreshProvider = StateProvider<int>((ref) => 0);
@@ -344,6 +345,8 @@ class UpdateBannerState extends ConsumerState<UpdateBanner>
 /// Native controls for structured skills; task forms for command-driven skills.
 Widget screenForSkill(Skill s) {
   switch (s.name) {
+    case 'home':
+      return homeScreenRoute();
     case 'notes':
       return const NotesScreen();
     case 'sysmon':

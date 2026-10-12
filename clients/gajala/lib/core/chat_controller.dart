@@ -19,6 +19,7 @@ import 'models.dart';
 import 'outbox.dart';
 import 'device_actions.dart';
 import 'phone_abilities.dart';
+import 'home_confirmation.dart';
 import 'state.dart';
 import 'voice_journal.dart';
 
@@ -261,7 +262,9 @@ class ChatController extends StateNotifier<ChatState> {
     final command = ev['command']?.toString() ?? '';
     if (id == null) return;
     final args = Map<String, dynamic>.from((ev['args'] as Map?) ?? const {});
-    final result = await (turnPhone ?? _phone)(command, args, api);
+    final result = command == 'home.confirm'
+        ? await confirmHomePhoneRequest(args)
+        : await (turnPhone ?? _phone)(command, args, api);
     final ability = PhoneAbilities.instance.byId(command);
     if (mounted) {
       final done = (result['data'] as Map?)?['done']?.toString();
@@ -275,6 +278,8 @@ class ChatController extends StateNotifier<ChatState> {
                   : ability?.chatNote ?? 'Shared $command with Gajala')
             : command.startsWith('action.')
             ? '📱 Could not do that on the phone: ${result['error']}'
+            : command == 'home.confirm'
+            ? 'Home action confirmation: ${result['error'] ?? 'not confirmed'}'
             : 'Gajala asked for ${ability?.title.toLowerCase() ?? command}: '
                   '${result['error']}',
       );
@@ -645,7 +650,7 @@ class ChatController extends StateNotifier<ChatState> {
       final fresh = history
           .where(
             (m) =>
-                (m.localRequestId?.startsWith('research-result:') == true ||
+                 (m.localRequestId?.startsWith('research-result:') == true ||
                  m.localRequestId?.startsWith('queue-result:') == true) &&
                 !seen.contains(m.localRequestId),
           )

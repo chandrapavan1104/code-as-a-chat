@@ -173,6 +173,11 @@ LocalIntent? parseLocalIntent(String utterance, {DateTime? now}) {
   final google = RegExp(r'^(?:ask|hey|ok|okay) google[, ]+(.+)$').firstMatch(t);
   if (google != null) return AskGoogle(google.group(1)!.trim());
 
+  // Household commands belong to Gogon; "open garage" is not an app launch.
+  if (RegExp(r'^(?:please )?(?:open|close|shut|turn|switch|dim|set|raise|lower)\b.*\b(?:garage|thermostat|lights?|fans?)\b').hasMatch(t)) {
+    return null;
+  }
+
   final play = RegExp(
     r'^(?:play|put on|listen to)\s+(.+?)(?:\s+on\s+(spotify|youtube music|yt music|youtube))?$',
   ).firstMatch(t);
