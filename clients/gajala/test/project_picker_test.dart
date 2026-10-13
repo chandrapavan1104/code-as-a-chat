@@ -25,6 +25,12 @@ class PickerApi extends GajalaApi {
   Future<Map<String, dynamic>> model({bool refresh = false, bool includeCatalog = true}) => includeCatalog ? catalog.future : Future.value({'engine': 'auto'});
   @override
   Future<Map<String, dynamic>> activeSessions() => sessions.future;
+  String? pinned;
+  @override
+  Future<Map<String, dynamic>> setEngineModel(String engine, String model) async {
+    pinned = model;
+    return {engine: model};
+  }
   @override
   Future<String> switchProject(String name) async {
     if (failSwitch) throw StateError('offline');
@@ -55,6 +61,15 @@ Future<void> openPicker(WidgetTester tester, PickerApi api,
   await tester.pumpAndSettle();
 }
 
+/// Open the Project dropdown and tap [name] in its menu.
+Future<void> pickProject(WidgetTester tester, String name) async {
+  await tester.tap(find.byWidgetPredicate((w) =>
+      w.key is ValueKey<String> &&
+      (w.key as ValueKey<String>).value.startsWith('project-')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(name).last);
+}
+
 void main() {
   testWidgets('explicit project selection replaces chat history and persists on reopen', (tester) async {
     FlutterSecureStorage.setMockInitialValues({
@@ -76,7 +91,7 @@ void main() {
     expect(find.text('Original conversation history'), findsOneWidget);
     await tester.tap(find.text('Gajala'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('beta'));
+    await pickProject(tester, 'beta');
     await tester.pumpAndSettle();
     expect(find.text('Beta project history'), findsOneWidget);
     expect(find.text('Original conversation history'), findsNothing);
@@ -95,10 +110,13 @@ void main() {
   testWidgets('projects load while catalog and sessions remain pending', (tester) async {
     final api = PickerApi();
     await openPicker(tester, api, (_, _) async {});
-    expect(find.text('beta'), findsOneWidget);
+    expect(find.text('alpha'), findsOneWidget);
     expect(find.text('No projects found.'), findsNothing);
-    expect(tester.getTopLeft(find.text('beta')).dy,
-        lessThan(tester.getTopLeft(find.text('CODING ENGINE')).dy));
+    expect(tester.getTopLeft(find.text('Project')).dy,
+        lessThan(tester.getTopLeft(find.text('Coding engine')).dy));
+    await pickProject(tester, 'beta');
+    await tester.pump();
+    expect(api.switched, 'beta');
     expect(tester.takeException(), isNull);
   });
 
@@ -107,7 +125,7 @@ void main() {
     final opened = Completer<void>();
     String? chat;
     await openPicker(tester, api, (dir, _) async { chat = dir; await opened.future; });
-    await tester.tap(find.text('beta'));
+    await pickProject(tester, 'beta');
     await tester.pump();
     expect(api.switched, 'beta');
     expect(chat, 'beta');
@@ -125,18 +143,19 @@ void main() {
     api.failProjects = false;
     await tester.tap(find.text('Retry projects'));
     await tester.pumpAndSettle();
-    expect(find.text('beta'), findsOneWidget);
+    expect(find.text('alpha'), findsOneWidget);
   });
 
   testWidgets('a switch failure stays visible and can be retried', (tester) async {
     final api = PickerApi()..failSwitch = true;
     await openPicker(tester, api, (_, _) async {});
-    await tester.tap(find.text('beta'));
+    await pickProject(tester, 'beta');
     await tester.pump();
     expect(find.text('Could not switch project. Please retry.'), findsOneWidget);
     expect(find.byType(ChatContextSheet), findsOneWidget);
     api.failSwitch = false;
-    await tester.tap(find.text('beta'));
+    await tester.pumpAndSettle();
+    await pickProject(tester, 'beta');
     await tester.pumpAndSettle();
     expect(api.switched, 'beta');
     expect(find.byType(ChatContextSheet), findsNothing);
@@ -146,7 +165,7 @@ void main() {
     final api = PickerApi();
     String? selected;
     await openPicker(tester, api, (dir, _) async { selected = dir; });
-    await tester.tap(find.text('alpha'));
+    await pickProject(tester, 'alpha');
     await tester.pumpAndSettle();
     expect(selected, 'alpha');
     expect(find.byType(ChatContextSheet), findsNothing);
@@ -211,5 +230,33 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pumpAndSettle();
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('a pinned engine shows model and backup dropdowns from the catalog', (tester) async {
+    final api = PickerApi();
+    api.catalog.complete({
+      'engine': 'claude',
+      'options': ['auto', 'claude', 'codex'],
+      'models': {'claude': ''},
+      'backup_models': {'claude': ''},
+      'presets': {'claude': ['opus', 'sonnet']},
+      'catalogs': {'claude': {'source': 'cli', 'models': [
+        {'id': 'opus', 'resolved_model': 'claude-opus-5-5'},
+        {'id': 'sonnet', 'resolved_model': 'claude-sonnet-5-5'},
+      ]}},
+    });
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: ChatContextSheet(
+      api: api, currentDir: 'alpha', currentModel: 'claude',
+      onChanged: (_, _) async {}))));
+    await tester.pumpAndSettle();
+    expect(find.text('Claude model'), findsOneWidget);
+    expect(find.text('Backup if it fails'), findsOneWidget);
+    expect(find.text('Default'), findsOneWidget);
+    await tester.tap(find.text('Default'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('claude-opus-5-5').last);
+    await tester.pumpAndSettle();
+    expect(api.pinned, 'opus');
+    expect(find.text('claude-opus-5-5'), findsOneWidget);
   });
 }

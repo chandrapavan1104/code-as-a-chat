@@ -515,6 +515,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-12 — **Simpler chat settings sheet.** The project/model sheet's long
+  project list and rows of engine/model/backup chips are now four labelled
+  dropdowns (Project, Coding engine, model with inline refresh, backup), plus a
+  collapsed "Continue on Mac". Routing/catalog prose removed; only stale or
+  failed catalog states are shown. 9 picker widget tests, 182 Flutter tests pass.
 - 2026-10-12 — **Chats follow project switches everywhere.** Library → Projects
   only moved the server, so the Chats tab kept showing the old project's thread;
   resume compared the server default with the open chat, and because agent
