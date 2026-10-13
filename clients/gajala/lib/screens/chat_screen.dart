@@ -1458,7 +1458,6 @@ class ChatContextSheetState extends State<ChatContextSheet> {
       {}; // engine → pinned model ('' = default)
   Map<String, String> _engineBackups = {}; // engine → backup model ('' = none)
   Map<String, dynamic> _catalogs = {};
-  Map<String, dynamic> _routing = {};
   String? _catalogError;
   Map<String, List<String>> _presets = {}; // engine → selectable models
   List<String> _engines = const ['auto', 'claude', 'codex', 'gemini', 'qwen'];
@@ -1526,7 +1525,6 @@ class ChatContextSheetState extends State<ChatContextSheet> {
             _engines;
         _catalogError = null;
         _catalogs = Map<String, dynamic>.from(mdl['catalogs'] ?? {});
-        _routing = Map<String, dynamic>.from(mdl['routing'] ?? {});
         _presets =
             (mdl['presets'] as Map?)?.map(
               (k, v) =>
@@ -1625,6 +1623,12 @@ class ChatContextSheetState extends State<ChatContextSheet> {
   Widget build(BuildContext context) {
     final pal = context.pal;
     final resumable = _sessions.where((s) => s['resume_cmd'] != null).toList();
+    final engineLabel = _ChatScreenState._modelLabel(_model);
+    final catalog = _catalogs[_model] is Map ? _catalogs[_model] as Map : null;
+    final status = _catalogError ??
+        (catalog?['stale'] == true
+            ? (catalog?['error'] ?? 'Model list may be out of date.').toString()
+            : null);
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.only(
@@ -1635,7 +1639,7 @@ class ChatContextSheetState extends State<ChatContextSheet> {
         ),
         child: SingleChildScrollView(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
               Center(
@@ -1649,215 +1653,91 @@ class ChatContextSheetState extends State<ChatContextSheet> {
                   ),
                 ),
               ),
-              _sectionLabel(context, 'DIRECTORY'),
-              const SizedBox(height: 4),
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.35,
-                ),
-                child: _projectsLoading
-                    ? const Padding(padding: EdgeInsets.all(12), child: Text('Loading projects…'))
-                    : _projectsError != null
-                    ? Column(children: [Text(_projectsError!), TextButton(onPressed: _loadProjects, child: const Text('Retry projects'))])
-                    : _projects.isEmpty
-                    ? Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Text(
-                          'No projects found.',
-                          style: TextStyle(color: pal.textDim),
-                        ),
-                      )
-                    : ListView(
-                        shrinkWrap: true,
-                        children: _projects.map((p) {
-                          final name = p['name']?.toString() ?? '';
-                          final active = name == _dir;
-                          return ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: Icon(
-                              active ? Icons.folder : Icons.folder_outlined,
-                              color: active ? GajalaColors.accent : pal.textDim,
-                              size: 20,
-                            ),
-                            title: Text(name),
-                            trailing: active
-                                ? const Icon(
-                                    Icons.check,
-                                    color: GajalaColors.accent,
-                                    size: 18,
-                                  )
-                                : null,
-                            onTap: _busy ? null : () => _switchDir(name),
-                          );
-                        }).toList(),
-                      ),
+              _projectField(pal),
+              const SizedBox(height: 14),
+              _dropdown<String>(
+                key: 'engine-$_model',
+                label: 'Coding engine',
+                value: _model,
+                items: {
+                  for (final e in _engines) e: _ChatScreenState._modelLabel(e),
+                },
+                onChanged: _pinModel,
+                helper: _model == 'auto' ? 'Gajala picks per request' : null,
               ),
-              const SizedBox(height: 16),
-              _sectionLabel(context, 'CODING ENGINE'),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _engines.map((e) {
-                  final on = e == _model;
-                  return ChoiceChip(
-                    label: Text(_ChatScreenState._modelLabel(e)),
-                    selected: on,
-                    onSelected: _busy ? null : (_) => _pinModel(e),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                _model == 'auto'
-                    ? 'Gajala picks the engine per request.'
-                    : 'Coding runs on ${_ChatScreenState._modelLabel(_model)} unless you name another.',
-                style: TextStyle(fontSize: 11.5, color: pal.textDim),
-              ),
-              Text(
-                'Everyday chat: ${_routing['primary'] ?? 'server default'}. '
-                'API backup: ${_routing['openai_backup'] ?? 'server default'}.',
-                style: TextStyle(fontSize: 11.5, color: pal.textDim),
-              ),
-              TextButton.icon(
-                onPressed: _modelsLoading ? null : () => _loadModels(refresh: true),
-                icon: const Icon(Icons.refresh, size: 16),
-                label: Text(_modelsLoading ? 'Loading models…' : 'Refresh model choices'),
-              ),
-              if (_catalogError != null)
-                Text(_catalogError!, style: TextStyle(color: pal.textDim)),
-              if (_catalogs[_model] is Map) ...[
-                Text(
-                  (_catalogs[_model]['stale'] == true)
-                      ? (_catalogs[_model]['error'] ?? 'Model catalog is stale').toString()
-                      : 'Choices from ${_catalogs[_model]['source']}. Refreshes every 15 minutes when opened.',
-                  style: TextStyle(fontSize: 11.5, color: pal.textDim),
-                ),
-                if ((_engineModels[_model] ?? '').isNotEmpty &&
-                    !(_presets[_model]?.contains(_engineModels[_model]) ?? false))
-                  Text('Saved model: ${_engineModels[_model]} (absent from current catalog)',
-                      style: TextStyle(fontSize: 11.5, color: pal.textDim)),
-              ],
-              // Per-engine model picker — only meaningful once an engine is pinned.
               if (_model != 'auto') ...[
-                const SizedBox(height: 16),
-                _sectionLabel(
-                  context,
-                  '${_ChatScreenState._modelLabel(_model).toUpperCase()} MODEL',
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                const SizedBox(height: 14),
+                Row(
                   children: [
-                    for (final m in ['default', ...?_presets[_model]])
-                      Builder(
-                        builder: (_) {
-                          final cur = _engineModels[_model] ?? '';
-                          final on = m == 'default' ? cur.isEmpty : cur == m;
-                          return ChoiceChip(
-                            label: Text(_catalogLabel(m)),
-                            selected: on,
-                            onSelected: _busy
-                                ? null
-                                : (_) => _pinEngineModel(
-                                    _model,
-                                    m == 'default' ? '' : m,
-                                  ),
-                          );
-                        },
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  (_engineModels[_model] ?? '').isEmpty
-                      ? 'Using the CLI default model.'
-                      : '${_ChatScreenState._modelLabel(_model)} → ${_engineModels[_model]}',
-                  style: TextStyle(fontSize: 11.5, color: pal.textDim),
-                ),
-                const SizedBox(height: 16),
-                _sectionLabel(context, 'BACKUP MODEL (IF PRIMARY FAILS)'),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final m in ['none', ...?_presets[_model]])
-                      Builder(
-                        builder: (_) {
-                          final cur = _engineBackups[_model] ?? '';
-                          final on = m == 'none' ? cur.isEmpty : cur == m;
-                          return ChoiceChip(
-                            label: Text(_catalogLabel(m)),
-                            selected: on,
-                            onSelected: _busy
-                                ? null
-                                : (_) => _pinEngineBackup(
-                                    _model,
-                                    m == 'none' ? '' : m,
-                                  ),
-                          );
-                        },
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  (_engineBackups[_model] ?? '').isEmpty
-                      ? 'No backup — a failed run just errors.'
-                      : 'If ${_engineModels[_model].toString().isEmpty ? "the primary" : _engineModels[_model]} fails, retry on ${_engineBackups[_model]}.',
-                  style: TextStyle(fontSize: 11.5, color: pal.textDim),
-                ),
-              ],
-              if (resumable.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                _sectionLabel(context, 'CONTINUE ON MAC'),
-                const SizedBox(height: 6),
-                for (final s in resumable)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: InkWell(
-                      onTap: () {
-                        Clipboard.setData(
-                          ClipboardData(text: s['resume_cmd'].toString()),
-                        );
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              'Copied ${s['engine']} resume command',
-                            ),
-                          ),
-                        );
-                      },
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: pal.surfaceAlt,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                s['resume_cmd'].toString(),
-                                style: const TextStyle(
-                                  fontFamily: 'monospace',
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            Icon(Icons.copy, size: 16, color: pal.textDim),
-                          ],
-                        ),
+                    Expanded(
+                      child: _dropdown<String>(
+                        key: 'model-$_model-${_engineModels[_model]}',
+                        label: '$engineLabel model',
+                        value: _engineModels[_model] ?? '',
+                        items: _modelChoices(_engineModels[_model], 'Default'),
+                        onChanged: (m) => _pinEngineModel(_model, m),
                       ),
                     ),
-                  ),
+                    IconButton(
+                      tooltip: 'Refresh model list',
+                      onPressed: _modelsLoading
+                          ? null
+                          : () => _loadModels(refresh: true),
+                      icon: _modelsLoading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh, size: 20),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                _dropdown<String>(
+                  key: 'backup-$_model-${_engineBackups[_model]}',
+                  label: 'Backup if it fails',
+                  value: _engineBackups[_model] ?? '',
+                  items: _modelChoices(_engineBackups[_model], 'None'),
+                  onChanged: (m) => _pinEngineBackup(_model, m),
+                ),
               ],
-              const SizedBox(height: 16),
-
+              if (status != null) ...[
+                const SizedBox(height: 8),
+                Text(status, style: TextStyle(fontSize: 11.5, color: pal.textDim)),
+              ],
+              if (resumable.isNotEmpty)
+                Theme(
+                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                  child: ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: EdgeInsets.zero,
+                    title: Text(
+                      'Continue on Mac',
+                      style: TextStyle(fontSize: 13, color: pal.textDim),
+                    ),
+                    children: [
+                      for (final s in resumable)
+                        ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(
+                            s['resume_cmd'].toString(),
+                            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                          ),
+                          trailing: Icon(Icons.copy, size: 16, color: pal.textDim),
+                          onTap: () {
+                            Clipboard.setData(
+                              ClipboardData(text: s['resume_cmd'].toString()),
+                            );
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Copied ${s['engine']} resume command')),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),
@@ -1865,13 +1745,87 @@ class ChatContextSheetState extends State<ChatContextSheet> {
     );
   }
 
-  Widget _sectionLabel(BuildContext context, String t) => Text(
-    t,
-    style: TextStyle(
-      fontSize: 11,
-      fontWeight: FontWeight.w600,
-      letterSpacing: 0.6,
-      color: context.pal.textDim,
-    ),
-  );
+  /// Project dropdown, or its loading / error state. Picking one opens that
+  /// project's chat and closes the sheet.
+  Widget _projectField(Pal pal) {
+    if (_projectsLoading) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text('Loading projects…'),
+      );
+    }
+    if (_projectsError != null) {
+      return Row(
+        children: [
+          Expanded(child: Text(_projectsError!)),
+          TextButton(onPressed: _loadProjects, child: const Text('Retry projects')),
+        ],
+      );
+    }
+    if (_projects.isEmpty) {
+      return Text('No projects found.', style: TextStyle(color: pal.textDim));
+    }
+    final names = [
+      for (final p in _projects)
+        if ((p['name']?.toString() ?? '').isNotEmpty) p['name'].toString(),
+    ];
+    if (_dir != null && !names.contains(_dir)) names.insert(0, _dir!);
+    return _dropdown<String>(
+      key: 'project-$_dir',
+      label: 'Project',
+      value: _dir,
+      items: {for (final n in names) n: n},
+      // Re-picking the current project still opens its chat.
+      onChanged: _switchDir,
+      allowSame: true,
+    );
+  }
+
+  /// Model choices for the selected engine: the first entry ('' = [blank])
+  /// plus the live catalog, keeping a saved model that dropped out of it.
+  Map<String, String> _modelChoices(String? saved, String blank) {
+    final listed = _presets[_model] ?? const <String>[];
+    return {
+      '': blank,
+      for (final m in listed)
+        if (m != 'default' && m != 'none') m: _catalogLabel(m),
+      if (saved != null && saved.isNotEmpty && !listed.contains(saved))
+        saved: '$saved (not in current list)',
+    };
+  }
+
+  Widget _dropdown<T>({
+    required String key,
+    required String label,
+    required T? value,
+    required Map<T, String> items,
+    required Future<void> Function(T) onChanged,
+    String? helper,
+    bool allowSame = false,
+  }) {
+    return DropdownButtonFormField<T>(
+      key: ValueKey(key),
+      initialValue: items.containsKey(value) ? value : null,
+      isExpanded: true,
+      menuMaxHeight: MediaQuery.of(context).size.height * 0.5,
+      decoration: InputDecoration(
+        labelText: label,
+        helperText: helper,
+        border: const OutlineInputBorder(),
+        isDense: true,
+      ),
+      items: [
+        for (final e in items.entries)
+          DropdownMenuItem(
+            value: e.key,
+            child: Text(e.value, overflow: TextOverflow.ellipsis),
+          ),
+      ],
+      onChanged: _busy
+          ? null
+          : (v) {
+              if (v != null && (allowSame || v != value)) onChanged(v);
+            },
+    );
+  }
 }
