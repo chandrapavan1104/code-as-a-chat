@@ -62,6 +62,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   ChatMessage? _replyTarget;
   bool _independentConversation = false;
   String? _conversationProject;
+  // The server's default project as this screen last saw it. Resume follows a
+  // change to it (an explicit switch made on the Mac or Telegram), not a
+  // mismatch: the agent's mid-turn switches never move the default, so
+  // comparing against the open chat dragged you back to the old project.
+  String? _serverProject;
+  StreamSubscription<String>? _projectRequests;
+  String? _pendingProject; // a request that arrived before bootstrap finished
   final Map<int, GlobalKey> _messageKeys = {};
 
   /// The conversation this screen is showing. State lives in the controller so
@@ -95,6 +102,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     super.initState();
     _foreground = widget.active;
     WidgetsBinding.instance.addObserver(this);
+    if (widget.command == 'shell') {
+      _projectRequests = projectChatRequests.stream.listen(_followProjectRequest);
+    }
     _bootstrap();
     if (_foreground) _startResearchPolling();
   }
@@ -141,6 +151,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       try {
         final projects = await api.projects();
         dir = projects['current_name']?.toString();
+        _serverProject = dir;
       } catch (_) { /* retain the saved conversation context */ }
       try {
         final settings = await api.model(includeCatalog: false).timeout(const Duration(seconds: 3));
@@ -192,6 +203,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     await _chat?.ensureLoaded(welcome: _welcome);
     _restoreDraft();
     if (_foreground) unawaited(_chat?.refreshBackgroundResearch());
+    final pending = _pendingProject;
+    _pendingProject = null;
+    if (pending != null && mounted) {
+      await _switchConversation(pending, openProjectChat: true, announce: false);
+    }
+  }
+
+  /// Another screen explicitly opened a project's chat; show it here too.
+  void _followProjectRequest(String dir) {
+    if (!mounted) return;
+    if (_sid == null) {
+      _pendingProject = dir;
+      return;
+    }
+    unawaited(_switchConversation(dir, openProjectChat: true, announce: false));
   }
 
   /// Put back the half-typed message you left in this conversation.
@@ -242,6 +268,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
     if (_foreground) Push.activeSession = sid;
     _conversationProject = name;
+    // Reopening the app must land on the thread we followed, not the old one.
+    unawaited(Storage.setSelectedConversation(sid, name, independent: false));
     await _chat?.ensureLoaded(welcome: _welcome);
     _chat?.setProjectContext(name);
     if (!reload) _chat?.addSystemNote('Switched to $name');
@@ -255,14 +283,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (api == null) return;
     try {
       final proj = await api.projects();
-      await _syncWorkspace(proj['current_name']?.toString(), reload: true);
+      final current = proj['current_name']?.toString();
+      if (current == null || current == _serverProject) return;
+      _serverProject = current;
+      await _syncWorkspace(current, reload: true);
     } catch (_) {
       /* keep showing the current thread */
     }
   }
 
   /// Swap the visible conversation to another directory's thread.
-  Future<void> _switchConversation(String dir, {bool openProjectChat = false}) async {
+  ///
+  /// [openProjectChat] is an explicit pick: it leaves an independent
+  /// conversation for the project's own thread. [announce] tells the other open
+  /// chat screens to follow (false when this call is itself following one).
+  Future<void> _switchConversation(
+    String dir, {
+    bool openProjectChat = false,
+    bool announce = true,
+  }) async {
+    if (openProjectChat) _serverProject = dir;
     if (dir == _dir && (!openProjectChat || !_independentConversation)) return;
     if (_independentConversation && !openProjectChat) {
       setState(() {
@@ -291,7 +331,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (_foreground) Push.activeSession = sid;
     _chat?.consumeWorkspace();
     _chat?.setProjectContext(dir);
-    await Storage.setSelectedConversation(sid, dir, independent: false);
+    if (announce && _installId != null) {
+      await requestProjectChat(_installId!, dir);
+    } else {
+      await Storage.setSelectedConversation(sid, dir, independent: false);
+    }
     await _chat?.ensureLoaded(welcome: _welcome);
     _restoreDraft();
   }
@@ -398,7 +442,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         await api.switchProject(dir); // keep server workspace in lock-step
       } catch (_) {}
     }
-    await _switchConversation(dir);
+    await _switchConversation(dir, openProjectChat: true);
     if (prompt != null && prompt.isNotEmpty) {
       _input.text = prompt;
       await _send();
@@ -407,6 +451,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   @override
   void dispose() {
+    _projectRequests?.cancel();
     _stopResearchPolling();
     WidgetsBinding.instance.removeObserver(this);
     if (Push.activeSession == _sid) Push.activeSession = null;

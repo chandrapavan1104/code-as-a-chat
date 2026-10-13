@@ -151,4 +151,65 @@ void main() {
     expect(selected, 'alpha');
     expect(find.byType(ChatContextSheet), findsNothing);
   });
+
+  Future<ProviderContainer> openChat(WidgetTester tester, PickerApi api,
+      Map<String, String> saved) async {
+    FlutterSecureStorage.setMockInitialValues(saved);
+    final container = ProviderContainer(overrides: [
+      apiProvider.overrideWithValue(api),
+      sessionIdProvider.overrideWith((ref) async => 'install'),
+      chatControllerProvider.overrideWith((ref, key) => TestChat(key)),
+    ]);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(UncontrolledProviderScope(container: container,
+      child: const MaterialApp(home: ChatScreen())));
+    await tester.pumpAndSettle();
+    return container;
+  }
+
+  void resume(WidgetTester tester) {
+    for (final s in const [AppLifecycleState.inactive, AppLifecycleState.hidden,
+        AppLifecycleState.paused, AppLifecycleState.hidden,
+        AppLifecycleState.inactive, AppLifecycleState.resumed]) {
+      tester.binding.handleAppLifecycleStateChanged(s);
+    }
+  }
+
+  testWidgets('a switch made on another screen moves an open chat to that project', (tester) async {
+    final api = PickerApi();
+    await openChat(tester, api, {
+      'selected_conversation_id': 'app:install:conversation:independent',
+      'selected_conversation_project': 'alpha',
+      'selected_conversation_independent': 'true',
+    });
+    expect(find.text('Original conversation history'), findsOneWidget);
+    await requestProjectChat('install', 'beta'); // what Library → Projects does
+    await tester.pumpAndSettle();
+    expect(find.text('Beta project history'), findsOneWidget);
+    expect(find.text('beta · auto'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('resume keeps the open project chat unless the server default changed', (tester) async {
+    final api = PickerApi(); // server default stays alpha, as after an agent switch
+    await openChat(tester, api, {
+      'selected_conversation_id': 'install::beta',
+      'selected_conversation_project': 'beta',
+      'selected_conversation_independent': 'false',
+    });
+    expect(find.text('Beta project history'), findsOneWidget);
+    resume(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('Beta project history'), findsOneWidget);
+    api.switched = 'gamma'; // switched explicitly elsewhere (Mac, Telegram)
+    resume(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('Original conversation history'), findsOneWidget);
+    expect(find.text('gamma · auto'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+  });
 }

@@ -69,6 +69,10 @@ Six navigation/loading regressions pass; 351 deployed server tests and 179
 Flutter tests pass. Clean restart health passed; lightweight settings returned in
 0.02 seconds and all 33 projects loaded. Signed APK 1791866981 is published.
 Details: `docs/project-picker-regression.md`.
+Switching from Library → Projects now opens that project's chat in every open
+Gajala chat (the Chats tab no longer keeps the previous thread), and a chat that
+followed an agent's mid-turn switch is saved and no longer dragged back to the
+old project on resume; resume follows only a real change to the server default.
 
 **Live model catalogs (October 12).** Gajala discovers coding choices from
 signed-in Claude/Codex/Gemini CLIs and installed Ollama models, with fifteen-minute
@@ -511,6 +515,15 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-12 — **Chats follow project switches everywhere.** Library → Projects
+  only moved the server, so the Chats tab kept showing the old project's thread;
+  resume compared the server default with the open chat, and because agent
+  switches never move that default it dragged a followed chat back to the old
+  project (which was also never saved for a cold start). Explicit switches now
+  broadcast to every open Gajala chat, followed threads persist, and resume acts
+  only on a changed default. Codex's deployed-but-uncommitted catalog/diary/
+  picker edits are committed so the next deploy cannot revert them. 2 widget
+  regressions (fail before, pass after); 181 Flutter and 355 server tests pass.
 - 2026-10-12 — **Repair project picker and visible chat switching.** Decoupled
   project/session/catalog loading, moved projects above model choices, added honest
   loading/retry states and restricted model refresh to model data. Added lightweight
