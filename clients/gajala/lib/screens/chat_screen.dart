@@ -139,12 +139,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     var model = 'auto';
     if (api != null) {
       try {
-        final results = await Future.wait([api.projects(), api.model()]);
-        dir = results[0]['current_name']?.toString();
-        model = results[1]['engine']?.toString() ?? 'auto';
-      } catch (_) {
-        /* header stays blank */
-      }
+        final projects = await api.projects();
+        dir = projects['current_name']?.toString();
+      } catch (_) { /* retain the saved conversation context */ }
+      try {
+        final settings = await api.model(includeCatalog: false).timeout(const Duration(seconds: 3));
+        model = settings['engine']?.toString() ?? 'auto';
+      } catch (_) { /* projects remain usable if model settings fail */ }
     }
     if (savedSession != null && _conversationProject != null) {
       dir = _conversationProject;
@@ -261,9 +262,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   /// Swap the visible conversation to another directory's thread.
-  Future<void> _switchConversation(String dir) async {
-    if (dir == _dir) return;
-    if (_independentConversation) {
+  Future<void> _switchConversation(String dir, {bool openProjectChat = false}) async {
+    if (dir == _dir && (!openProjectChat || !_independentConversation)) return;
+    if (_independentConversation && !openProjectChat) {
       setState(() {
         _dir = dir;
         _conversationProject = dir;
@@ -276,15 +277,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       }
       return;
     }
+    _chat?.setDraft(_input.text);
     final sid = _sidFor(dir);
     setState(() {
       _dir = dir;
       _sid = sid;
+      _independentConversation = false;
+      _conversationProject = dir;
+      _replyTarget = null;
+      _pending = null;
+      _input.clear();
     });
     if (_foreground) Push.activeSession = sid;
-    _conversationProject = dir;
-    await _chat?.ensureLoaded(welcome: _welcome);
+    _chat?.consumeWorkspace();
     _chat?.setProjectContext(dir);
+    await Storage.setSelectedConversation(sid, dir, independent: false);
+    await _chat?.ensureLoaded(welcome: _welcome);
+    _restoreDraft();
   }
 
   Future<void> _openConversation(Map<String, dynamic> item) async {
@@ -617,15 +626,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (_) => _ContextSheet(
+      builder: (_) => ChatContextSheet(
         api: api,
         currentDir: _dir,
         currentModel: _model,
-        onChanged: (dir, model) {
+        onChanged: (dir, model) async {
+          if (!mounted) return;
           if (model != null) setState(() => _model = model);
-          if (dir != null && dir != _dir) {
+          if (dir != null) {
             // Switching directory swaps the whole conversation to that thread.
-            _switchConversation(dir);
+            await _switchConversation(dir, openProjectChat: true);
+            try {
+              final settings = await api.model(includeCatalog: false).timeout(const Duration(seconds: 3));
+              if (mounted) setState(() => _model = settings['engine']?.toString() ?? 'auto');
+            } catch (_) { /* history switching does not depend on model settings */ }
           } else if (model != null) {
             // Same thread, just a different engine — note it inline.
             _chat?.addSystemNote('Model → ${_modelLabel(_model)}');
@@ -1374,22 +1388,23 @@ class _StatusBubble extends StatelessWidget {
 
 /// Bottom sheet to switch the active directory and pin the coding model, plus a
 /// "continue on Mac" handoff for the active Claude session.
-class _ContextSheet extends StatefulWidget {
+class ChatContextSheet extends StatefulWidget {
   final GajalaApi api;
   final String? currentDir;
   final String currentModel;
-  final void Function(String? dir, String? model) onChanged;
-  const _ContextSheet({
+  final Future<void> Function(String? dir, String? model) onChanged;
+  const ChatContextSheet({
+    super.key,
     required this.api,
     required this.currentDir,
     required this.currentModel,
     required this.onChanged,
   });
   @override
-  State<_ContextSheet> createState() => _ContextSheetState();
+  State<ChatContextSheet> createState() => ChatContextSheetState();
 }
 
-class _ContextSheetState extends State<_ContextSheet> {
+class ChatContextSheetState extends State<ChatContextSheet> {
   List<Map<String, dynamic>> _projects = [];
   List<Map<String, dynamic>> _sessions = [];
   String? _dir;
@@ -1397,9 +1412,16 @@ class _ContextSheetState extends State<_ContextSheet> {
   Map<String, String> _engineModels =
       {}; // engine → pinned model ('' = default)
   Map<String, String> _engineBackups = {}; // engine → backup model ('' = none)
+  Map<String, dynamic> _catalogs = {};
+  Map<String, dynamic> _routing = {};
+  String? _catalogError;
   Map<String, List<String>> _presets = {}; // engine → selectable models
   List<String> _engines = const ['auto', 'claude', 'codex', 'gemini', 'qwen'];
   bool _busy = false;
+  bool _projectsLoading = true;
+  bool _modelsLoading = false;
+  String? _projectsError;
+  int _sessionLoad = 0;
 
   @override
   void initState() {
@@ -1410,15 +1432,40 @@ class _ContextSheetState extends State<_ContextSheet> {
   }
 
   Future<void> _load() async {
+    await Future.wait([_loadProjects(), _loadSessions(), _loadModels()]);
+  }
+
+  Future<void> _loadProjects() async {
+    if (mounted) setState(() { _projectsLoading = true; _projectsError = null; });
     try {
       final proj = await widget.api.projects();
-      final sess = await widget.api.activeSessions();
-      final mdl = await widget.api.model();
       if (!mounted) return;
       setState(() {
         _projects = List<Map<String, dynamic>>.from(proj['projects'] ?? []);
-        _dir = proj['current_name']?.toString() ?? _dir;
-        _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []);
+        _dir ??= proj['current_name']?.toString();
+      });
+    } catch (_) {
+      if (mounted) setState(() => _projectsError = 'Could not load projects.');
+    } finally {
+      if (mounted) setState(() => _projectsLoading = false);
+    }
+  }
+
+  Future<void> _loadSessions() async {
+    final request = ++_sessionLoad;
+    try {
+      final sess = await widget.api.activeSessions();
+      if (!mounted || request != _sessionLoad) return;
+      setState(() => _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []));
+    } catch (_) { /* session discovery cannot hide project choices */ }
+  }
+
+  Future<void> _loadModels({bool refresh = false}) async {
+    if (mounted) setState(() => _modelsLoading = true);
+    try {
+      final mdl = await widget.api.model(refresh: refresh);
+      if (!mounted) return;
+      setState(() {
         _engineModels =
             (mdl['models'] as Map?)?.map(
               (k, v) => MapEntry(k.toString(), (v ?? '').toString()),
@@ -1432,6 +1479,9 @@ class _ContextSheetState extends State<_ContextSheet> {
         _engines =
             (mdl['options'] as List?)?.map((e) => e.toString()).toList() ??
             _engines;
+        _catalogError = null;
+        _catalogs = Map<String, dynamic>.from(mdl['catalogs'] ?? {});
+        _routing = Map<String, dynamic>.from(mdl['routing'] ?? {});
         _presets =
             (mdl['presets'] as Map?)?.map(
               (k, v) =>
@@ -1440,8 +1490,20 @@ class _ContextSheetState extends State<_ContextSheet> {
             {};
       });
     } catch (_) {
-      /* leave lists empty */
+      if (mounted) setState(() => _catalogError = 'Could not load model choices.');
+    } finally {
+      if (mounted) setState(() => _modelsLoading = false);
     }
+  }
+
+  String _catalogLabel(String id) {
+    final rows = (_catalogs[_model] as Map?)?['models'] as List? ?? [];
+    for (final row in rows) {
+      if (row['id'] == id) {
+        return row['resolved_model']?.toString() ?? row['label']?.toString() ?? id;
+      }
+    }
+    return id;
   }
 
   /// Pin a model for the currently selected engine.
@@ -1483,19 +1545,19 @@ class _ContextSheetState extends State<_ContextSheet> {
   }
 
   Future<void> _switchDir(String name) async {
-    if (_busy || name == _dir) return;
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final now = await widget.api.switchProject(name);
-      widget.onChanged(now, null);
-      final sess = await widget.api.activeSessions();
-      if (mounted) {
-        setState(() {
-          _dir = now;
-          _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []);
-        });
-      }
+      await widget.onChanged(now, null);
+      if (!mounted) return;
+      setState(() => _dir = now);
+      Navigator.of(context).pop();
     } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not switch project. Please retry.')));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1506,7 +1568,7 @@ class _ContextSheetState extends State<_ContextSheet> {
     setState(() => _busy = true);
     try {
       final now = await widget.api.setModel(engine);
-      widget.onChanged(null, now);
+      await widget.onChanged(null, now);
       if (mounted) setState(() => _model = now);
     } catch (_) {
     } finally {
@@ -1542,7 +1604,52 @@ class _ContextSheetState extends State<_ContextSheet> {
                   ),
                 ),
               ),
-              _sectionLabel(context, 'MODEL'),
+              _sectionLabel(context, 'DIRECTORY'),
+              const SizedBox(height: 4),
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.35,
+                ),
+                child: _projectsLoading
+                    ? const Padding(padding: EdgeInsets.all(12), child: Text('Loading projects…'))
+                    : _projectsError != null
+                    ? Column(children: [Text(_projectsError!), TextButton(onPressed: _loadProjects, child: const Text('Retry projects'))])
+                    : _projects.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Text(
+                          'No projects found.',
+                          style: TextStyle(color: pal.textDim),
+                        ),
+                      )
+                    : ListView(
+                        shrinkWrap: true,
+                        children: _projects.map((p) {
+                          final name = p['name']?.toString() ?? '';
+                          final active = name == _dir;
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              active ? Icons.folder : Icons.folder_outlined,
+                              color: active ? GajalaColors.accent : pal.textDim,
+                              size: 20,
+                            ),
+                            title: Text(name),
+                            trailing: active
+                                ? const Icon(
+                                    Icons.check,
+                                    color: GajalaColors.accent,
+                                    size: 18,
+                                  )
+                                : null,
+                            onTap: _busy ? null : () => _switchDir(name),
+                          );
+                        }).toList(),
+                      ),
+              ),
+              const SizedBox(height: 16),
+              _sectionLabel(context, 'CODING ENGINE'),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1563,9 +1670,32 @@ class _ContextSheetState extends State<_ContextSheet> {
                     : 'Coding runs on ${_ChatScreenState._modelLabel(_model)} unless you name another.',
                 style: TextStyle(fontSize: 11.5, color: pal.textDim),
               ),
+              Text(
+                'Everyday chat: ${_routing['primary'] ?? 'server default'}. '
+                'API backup: ${_routing['openai_backup'] ?? 'server default'}.',
+                style: TextStyle(fontSize: 11.5, color: pal.textDim),
+              ),
+              TextButton.icon(
+                onPressed: _modelsLoading ? null : () => _loadModels(refresh: true),
+                icon: const Icon(Icons.refresh, size: 16),
+                label: Text(_modelsLoading ? 'Loading models…' : 'Refresh model choices'),
+              ),
+              if (_catalogError != null)
+                Text(_catalogError!, style: TextStyle(color: pal.textDim)),
+              if (_catalogs[_model] is Map) ...[
+                Text(
+                  (_catalogs[_model]['stale'] == true)
+                      ? (_catalogs[_model]['error'] ?? 'Model catalog is stale').toString()
+                      : 'Choices from ${_catalogs[_model]['source']}. Refreshes every 15 minutes when opened.',
+                  style: TextStyle(fontSize: 11.5, color: pal.textDim),
+                ),
+                if ((_engineModels[_model] ?? '').isNotEmpty &&
+                    !(_presets[_model]?.contains(_engineModels[_model]) ?? false))
+                  Text('Saved model: ${_engineModels[_model]} (absent from current catalog)',
+                      style: TextStyle(fontSize: 11.5, color: pal.textDim)),
+              ],
               // Per-engine model picker — only meaningful once an engine is pinned.
-              if (_model != 'auto' &&
-                  (_presets[_model]?.isNotEmpty ?? false)) ...[
+              if (_model != 'auto') ...[
                 const SizedBox(height: 16),
                 _sectionLabel(
                   context,
@@ -1582,7 +1712,7 @@ class _ContextSheetState extends State<_ContextSheet> {
                           final cur = _engineModels[_model] ?? '';
                           final on = m == 'default' ? cur.isEmpty : cur == m;
                           return ChoiceChip(
-                            label: Text(m),
+                            label: Text(_catalogLabel(m)),
                             selected: on,
                             onSelected: _busy
                                 ? null
@@ -1615,7 +1745,7 @@ class _ContextSheetState extends State<_ContextSheet> {
                           final cur = _engineBackups[_model] ?? '';
                           final on = m == 'none' ? cur.isEmpty : cur == m;
                           return ChoiceChip(
-                            label: Text(m),
+                            label: Text(_catalogLabel(m)),
                             selected: on,
                             onSelected: _busy
                                 ? null
@@ -1682,46 +1812,7 @@ class _ContextSheetState extends State<_ContextSheet> {
                   ),
               ],
               const SizedBox(height: 16),
-              _sectionLabel(context, 'DIRECTORY'),
-              const SizedBox(height: 4),
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.35,
-                ),
-                child: _projects.isEmpty
-                    ? Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Text(
-                          'No projects found.',
-                          style: TextStyle(color: pal.textDim),
-                        ),
-                      )
-                    : ListView(
-                        shrinkWrap: true,
-                        children: _projects.map((p) {
-                          final name = p['name']?.toString() ?? '';
-                          final active = name == _dir;
-                          return ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: Icon(
-                              active ? Icons.folder : Icons.folder_outlined,
-                              color: active ? GajalaColors.accent : pal.textDim,
-                              size: 20,
-                            ),
-                            title: Text(name),
-                            trailing: active
-                                ? const Icon(
-                                    Icons.check,
-                                    color: GajalaColors.accent,
-                                    size: 18,
-                                  )
-                                : null,
-                            onTap: () => _switchDir(name),
-                          );
-                        }).toList(),
-                      ),
-              ),
+
             ],
           ),
         ),

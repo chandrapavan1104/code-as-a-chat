@@ -24,48 +24,20 @@ ENGINE_TOOL = {"claude": "claude", "codex": "codex", "gemini": "antigravity",
 # Engines that carry a selectable model (everything except "auto").
 MODEL_ENGINES = ("claude", "codex", "gemini", "qwen")
 
-# Static model presets. Claude uses stable aliases; Gemini a small set. Codex is
-# read live from its own model cache (see model_presets) so the list is current.
+# Kept as compatibility constants for integrations; picker choices are discovered.
 CLAUDE_MODELS = ("opus", "sonnet", "haiku")
-GEMINI_MODELS = ("gemini-2.5-pro", "gemini-2.5-flash")
-_CODEX_FALLBACK = ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4-mini")
-_QWEN_FALLBACK = ("qwen2.5:7b",)
-
-
-def _qwen_models() -> list[str]:
-    """Locally-pulled Ollama models, so the picker matches what's installed."""
-    try:
-        import httpx
-        from server import config
-        r = httpx.get(config.OLLAMA_URL.rstrip("/") + "/api/tags", timeout=3)
-        names = [m["name"] for m in r.json().get("models", []) if m.get("name")]
-        return names or list(_QWEN_FALLBACK)
-    except Exception:
-        return list(_QWEN_FALLBACK)
+GEMINI_MODELS = ()
 
 
 def _codex_models() -> list[str]:
-    """Read the codex CLI's cached model list so presets match what's installed.
-    Falls back to a small static list if the cache isn't readable."""
-    try:
-        data = json.loads((Path.home() / ".codex" / "models_cache.json").read_text())
-        slugs = [m["slug"] for m in data.get("models", [])
-                 if m.get("visibility") == "list" and m.get("slug")]
-        # Keep newly supported first-party models visible even before an older
-        # CLI cache has refreshed. Preserve cached ordering for everything else.
-        return list(dict.fromkeys((*_CODEX_FALLBACK, *slugs)))
-    except Exception:
-        return list(_CODEX_FALLBACK)
+    from server import model_catalog
+    return [m["id"] for m in model_catalog.get("codex")["models"]]
 
 
 def model_presets() -> dict:
-    """Per-engine selectable models for the UI + chat resolver."""
-    return {
-        "claude": list(CLAUDE_MODELS),
-        "codex": _codex_models(),
-        "gemini": list(GEMINI_MODELS),
-        "qwen": _qwen_models(),
-    }
+    from server import model_catalog
+    return {e: [m["id"] for m in catalog["models"]]
+            for e, catalog in model_catalog.snapshot().items()}
 
 
 def _load() -> dict:

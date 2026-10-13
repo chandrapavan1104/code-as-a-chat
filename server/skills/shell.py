@@ -39,7 +39,7 @@ STEP_BUDGET = 10           # productive tool calls per user turn
 MAX_ROUNDS = 20            # hard loop guard, so free steps can't spin forever
 RESULT_TRUNCATE = 2500     # cap each tool result before feeding back to Haiku
 EXACT_MEMORY_TRUNCATE = 40000  # full-source memory retrieval, with explicit bound
-HAIKU_TIMEOUT = 60         # seconds per Haiku call
+HAIKU_TIMEOUT = 120        # bounded routing call, including CLI startup
 
 _log = logging.getLogger(__name__)
 
@@ -575,12 +575,14 @@ async def _claude_cli(system_prompt: str, user_message: str, timeout: int = HAIK
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
         try:
             proc.kill()
         except ProcessLookupError:
             pass
         await proc.wait()
+        if isinstance(exc, asyncio.TimeoutError):
+            raise TimeoutError(f"Claude routing call timed out after {timeout}s") from exc
         raise
 
     if proc.returncode != 0:

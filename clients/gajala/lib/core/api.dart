@@ -539,8 +539,8 @@ class GajalaApi {
       RunTrace.fromJson((await _dio.get('/api/runs/$runId')).data);
 
   // ── coding engine (pinned model) ────────────────────────────────────────────
-  Future<Map<String, dynamic>> model() async =>
-      Map<String, dynamic>.from((await _dio.get('/api/model')).data);
+  Future<Map<String, dynamic>> model({bool refresh = false, bool includeCatalog = true}) async =>
+      Map<String, dynamic>.from((await _dio.get('/api/model', queryParameters: {'refresh': refresh, 'include_catalog': includeCatalog})).data);
 
   Future<String> setModel(String engine) async {
     final r = await _dio.post('/api/model', data: {'engine': engine});

@@ -59,6 +59,29 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Project picker repair (October 12).** Projects load independently of model
+and session discovery and appear first, with accurate loading/error/retry states.
+Model refresh no longer delays or disables project selection. Chat startup uses
+lightweight model settings without CLI discovery. Explicit project-picker taps
+open that project's history and persist the selected chat, including from an
+independent conversation; automatic context changes retain independent chats.
+Six navigation/loading regressions pass; 351 deployed server tests and 179
+Flutter tests pass. Clean restart health passed; lightweight settings returned in
+0.02 seconds and all 33 projects loaded. Signed APK 1791866981 is published.
+Details: `docs/project-picker-regression.md`.
+
+**Live model catalogs (October 12).** Gajala discovers coding choices from
+signed-in Claude/Codex/Gemini CLIs and installed Ollama models, with fifteen-minute
+refresh, manual refresh, explicit stale failures and resolved Claude aliases.
+Removed static Codex injections and Gemini 2.5-only choices; exact Gemini IDs
+are preserved. Coding choices and everyday routing are labelled separately.
+The recent fan request succeeded; its fallback was consistent with the former
+60-second routing timeout, now 120 seconds with explicit timeout diagnostics.
+Future releases still require provider account access and compatible CLI updates.
+Updated installed Codex/Gemini CLIs; fresh catalogs now include GPT-6.1 Sol
+and Gemini 3.8 Flash. Signed APK 1791843632 is published. All four live catalogs
+refresh successfully; existing pins remain intact. Details: `docs/model-catalog-sync.md`.
+
 **Gogon home integration (October 11).** The `home` skill routes chat and voice
 requests through Gogon's existing local service, preserving its single panel
 session and keeping the panel PIN outside Gajala. Library → Home provides rooms,
@@ -488,6 +511,23 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-12 — **Repair project picker and visible chat switching.** Decoupled
+  project/session/catalog loading, moved projects above model choices, added honest
+  loading/retry states and restricted model refresh to model data. Added lightweight
+  engine metadata for chat startup. Explicit picker navigation now opens/persists
+  the project's chat, refreshes its engine label and dismisses after navigation.
+  Six widget regressions pass, including history replacement and reopening;
+  351 deployed server tests and 179 Flutter tests pass. Health and lightweight
+  authenticated settings/projects verified; signed APK 1791866981 published.
+- 2026-10-12 — **Synchronize native model catalogs.** Added prompt-free CLI
+  discovery, bounded caching, stale/error metadata and manual phone refresh.
+  Displayed resolved Claude versions and separate routing/backup configuration;
+  preserved exact Gemini IDs and let unpinned Codex use its native default.
+  Extended routing timeout and recorded timeout duration. Validation: 157 checkout
+  server tests, 45 checkout Flutter tests and seven deployed catalog tests pass;
+  checkout changed-file analysis is clean. All 348 deployed server tests and 173
+  deployed Flutter tests pass; signed APK 1791843632 is published. Backend health
+  and authenticated model API passed after clean restart.
 - 2026-10-11 — **Integrated Gogon home controls.** Added home routing, native
   controls, lighting schedules and guarded garage approvals over the existing
   local service. Added actual device-read provenance to Gogon, conservative

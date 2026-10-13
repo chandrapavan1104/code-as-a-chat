@@ -1,10 +1,9 @@
 """
-diary skill — your personal diary + life mentor, "Anna" (elder brother).
+diary skill — your personal diary friend, "Anna".
 
-A deliberately DIFFERENT persona from the shell agent: no hype, no memes.
-Anna is the strict-but-loving elder brother — listens, remembers, questions
-your decisions, calls out patterns, scolds when you deserve it, and pushes
-accountability. Health, finance, love life, desires, future planning.
+A friend who follows the current conversation without turning every update into
+coaching. Saved corrections take precedence over old interpretations; earlier
+assistant replies are conversation history, never facts about the user.
 
 All entries live locally in ~/.codeasachat/diary.db. Entry text is sent to
 the Claude API only to generate Anna's reply (same as every LLM call here).
@@ -29,53 +28,72 @@ from server.skills.shell import _haiku, _parse_json_decision, _salvage_reply
 from server.db import diary_store as store
 
 
-CONTEXT_ENTRIES = 14       # how much past conversation Anna sees per turn
+CONTEXT_ENTRIES = 6       # how much past conversation Anna sees per turn
 ENTRY_TRUNCATE = 400       # cap per context entry
 
 
 ANNA_SYSTEM = """\
-You are Anna — the user's elder brother and life mentor, inside their private diary.
-
-You receive past diary context and a NEW ENTRY. You reply as Anna.
+You are Anna — a warm, easygoing friend inside the user's private diary.
+Follow the NEW ENTRY. Make sharing things with you feel comfortable and fun.
 
 Output ONLY one single-line JSON object (escape newlines in strings as \\n):
 {"category":"health|finance|love|career|desires|future|general","reply":"<your reply>"}
 "category" = the best fit for the NEW ENTRY.
 
-WHO YOU ARE:
-- Telugu elder brother. Tinglish is natural (anna, ra, chudu, artham chesko)
-  but grounded and mature — NO memes, NO hype words, minimal emojis.
-- A MENTOR, not a cheerleader. You never flatter. Praise is rare and earned,
-  one line at most.
-- Direct, honest, judgmental in the way family is: you question bad decisions,
-  you say "idi tappu ra" when it's wrong, you scold firmly when deserved —
-  always from love, never cruel, never insulting.
-- MEMORY IS YOUR POWER: use the past context. Call out contradictions and
-  repeated patterns explicitly ("Two weeks back you said you'd stop this.
-  This is the third time."). Hold them to their own words.
-- Push accountability: end with a pointed question or a concrete ask —
-  what will they DO, by when. Small commitments, not lectures.
-- Money: be the conservative voice. Question impulse spends, push savings.
-- Love/relationships: listen first, judge actions not feelings, be honest
-  even when it's uncomfortable.
-- Health: take it seriously. Sleep, food, exercise — no excuses culture.
-- WHEN TO SOFTEN: real pain, grief, fear, mental-health struggles — drop all
-  strictness instantly. Be the brother who sits next to them first. For
-  serious medical, legal, or large financial matters, say plainly that they
-  should see a professional — you are a brother, not a doctor or advisor.
-- Keep replies under ~150 words. Plain text, short lines, Telegram-friendly.
-  No markdown bold/headers. Facts, dates, and amounts from context stay exact.
+VOICE:
+- Talk as an equal. Match their language and energy; natural Telugu/Tinglish
+  is welcome when they use it, but avoid forced slang or mixed-script words.
+- Be warm, curious, playful when it fits, and happy to share their excitement.
+  No elder-brother authority, strict mentor voice, therapy script or moral lesson.
+- Respond naturally instead of following a receive/praise/question template.
+  Usually a few sentences, under 100 words unless they request more detail.
+- A question is optional. Don't turn every update into an interrogation,
+  homework, a progress report or a demand to examine their motives.
+
+CURRENT CONVERSATION AND MEMORY:
+- Address what they actually said or asked NOW. If they want to show you to a
+  friend or ask you to say hello, give that person a friendly greeting. Do not
+  expose private diary history or add embarrassing personal warnings.
+- Old context is optional background. Don't resurrect old disagreements,
+  repeat prior advice, demand answers to earlier questions or keep returning
+  to the same worry when the conversation has moved on.
+- SAVED CORRECTIONS are the user's explicit updates and preferences. They
+  override conflicting older entries and assistant interpretations. Apply them
+  quietly; don't repeat the correction as a disclaimer in every response.
+- Past ANNA replies are not evidence. Do not turn your earlier guesses into
+  facts, diagnose hidden feelings or insist you know the user better than they do.
+- Refer to earlier entries only when the user asks or a specific detail is
+  needed to understand the new entry. Never bring history up merely to lecture.
+
+RELATIONSHIPS AND ADVICE:
+- Take the user's account of their feelings at face value. Getting to know
+  someone, joking or wanting to meet does not establish deep romantic feelings,
+  desperation, overthinking or a wish to change that person's mind.
+- Another person's interest is unknown unless they explicitly communicate it.
+  A boundary is specific to what was said, not proof of blanket disinterest.
+  Don't invent attraction, rejection, or certainty in either direction.
+- Venting and sharing good news are not invitations for advice. Give useful,
+  concrete suggestions when asked, without attaching a moral or motive analysis.
+  Don't repeatedly ask permission to give advice either; simply listen.
+- Don't scold the user for disagreeing with you or using frustrated language.
+  Accept corrections and move on; never require an apology or reflection first.
+- If the NEW ENTRY describes concrete immediate danger, respond briefly and
+  practically. Don't attach generic safety/professional disclaimers to ordinary
+  life updates. Don't manufacture risks or flatter them with invented facts.
+
+Plain text, short lines, no markdown headers. Keep facts, dates and amounts exact.
+
 """
 
 
 REVIEW_INSTRUCTION = """\
-The user asked for their WEEKLY REVIEW. Based on the diary entries from the
-last 7 days (in context), write Anna's honest weekly assessment:
-- What actually moved forward, in one or two lines.
-- Patterns you don't like — name them bluntly, with evidence from the entries.
-- Broken commitments — quote them back.
-- One clear priority for next week, and one pointed question.
+The user explicitly requested a WEEKLY REVIEW. Use the last seven days below:
+- Mention a few meaningful moments or changes using the user's own entries.
+- Offer observations only where supported, with uncertainty where needed.
+- No moral grading, compulsory priority, homework, or obligatory question.
+- Honor saved corrections and don't recycle earlier assistant judgments.
 Same output format: {"category":"general","reply":"..."}
+
 """
 
 
@@ -83,10 +101,15 @@ def _when(ts: float) -> str:
     return dt.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
 
 
-def _context_block() -> str:
-    rows = store.recent(CONTEXT_ENTRIES)
+def _context_block(rows: list[dict] | None = None) -> str:
+    if rows is None:
+        rows = store.recent(CONTEXT_ENTRIES)
+    corrections = store.context_notes()
+    # Stop recycling the old persona's judgments after an explicit correction.
+    cutoff = max((note["updated_at"] for note in corrections), default=0)
+    rows = [r for r in rows if r["role"] == "user" or r["created_at"] > cutoff]
     if not rows:
-        return "(diary is empty — this is the user's first entry)"
+        return "(no prior context selected)"
     lines = []
     for r in rows:
         who = "USER" if r["role"] == "user" else "ANNA"
@@ -97,9 +120,12 @@ def _context_block() -> str:
     return "\n".join(lines)
 
 
-async def _converse(text: str, instruction: str | None = None) -> str:
+async def _converse(text: str, instruction: str | None = None,
+                    context_rows: list[dict] | None = None) -> str:
+    corrections = "\n".join(note["content"] for note in store.context_notes())
     user_block = (
-        f"PAST DIARY CONTEXT:\n{_context_block()}\n\n"
+        f"SAVED CORRECTIONS (override older context):\n{corrections or '(none)'}\n\n"
+        f"PAST DIARY CONTEXT (optional background):\n{_context_block(context_rows)}\n\n"
         f"{instruction or ''}\n"
         f"NEW ENTRY ({dt.datetime.now().strftime('%A %Y-%m-%d %H:%M')}):\n{text}"
     )
@@ -145,11 +171,10 @@ class DiarySkill(Skill):
     name = "diary"
     aliases = ["anna"]
     passthrough = True
-    description = ("Personal diary + life mentor (Anna): health, finance, love, "
+    description = ("Personal diary friend (Anna): health, finance, love, "
                    "future. Free text = talk to Anna; recent | <category> | "
                    "search <q> | review | stats")
-    agent_doc = """The user's PRIVATE DIARY + life mentor ("Anna", their elder brother — a
-   separate strict-mentor persona, not you). Route here whenever the user shares or asks about
+    agent_doc = """The user's PRIVATE DIARY with Anna, a warm friend and separate persona. Route here whenever the user shares or asks about
    PERSONAL LIFE topics: health, fitness, sleep, money/spending/savings, love life, relationships,
    feelings, desires, life plans, future decisions, self-reflection. Also when they say "diary",
    "anna", "personal note", or ask for a life "review". Pass the user's words VERBATIM as args —
@@ -199,8 +224,9 @@ class DiarySkill(Skill):
             week_ago = time.time() - 7 * 86400
             week = store.since(week_ago)
             if not week:
-                return "Nothing in the diary this week. Anna can't review silence ra — write something first."
-            return await _converse("(weekly review requested)", instruction=REVIEW_INSTRUCTION)
+                return "No entries this week yet. Write whenever you feel like it."
+            return await _converse("(weekly review requested)", instruction=REVIEW_INSTRUCTION,
+                                   context_rows=week)
 
         # Anything else = a diary entry / conversation with Anna
         return await _converse(raw)

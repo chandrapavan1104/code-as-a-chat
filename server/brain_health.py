@@ -11,6 +11,7 @@ def failed(provider: str, error: Exception) -> None:
     reason = ('authentication expired or rejected' if any(s in text for s in (
         'oauth', 'authenticate', 'authentication', '401', 'not logged in')) else
         'quota or rate limit reached' if usage_limits.is_usage_limit(text) or 'quota' in text else
+        str(error) if isinstance(error, TimeoutError) else
         'provider unavailable or timed out')
     _failures[provider] = {'reason': reason, 'retry_at': time.time() + (
         300 if reason.startswith('authentication') else 60),

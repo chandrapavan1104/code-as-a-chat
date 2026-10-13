@@ -580,14 +580,18 @@ def active_cli_sessions():
 # ── coding engine (pinned model for the chat) ─────────────────────────────────
 
 @router.get("/model")
-def get_model():
-    from server import prefs
+def get_model(refresh: bool = False, include_catalog: bool = True):
+    from server import prefs, model_catalog
+    catalogs = model_catalog.snapshot(refresh=refresh) if include_catalog else {}
     return {
         "engine": prefs.get_coding_engine(),
         "options": list(prefs.CODING_ENGINES),
         "models": prefs.get_coding_models(),          # per-engine pinned model ('' = default)
         "backup_models": prefs.get_backup_models(),   # per-engine backup model ('' = none)
-        "presets": prefs.model_presets(),             # per-engine selectable models
+        "presets": {e: [m["id"] for m in c["models"]] for e, c in catalogs.items()},
+        "catalogs": catalogs,
+        "routing": {"primary": f"claude:{cfg.SHELL_MODEL}",
+                    "openai_backup": cfg.OPENAI_SHELL_MODEL},
     }
 
 

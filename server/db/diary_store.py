@@ -1,7 +1,7 @@
 """
 SQLite-backed personal diary — the data layer for the diary/Anna skill.
 
-A conversation log: user entries + Anna's (mentor) replies, each tagged with a
+A conversation log: user entries + Anna's replies, each tagged with a
 life category. Fully local at ~/.codeasachat/diary.db — same backup family as
 notes.db / conversations.db.
 """
@@ -41,6 +41,13 @@ def _init() -> None:
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_diary_cat ON entries(category, created_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_diary_ts  ON entries(created_at)")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS context_notes (
+                key TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
         c.commit()
 
 
@@ -106,3 +113,21 @@ def counts() -> dict[str, int]:
             "WHERE role = 'user' GROUP BY category"
         ).fetchall()
     return {r["category"]: r["n"] for r in rows}
+
+
+def set_context_note(key: str, content: str) -> None:
+    """Keep explicit user corrections outside the rolling conversation window."""
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO context_notes (key, content, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET content=excluded.content, "
+            "updated_at=excluded.updated_at",
+            (key, content, time.time()),
+        )
+        c.commit()
+
+
+def context_notes() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM context_notes ORDER BY key").fetchall()
+    return [dict(r) for r in rows]
