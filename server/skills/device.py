@@ -16,7 +16,7 @@ import json
 import re
 from datetime import datetime
 
-from server import phone_bridge
+from server import music_lookup, phone_bridge
 from server.skills import register
 from server.skills.base import Skill, SkillResult
 
@@ -197,6 +197,11 @@ class DeviceSkill(Skill):
             command, args = parse(prompt)
         except BadCommand as exc:
             return SkillResult("failed", str(exc))
+        if command == "action.play" and args.get("app") in (None, "youtube_music"):
+            # A YouTube Music search never plays by itself; the song's own link does.
+            song = await music_lookup.find_song(args["query"])
+            if song:
+                args.update(song)
         try:
             answer = await phone_bridge.request(
                 _phone_channel(kwargs), command, args, timeout=_WAIT.get(command, 30))

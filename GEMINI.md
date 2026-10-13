@@ -525,6 +525,16 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-16 — **YouTube Music plays the song itself.** Every route so far only
+  reached YouTube Music's search results: its play-from-search session is kept
+  for Google's own clients, and the media-session nudge had been switched off
+  for it. The Mac now looks the request up on YouTube Music's public web search
+  (`server/music_lookup.py`, songs only, no account; `GET /api/music/lookup`)
+  and the phone opens `music.youtube.com/watch?v=<id>` in the app, which starts
+  playback the way a shared song link does, then verifies against the song's
+  own title. Spoken nicknames (DSP, ARR, SPB) are expanded; vague requests and
+  failed lookups keep the old search handoff. Unverified replies now quote what
+  the player shows. 4 server + 3 app tests; real-phone playback unverified.
 - 2026-10-16 — **Remote shell handles interactive prompts.** `gh auth login`'s
   arrow-key picker trapped the line-based input. The server now reads the
   terminal mode (canonical/echo) and the program in front, streaming `mode`

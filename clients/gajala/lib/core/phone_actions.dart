@@ -17,8 +17,12 @@ class PhoneActionResult {
   const PhoneActionResult(this.reply, {this.handedOff = false});
 }
 
+/// Looks a spoken music request up on the Mac → `{found, video_id, title}`.
+typedef SongLookup = Future<Map<String, dynamic>> Function(String query);
+
 class PhoneActions {
   final PhoneInvoke invoke;
+  final SongLookup? lookupSong;
   final Future<String> Function(String prompt) ask;
   final bool Function() isActive;
   final Duration askTimeout;
@@ -27,6 +31,7 @@ class PhoneActions {
     required this.invoke,
     required this.ask,
     required this.isActive,
+    this.lookupSong,
     this.askTimeout = const Duration(seconds: 45),
   });
 
@@ -40,10 +45,27 @@ class PhoneActions {
 
   Future<PhoneActionResult> _music(PlayMusic intent) async {
     if (!isActive()) return const PhoneActionResult('Voice session ended.');
+    var videoId = intent.videoId;
+    var song = intent.title;
+    if (videoId == null && lookupSong != null) {
+      // A YouTube Music search never starts playback; the song's own link does.
+      try {
+        final hit = await lookupSong!(intent.query).timeout(const Duration(seconds: 5));
+        if (hit['found'] == true) {
+          videoId = hit['video_id']?.toString();
+          song = hit['title']?.toString();
+        }
+      } catch (_) {
+        /* offline or slow: fall back to the search handoff */
+      }
+      if (!isActive()) return const PhoneActionResult('Voice session ended.');
+    }
     try {
       final result = await invoke('playMusic', {
         'query': intent.query,
         'package': 'com.google.android.apps.youtube.music',
+        'videoId': ?videoId,
+        'title': ?song,
       });
       final status = _status(result);
       if (status == 'playing') {
@@ -53,6 +75,12 @@ class PhoneActions {
             : intent.query;
         return PhoneActionResult(
           'Playing $played on YouTube Music.',
+          handedOff: true,
+        );
+      }
+      if (status == 'opened') {
+        return PhoneActionResult(
+          _nativeMessage(result, 'Opened ${song ?? intent.query} in YouTube Music.'),
           handedOff: true,
         );
       }

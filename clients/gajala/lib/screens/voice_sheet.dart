@@ -328,12 +328,14 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
     if (local != null) {
       try {
         if (local is DialNumber || local is CallContact || local is PlayMusic) {
+          final api = ref.read(apiProvider);
           final actions = PhoneActions(
             invoke: (method, args) async => Map<String, dynamic>.from(
               await _phone.invokeMapMethod<String, dynamic>(method, args) ?? {},
             ),
             ask: (question) => _askPhone(question, generation),
             isActive: () => _active(generation),
+            lookupSong: api?.musicLookup,
           );
           final result = await actions.execute(local);
           _handedOff = result.handedOff;
@@ -419,7 +421,11 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
           final numeric = RegExp(r'^\+?[0-9][0-9 .()\-]{2,}$').hasMatch(target);
           final intent = command == 'action.call'
               ? (numeric ? DialNumber(target) : CallContact(target))
-              : PlayMusic('${args['query'] ?? ''}');
+              : PlayMusic(
+                  '${args['query'] ?? ''}',
+                  videoId: args['video_id']?.toString(),
+                  title: args['title']?.toString(),
+                );
           final result = await PhoneActions(
             invoke: (method, values) async => Map<String, dynamic>.from(
               await _phone.invokeMapMethod<String, dynamic>(method, values) ??
