@@ -1578,15 +1578,9 @@ def test_run_stream_sends_a_frame_immediately(monkeypatch):
     assert frames[-1]["type"] == "final"
 
 
-def test_codex_presets_keep_astra_visible_with_an_older_cache(tmp_path, monkeypatch):
-    import json
-    from server import prefs
+def test_codex_presets_match_native_catalog(monkeypatch):
+    from server import prefs, model_catalog
+    monkeypatch.setattr(model_catalog, "get", lambda engine: {
+        "models": [{"id": "new-supported-model"}]})
+    assert prefs._codex_models() == ["new-supported-model"]
 
-    cache_dir = tmp_path / ".codex"
-    cache_dir.mkdir()
-    (cache_dir / "models_cache.json").write_text(json.dumps({
-        "models": [{"slug": "gpt-5.6-sol", "visibility": "list"}],
-    }))
-    monkeypatch.setattr(prefs.Path, "home", lambda: tmp_path)
-
-    assert prefs._codex_models()[:2] == ["gpt-6-astra", "gpt-5.6-sol"]

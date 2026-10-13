@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
+import '../core/chat_controller.dart';
 import '../core/models.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
@@ -145,6 +146,8 @@ class _ProjectTile extends StatelessWidget {
     try {
       final cur = await api!.switchProject(p.name);
       ref.invalidate(projectsProvider);
+      // Without this the Chats tab kept showing the previous project's thread.
+      await requestProjectChat(await ref.read(sessionIdProvider.future), cur);
       messenger.showSnackBar(SnackBar(
           content: Text('Switched to $cur'), backgroundColor: GajalaColors.ok));
     } on ProjectSwitchError catch (e) {

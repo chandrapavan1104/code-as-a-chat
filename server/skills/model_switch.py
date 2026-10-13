@@ -38,13 +38,15 @@ def _match_codex(text: str) -> str | None:
 
 
 def _match_gemini(text: str) -> str:
+    # Preserve exact IDs, including preview/customtools suffixes. Never rewrite
+    # a requested new release to an older hard-coded model.
     text = text.strip().lower()
-    if "flash" in text:
-        return "gemini-2.5-flash"
-    for m in prefs.GEMINI_MODELS:
-        if text in m:
-            return m
-    return "gemini-2.5-pro"
+    if text.startswith("gemini-") or text == "auto":
+        return text
+    from server import model_catalog
+    matches = [m["id"] for m in model_catalog.get("gemini")["models"]
+               if text in m["id"]]
+    return matches[0] if len(matches) == 1 else text
 
 
 def _resolve(text: str) -> tuple[str | None, str | None, str | None]:

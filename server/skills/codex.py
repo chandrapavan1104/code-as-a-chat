@@ -40,7 +40,8 @@ class CodexSkill(CLISubprocessSkill):
 
     def build_command(self, prompt: str, resume_id: str | None = None,
                       new_id: str | None = None, model: str = "") -> list[str]:
-        model_flags = ["--model", model or config.CODEX_MODEL]
+        chosen = model or config.CODEX_MODEL
+        model_flags = ["--model", chosen] if chosen else []
         if resume_id:
             # `codex exec resume <id>` continues the thread; cwd comes from the
             # subprocess (resume has no -C flag).

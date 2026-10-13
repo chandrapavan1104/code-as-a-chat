@@ -21,6 +21,7 @@ import 'device_actions.dart';
 import 'phone_abilities.dart';
 import 'home_confirmation.dart';
 import 'state.dart';
+import 'storage.dart';
 import 'voice_journal.dart';
 
 /// Pulls "[image: /path]" markers out of an agent reply → (clean text, urls).
@@ -94,6 +95,23 @@ String shellSessionId(String installId, String? dir) {
   if (dir == null || dir.isEmpty) return installId;
   final slug = dir.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
   return '$installId::$slug';
+}
+
+/// Explicit "open this project's chat" requests (the chat's project picker,
+/// Library → Projects). Every live Gajala chat screen follows them, so a switch
+/// made on one screen never leaves another — usually the Chats tab — showing
+/// the previous project's thread.
+final projectChatRequests = StreamController<String>.broadcast();
+
+/// Make [dir]'s project chat the selected conversation (a cold start reopens
+/// it) and tell every open Gajala chat to show it.
+Future<void> requestProjectChat(String installId, String dir) async {
+  await Storage.setSelectedConversation(
+    shellSessionId(installId, dir),
+    dir,
+    independent: false,
+  );
+  projectChatRequests.add(dir);
 }
 
 /// Identifies one conversation: a skill tab, or a per-directory Gajala thread.
