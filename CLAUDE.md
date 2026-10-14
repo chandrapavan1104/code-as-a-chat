@@ -59,6 +59,14 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Gajala Terminal (October 14).** Library → Terminal runs live zsh sessions on
+the Mac with streamed, resumable output (`/api/shell`, `server/remote_shell.py`).
+Gated by the API token plus a new single-device pairing key (trust on first
+use with a push alert; other clients refused), `REMOTE_SHELL_ENABLED`, a
+biometric prompt on open, and an input audit log that omits echo-off input.
+Not a skill, so the agent/Telegram cannot reach it. Mac admin:
+`scripts/remote-shell`. Details: `docs/remote-shell.md`.
+
 **Project picker repair (October 12).** Projects load independently of model
 and session discovery and appear first, with accurate loading/error/retry states.
 Model refresh no longer delays or disables project selection. Chat startup uses
@@ -515,6 +523,13 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-14 — **Remote shell in Gajala.** Pty-backed zsh sessions (persistent
+  cwd/env, Ctrl-C, prompts) streamed as resumable NDJSON with heartbeats, a
+  Terminal screen with session picker, project start folder, quick keys and
+  history. There was no device binding before; added one for the shell only
+  (hashed per-phone key, one device, unpair from phone or Mac). 8 server tests,
+  8 app tests, and a live end-to-end run on an isolated server (auth refusals,
+  streaming, Ctrl-C, audit, no orphan shells after shutdown).
 - 2026-10-12 — **Simpler chat settings sheet.** The project/model sheet's long
   project list and rows of engine/model/backup chips are now four labelled
   dropdowns (Project, Coding engine, model with inline refresh, backup), plus a

@@ -290,6 +290,88 @@ class GajalaApi {
     }
   }
 
+  // ── remote shell (Library → Terminal) ─────────────────────────────────────
+  // Every call also carries this phone's paired-device key; see
+  // server/shell_api.py.
+  Options _shell(String deviceKey, {ResponseType? type}) => Options(
+    headers: {'X-Shell-Device': deviceKey},
+    responseType: type,
+  );
+
+  Future<Map<String, dynamic>> shellStatus(String deviceKey) async =>
+      Map<String, dynamic>.from(
+        (await _dio.get('/api/shell/status', options: _shell(deviceKey))).data,
+      );
+
+  Future<Map<String, dynamic>> shellPair(String deviceKey, String label) async =>
+      Map<String, dynamic>.from(
+        (await _dio.post(
+          '/api/shell/pair',
+          data: {'label': label},
+          options: _shell(deviceKey),
+        )).data,
+      );
+
+  Future<void> shellUnpair(String deviceKey) async =>
+      _dio.delete('/api/shell/pair', options: _shell(deviceKey));
+
+  Future<List<Map<String, dynamic>>> shellSessions(String deviceKey) async {
+    final data = (await _dio.get('/api/shell/sessions', options: _shell(deviceKey))).data;
+    return [
+      for (final s in (data['sessions'] as List? ?? const []))
+        Map<String, dynamic>.from(s as Map),
+    ];
+  }
+
+  Future<Map<String, dynamic>> shellCreate(
+    String deviceKey, {
+    String? project,
+    int cols = 80,
+    int rows = 40,
+  }) async => Map<String, dynamic>.from(
+    (await _dio.post(
+      '/api/shell/sessions',
+      data: {'project': ?project, 'cols': cols, 'rows': rows},
+      options: _shell(deviceKey),
+    )).data,
+  );
+
+  Future<void> shellClose(String deviceKey, String id) async =>
+      _dio.delete('/api/shell/sessions/$id', options: _shell(deviceKey));
+
+  Future<void> shellInput(String deviceKey, String id, String data) async =>
+      _dio.post(
+        '/api/shell/sessions/$id/input',
+        data: {'data': data},
+        options: _shell(deviceKey),
+      );
+
+  /// Live NDJSON output from byte [offset]: `hello`, `output` (with `next`),
+  /// `gap`, `heartbeat`, and `exit` when the shell ends.
+  Stream<Map<String, dynamic>> shellOutput(
+    String deviceKey,
+    String id,
+    int offset,
+  ) async* {
+    final resp = await _dio.get<ResponseBody>(
+      '/api/shell/sessions/$id/output',
+      queryParameters: {'offset': offset},
+      options: _shell(deviceKey, type: ResponseType.stream),
+    );
+    // utf8.decoder keeps a character split across two chunks intact.
+    final lines = utf8.decoder
+        .bind(resp.data!.stream.cast<List<int>>())
+        .transform(const LineSplitter());
+    await for (final line in lines) {
+      if (line.trim().isEmpty) continue;
+      try {
+        yield Map<String, dynamic>.from(jsonDecode(line) as Map);
+      } catch (_) {
+        /* skip a garbled frame */
+      }
+    }
+  }
+
   Future<void> cancelResearch(String id) async {
     await _dio.post('/api/work/$id/stop');
   }

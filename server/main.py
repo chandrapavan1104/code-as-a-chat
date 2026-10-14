@@ -16,6 +16,9 @@ from server.night_shift import night_shift_loop
 from server.queue_supervisor import supervisor_loop
 
 
+from server.remote_shell import manager as shell_manager  # noqa: E402
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cli_runs_store.init()
@@ -32,10 +35,12 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(night_shift_loop()),
         asyncio.create_task(supervisor_loop()),
+        asyncio.create_task(shell_manager.reap_loop()),
     ]
     try:
         yield
     finally:
+        shell_manager.shutdown()   # shells run in their own sessions; don't orphan them
         for task in tasks:
             task.cancel()
         for task in tasks:
