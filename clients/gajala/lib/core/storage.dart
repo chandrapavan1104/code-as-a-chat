@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -96,6 +97,20 @@ class Storage {
   static Future<void> clearConfig() async {
     await _s.delete(key: _kUrl);
     await _s.delete(key: _kToken);
+  }
+
+  /// This phone's remote-shell key: 32 random bytes, generated once and kept
+  /// in secure storage. The Mac stores only its hash and lets exactly one
+  /// paired device open a shell (server/db/shell_store.py).
+  static Future<String> shellDeviceKey() async {
+    const key = 'shell_device_key';
+    var value = await _s.read(key: key);
+    if (value == null || value.length < 32) {
+      final r = Random.secure();
+      value = base64Url.encode(List.generate(32, (_) => r.nextInt(256)));
+      await _s.write(key: key, value: value);
+    }
+    return value;
   }
 
   static Future<String> sessionId() async {

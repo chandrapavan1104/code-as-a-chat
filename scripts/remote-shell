@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Manage Gajala's remote shell from the Mac itself.
+
+Usage: remote-shell status | unbind | audit [N]
+
+`unbind` removes the paired phone (the next phone to open Terminal is paired)
+and is the way back in after a reinstall, or out after an unexpected pairing.
+Open sessions end at the next server restart; restart to end them now.
+"""
+
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from server.db import shell_store  # noqa: E402
+
+
+def _when(ts) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "never"
+
+
+def main() -> None:
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if cmd == "status":
+        bound = shell_store.binding()
+        if not bound:
+            print("Not paired. The next phone to open Gajala → Terminal will be paired.")
+        else:
+            print(f"Paired with {bound['label']} since {_when(bound['bound_at'])}; "
+                  f"last used {_when(bound['last_used'])}.")
+    elif cmd == "unbind":
+        print("Unpaired." if shell_store.unbind() else "Nothing was paired.")
+        shell_store.audit("unpair", device="mac (scripts/remote-shell)")
+    elif cmd == "audit":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 30
+        for row in reversed(shell_store.recent_audit(limit)):
+            text = (row["text"] or "").replace("\n", "⏎")
+            print(f"{_when(row['ts'])}  {row['kind']:<7} {row['session_id'] or '-':<12} "
+                  f"{row['device'] or '-':<16} {text}")
+    else:
+        print(__doc__.strip())
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

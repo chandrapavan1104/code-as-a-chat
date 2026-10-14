@@ -230,6 +230,9 @@ BATTERY_ALERT_COOLDOWN: int = int(os.getenv("BATTERY_ALERT_COOLDOWN", "1800"))  
 # job per engine in flight so all three coding subscriptions build in parallel on
 # isolated `night/*` branches; `auto` jobs use the verified deploy coordinator.
 NIGHT_SHIFT_ENABLED: bool = os.getenv("NIGHT_SHIFT_ENABLED", "false").lower() in ("1", "true", "yes")
+
+# Gajala Terminal (server/shell_api.py). Token + paired-device key gated; 0 turns it off.
+REMOTE_SHELL_ENABLED: bool = os.getenv("REMOTE_SHELL_ENABLED", "true").lower() in ("1", "true", "yes")
 NIGHT_START: str = os.getenv("NIGHT_START", "23:00")   # HH:MM local
 NIGHT_END: str = os.getenv("NIGHT_END", "07:00")       # HH:MM local (may wrap midnight)
 NIGHT_ENGINES: str = os.getenv("NIGHT_ENGINES", "claude,codex,gemini")
