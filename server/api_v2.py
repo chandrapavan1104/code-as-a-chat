@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from server import config as cfg
-from server import fcm, workspace, claude_quota
+from server import fcm, workspace, claude_quota, music_lookup
 from server.db import notes_store, diary_store, reminders_store
 from server.db import devices_store
 from server.db import store as memory
@@ -400,6 +400,14 @@ def register_device(d: DeviceIn):
 
 
 # ── voice: offline on-phone model ─────────────────────────────────────────────
+
+@router.get("/music/lookup")
+async def music_lookup_song(q: str):
+    """The YouTube Music song a spoken "play …" means, for on-phone voice
+    commands (the phone opens the song itself; a search never plays)."""
+    song = await music_lookup.find_song(q[:200])
+    return {"found": bool(song), **(song or {})}
+
 
 @router.get("/voice/model")
 def voice_model_info():

@@ -196,4 +196,46 @@ void main() {
     expect(result.reply, contains('could not confirm'));
     expect(result.handedOff, isFalse);
   });
+
+  test('music looks the song up on the Mac and opens it by id', () async {
+    Map<String, dynamic>? sent;
+    final result = await PhoneActions(
+      invoke: (method, args) async {
+        sent = args;
+        return {'status': 'playing', 'title': 'Em Cheppanu'};
+      },
+      ask: (_) async => 'yes',
+      isActive: () => true,
+      lookupSong: (q) async =>
+          {'found': true, 'video_id': 'KLMWNLaYLtU', 'title': 'Em Cheppanu'},
+    ).execute(const PlayMusic('DSP songs'));
+    expect(sent?['videoId'], 'KLMWNLaYLtU');
+    expect(sent?['title'], 'Em Cheppanu');
+    expect(result.reply, 'Playing Em Cheppanu on YouTube Music.');
+  });
+
+  test('a failed lookup still hands the search to YouTube Music', () async {
+    Map<String, dynamic>? sent;
+    await PhoneActions(
+      invoke: (method, args) async {
+        sent = args;
+        return {'status': 'searched'};
+      },
+      ask: (_) async => 'yes',
+      isActive: () => true,
+      lookupSong: (q) async => throw StateError('offline'),
+    ).execute(const PlayMusic('DSP songs'));
+    expect(sent?.containsKey('videoId'), isFalse);
+    expect(sent?['query'], 'DSP songs');
+  });
+
+  test('an opened song without notification access is reported as opened', () async {
+    final result = await PhoneActions(
+      invoke: (method, args) async => {'status': 'opened'},
+      ask: (_) async => 'yes',
+      isActive: () => true,
+    ).execute(const PlayMusic('DSP songs', videoId: 'KLMWNLaYLtU', title: 'Em Cheppanu'));
+    expect(result.reply, 'Opened Em Cheppanu in YouTube Music.');
+    expect(result.handedOff, isTrue);
+  });
 }

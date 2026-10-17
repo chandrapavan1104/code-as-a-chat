@@ -104,7 +104,10 @@ class CallContact extends LocalIntent {
 
 class PlayMusic extends LocalIntent {
   final String query;
-  const PlayMusic(this.query);
+  /// The exact YouTube Music song, when the Mac already looked it up.
+  final String? videoId;
+  final String? title;
+  const PlayMusic(this.query, {this.videoId, this.title});
   @override
   String get confirmation => 'Playing $query.';
   @override

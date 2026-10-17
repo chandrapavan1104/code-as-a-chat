@@ -525,6 +525,12 @@ class GajalaApi {
     }
   }
 
+  /// The YouTube Music song a spoken "play …" means (`found`, `video_id`,
+  /// `title`, `artist`), looked up on the Mac.
+  Future<Map<String, dynamic>> musicLookup(String query) async => Map<String, dynamic>.from(
+        (await _dio.get('/api/music/lookup', queryParameters: {'q': query})).data,
+      );
+
   Future<Map<String, dynamic>> voiceModelInfo() async =>
       Map<String, dynamic>.from((await _dio.get('/api/voice/model')).data);
 

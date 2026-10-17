@@ -233,6 +233,8 @@ class DeviceActions {
       await _phone.invokeMethod<Map>('playMusic', {
             'query': query,
             'package': _musicApps[app],
+            'videoId': ?a['video_id']?.toString(),
+            'title': ?a['title']?.toString(),
           }) ??
           const {},
     );
@@ -248,7 +250,17 @@ class DeviceActions {
       r['done'] = 'Playing $title.';
       return r;
     }
+    if (status == 'opened') {
+      r.remove('status');
+      r['done'] = r['message']?.toString() ?? 'Opened it in YouTube Music.';
+      return r;
+    }
     final reason = r['message']?.toString().trim();
+    final seen = r['title']?.toString().trim() ?? '';
+    if (status == 'unverified' && seen.isNotEmpty) {
+      // Say what the player actually shows, so a mismatch is diagnosable.
+      throw _Refused('${reason ?? 'Playback was not verified.'} YouTube Music shows "$seen".');
+    }
     throw _Refused(
       reason?.isNotEmpty == true
           ? reason!

@@ -74,7 +74,8 @@ class VoiceActions(private val activity: Activity) {
         when (call.method) {
             "resolveContact" -> resolveContact(call.argument<String>("query"), result)
             "call" -> callNumber(call.argument<String>("number"), result)
-            "playMusic" -> playMusic(call.argument<String>("query"), call.argument<String>("package"), result)
+            "playMusic" -> playMusic(call.argument<String>("query"), call.argument<String>("package"), result,
+                call.argument<String>("videoId"), call.argument<String>("title"))
             "musicApps" -> result.success(musicApps())
             "musicAccess" -> {
                 val id = UUID.randomUUID().toString()
@@ -226,7 +227,8 @@ class VoiceActions(private val activity: Activity) {
         }
     }
 
-    private fun playMusic(query: String?, packageName: String?, result: MethodChannel.Result) {
+    private fun playMusic(query: String?, packageName: String?, result: MethodChannel.Result,
+                          videoId: String? = null, songTitle: String? = null) {
         val text = query?.trim().orEmpty()
         if (text.isEmpty()) {
             result.success(mapOf("status" to "invalid", "message" to "Music query is empty."))
@@ -242,6 +244,9 @@ class VoiceActions(private val activity: Activity) {
         val beforeToken = before?.sessionToken
         val beforeTitle = before?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
         val beforeArtist = before?.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
+        if (targetPackage == YOUTUBE_MUSIC && !videoId.isNullOrBlank() &&
+            playYouTubeMusicTrack(videoId, songTitle?.takeIf { it.isNotBlank() } ?: text, manager,
+                beforeToken, beforeTitle, beforeArtist, once)) return
         if (targetPackage == YOUTUBE_MUSIC) {
             probeYtMusic(requestId) { probe ->
                 if (disposed) return@probeYtMusic
@@ -358,6 +363,46 @@ class VoiceActions(private val activity: Activity) {
         verifyPlaybackAsync(manager, targetPackage, text, extras, beforeToken, beforeTitle, beforeArtist, result,
             allowSessionNudge = targetPackage != YOUTUBE_MUSIC,
             diagnostic = musicDiagnostic("intent_execution", "requested", "Intent dispatched; playback pending verification", probe))
+    }
+
+    /**
+     * Open one song by its YouTube Music id (looked up on the Mac). A search
+     * only shows YouTube Music's results list, and its play-from-search session
+     * is reserved for Google's own clients; the song's link — what a shared
+     * link does — starts playback by itself. False when it could not launch,
+     * so the caller falls back to the search handoff.
+     */
+    private fun playYouTubeMusicTrack(videoId: String, title: String, manager: MediaSessionManager?,
+                                      beforeToken: MediaSession.Token?, beforeTitle: String,
+                                      beforeArtist: String, result: MethodChannel.Result): Boolean {
+        if (!Regex("[A-Za-z0-9_-]{11}").matches(videoId)) return false
+        val intent = Intent(Intent.ACTION_VIEW,
+            android.net.Uri.parse("https://music.youtube.com/watch?v=$videoId")).apply {
+            setPackage(YOUTUBE_MUSIC)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            activity.startActivity(intent)
+        } catch (_: android.content.ActivityNotFoundException) {
+            return false
+        } catch (_: SecurityException) {
+            return false
+        }
+        val diag = musicDiagnostic("track_link", "opened", "Song link opened", emptyMap())
+        if (musicAccess()["sessionReadable"] != true) {
+            result.success(mapOf("status" to "opened", "package" to YOUTUBE_MUSIC, "title" to title,
+                "diagnostics" to diag,
+                "message" to "Opened $title in YouTube Music. Gajala cannot confirm the audio " +
+                    "without notification access."))
+            return true
+        }
+        // Verify against the song's own title: the spoken query ("DSP songs")
+        // need not appear in the track's metadata.
+        val needle = title.replace(Regex("[(\\[].*?[)\\]]"), " ")
+            .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ").trim().ifBlank { title }
+        verifyPlaybackAsync(manager, YOUTUBE_MUSIC, needle, Bundle(), beforeToken, beforeTitle,
+            beforeArtist, result, allowSessionNudge = false, diagnostic = diag)
+        return true
     }
 
     /** Try a package-targeted search fallback; installed app support varies.
