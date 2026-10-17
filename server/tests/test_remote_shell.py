@@ -1,5 +1,6 @@
 """Gajala Terminal: pairing, device gating, live sessions and the audit log."""
 
+import asyncio
 import json
 
 import pytest
@@ -132,3 +133,66 @@ def test_utf8_tail_is_held_back():
 def test_routes_are_mounted_on_the_real_app():
     from server.main import app
     assert TestClient(app).get("/api/shell/status").status_code == 401
+
+
+def test_pagers_and_git_editor_cannot_trap_the_phone(shell, tmp_path):
+    shell.post("/api/shell/pair", headers=_h(), json={})
+    sid = shell.post("/api/shell/sessions", headers=_h(),
+                     json={"project": str(tmp_path)}).json()["id"]
+    out, _ = _run(shell, sid, "echo env:$PAGER-$GIT_PAGER-$MANPAGER-$GIT_EDITOR")
+    assert "env:cat-cat-cat-true" in out
+
+
+RAW_PROGRAM = ("python3 -c \"import sys,termios,tty; s=termios.tcgetattr(0); tty.setraw(0); "
+               "c=sys.stdin.read(1); termios.tcsetattr(0, termios.TCSADRAIN, s); "
+               "print('got', ord(c))\"")
+
+
+def test_stream_reports_keys_and_secret_modes(shell, tmp_path):
+    """Drive the NDJSON generator directly: TestClient cannot send a request
+    while it is still reading a streamed response."""
+    shell_store.bind(KEY, "Pixel")
+
+    async def scenario():
+        session = shell_api.manager.create(tmp_path)
+        response = await shell_api.stream_output(session.id, 0, x_shell_device=KEY)
+        send = lambda data: shell_api.send_input(session.id, shell_api.Input(data=data),
+                                                 x_shell_device=KEY)
+        modes, out, asked_password = [], "", False
+        frames = response.body_iterator
+        hello = json.loads(await asyncio.wait_for(anext(frames), 5))
+        assert hello["mode"] == "line" and hello["program"] is None
+        send(RAW_PROGRAM + "\n")
+        while True:
+            frame = json.loads(await asyncio.wait_for(anext(frames), 10))
+            if frame["type"] == "output":
+                out += frame["data"]
+            elif frame["type"] == "exit":
+                return modes, out
+            elif frame["type"] == "mode":
+                modes.append((frame["mode"], frame["program"]))
+                if frame["mode"] == "keys":
+                    send("\r")                                  # one raw key
+                elif frame["mode"] == "line" and frame["program"] is None \
+                        and not asked_password:                  # back at the zsh prompt
+                    asked_password = True
+                    send("read -s pw\n")
+                elif frame["mode"] == "secret":
+                    send("hunter2\nexit\n")
+
+    modes, out = shell.portal.call(scenario)
+    assert modes[0][0] == "keys" and "python" in (modes[0][1] or "").lower()
+    seen = [m for m, _ in modes]
+    assert seen.index("line") < seen.index("secret")
+    assert "got 13" in out                                       # \r went through raw
+    texts = [row["text"] for row in shell_store.recent_audit()]
+    assert "⏎" in texts and "[hidden input]" in texts
+    assert not any("hunter2" in (t or "") for t in texts)
+
+
+def test_audit_text_by_mode():
+    assert shell_api._audit_text("\x1b[B\x1b[B\r", "keys") == "↓ ↓ ⏎"
+    assert shell_api._audit_text("hunter2\r", "keys") == "[7 chars] ⏎"
+    assert shell_api._audit_text("\x1bOA\x03\x7f\t\x1b", "keys") == "↑ ^C ⌫ <tab> <esc>"
+    assert shell_api._audit_text("hunter2\n", "secret") == "[hidden input]"
+    assert shell_api._audit_text("git status\n", "line") == "git status"

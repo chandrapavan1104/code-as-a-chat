@@ -64,7 +64,9 @@ the Mac with streamed, resumable output (`/api/shell`, `server/remote_shell.py`)
 Gated by the API token plus a new single-device pairing key (trust on first
 use with a push alert; other clients refused), `REMOTE_SHELL_ENABLED`, a
 biometric prompt on open, and an input audit log that omits echo-off input.
-Not a skill, so the agent/Telegram cannot reach it. Mac admin:
+Interactive prompts: the Mac reports line / keys / secret input mode, and the
+phone switches to a key pad (arrows, Enter, Esc, Ctrl) or a masked field;
+pagers are off. Not a skill, so the agent/Telegram cannot reach it. Mac admin:
 `scripts/remote-shell`. Details: `docs/remote-shell.md`.
 
 **Project picker repair (October 12).** Projects load independently of model
@@ -523,6 +525,15 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-16 — **Remote shell handles interactive prompts.** `gh auth login`'s
+  arrow-key picker trapped the line-based input. The server now reads the
+  terminal mode (canonical/echo) and the program in front, streaming `mode`
+  frames; Gajala switches to a key pad with a send-as-you-type field for raw
+  programs and a masked, history-free field for password prompts, with ordered,
+  batched input and a manual Keys override. Pagers print through and
+  GIT_EDITOR=true. The audit log no longer marks raw-mode keys as hidden: it
+  records key names and character counts, never raw-mode text. 11 server and
+  9 terminal widget tests; live check: gh picker navigated with ↓ and cancelled.
 - 2026-10-14 — **Remote shell in Gajala.** Pty-backed zsh sessions (persistent
   cwd/env, Ctrl-C, prompts) streamed as resumable NDJSON with heartbeats, a
   Terminal screen with session picker, project start folder, quick keys and

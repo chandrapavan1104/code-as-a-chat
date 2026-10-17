@@ -4,8 +4,10 @@ Each session is one real zsh in a pseudo-terminal, so `cd`, environment
 variables and aliases persist between commands, prompts (y/n) can be
 answered, and Ctrl-C reaches the running program through the terminal's own
 line discipline. zsh runs without its line editor (+Z): the kernel then does
-the echoing, which keeps the output plain text and lets `echo_on()` tell when
-the terminal is reading a password, so the audit log can leave it out.
+the echoing, which keeps the output plain text and makes the terminal's own
+mode meaningful — `mode()` reads it to tell the phone whether the program in
+front wants a line, raw keys (arrow-key menus) or a password, and the audit
+log uses the same reading to decide what it may keep.
 
 Output goes to an in-memory ring buffer addressed by absolute byte offset.
 Viewers stream from any offset and resume from the last one they saw after a
@@ -25,6 +27,8 @@ import termios
 import time
 import uuid
 from pathlib import Path
+
+import psutil
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +60,13 @@ def _child_env() -> dict[str, str]:
             if k in os.environ}
     return {**keep, "HOME": home, "SHELL": SHELL, "TERM": "dumb",
             "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "LANG": keep.get("LANG", "en_US.UTF-8"), "GAJALA_REMOTE_SHELL": "1"}
+            "LANG": keep.get("LANG", "en_US.UTF-8"), "GAJALA_REMOTE_SHELL": "1",
+            # Pagers are the usual accidental full-screen app (git log, git diff,
+            # man) and cannot be driven from the phone; print straight through.
+            "PAGER": "cat", "GIT_PAGER": "cat", "MANPAGER": "cat",
+            # `git commit` without -m would open vi. `true` leaves the message
+            # empty, so git aborts with a clear "empty commit message" instead.
+            "GIT_EDITOR": "true"}
 
 
 def _utf8_safe_end(chunk: bytes | bytearray) -> int:
@@ -146,11 +156,36 @@ class Session:
         return gap, bytes(chunk), offset + len(chunk)
 
     # ── input ─────────────────────────────────────────────────────────────
-    def echo_on(self) -> bool:
+    def mode(self) -> str:
+        """How the program in front is reading the terminal.
+
+        line   — canonical with echo: commands and `read` prompts; a text line
+                 plus Enter is right.
+        keys   — raw (non-canonical): menus, y/n keys, fzf, REPLs; every key
+                 must go through as it is pressed, Enter as \\r.
+        secret — canonical with echo off: a password prompt.
+        """
+        if self.closed:
+            return "line"
         try:
-            return bool(termios.tcgetattr(self.fd)[3] & termios.ECHO)
+            lflag = termios.tcgetattr(self.fd)[3]
         except (termios.error, OSError):
-            return True
+            return "line"
+        if not lflag & termios.ICANON:
+            return "keys"
+        return "line" if lflag & termios.ECHO else "secret"
+
+    def foreground(self) -> str | None:
+        """Name of the program in front, or None when it is the shell itself."""
+        if self.closed:
+            return None
+        try:
+            pgid = os.tcgetpgrp(self.fd)
+            if pgid <= 0 or pgid == self.pid:   # 0: nobody owns the tty yet (startup)
+                return None
+            return psutil.Process(pgid).name()
+        except (OSError, psutil.Error):
+            return None
 
     def write(self, data: str) -> None:
         if self.closed:
