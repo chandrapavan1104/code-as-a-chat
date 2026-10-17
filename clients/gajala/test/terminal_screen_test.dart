@@ -42,8 +42,14 @@ class FakeShellApi extends GajalaApi {
     return s;
   }
 
+  Completer<void>? holdNextInput; // lets a test delay one request
   @override
-  Future<void> shellInput(String deviceKey, String id, String data) async => inputs.add(data);
+  Future<void> shellInput(String deviceKey, String id, String data) async {
+    final hold = holdNextInput;
+    holdNextInput = null;
+    if (hold != null) await hold.future;
+    inputs.add(data);
+  }
 
   @override
   Stream<Map<String, dynamic>> shellOutput(String deviceKey, String id, int offset) {
@@ -122,6 +128,101 @@ void main() {
     final api = _FailingApi();
     await pumpTerminal(tester, api);
     expect(find.textContaining('turned off on the Mac'), findsOneWidget);
+  });
+
+  Future<FakeShellApi> openSession(WidgetTester tester) async {
+    final api = FakeShellApi()
+      ..status = {'enabled': true, 'paired': true, 'this_device': true}
+      ..sessions.add({'id': 'abcd1234', 'cwd': '/Users/me', 'closed': false});
+    await pumpTerminal(tester, api);
+    api.out!.add({'type': 'hello', 'mode': 'line', 'program': null});
+    await tester.pumpAndSettle();
+    return api;
+  }
+
+  Future<void> flushKeys(WidgetTester tester) async {
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('a raw-key menu switches to the key pad; arrows and Enter go through', (tester) async {
+    final api = await openSession(tester);
+    api.out!.add({'type': 'mode', 'mode': 'keys', 'program': 'gh'});
+    await tester.pumpAndSettle();
+    expect(find.textContaining('gh is reading keys'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.arrow_downward));
+    await tester.tap(find.byIcon(Icons.keyboard_return));
+    await flushKeys(tester);
+    expect(api.inputs, ['\x1B[B\r']); // batched, in order, Enter as CR
+
+    await tester.enterText(find.byKey(const ValueKey('keys-input')), '\u200Bab');
+    await flushKeys(tester);
+    await tester.enterText(find.byKey(const ValueKey('keys-input')), '');
+    await flushKeys(tester);
+    expect(api.inputs.sublist(1), ['ab', '\x7f']);
+
+    await tester.tap(find.text('Ctrl'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const ValueKey('keys-input')), '\u200Bc');
+    await flushKeys(tester);
+    expect(api.inputs.last, '\x03');
+
+    api.out!.add({'type': 'mode', 'mode': 'line', 'program': null});
+    await tester.pumpAndSettle();
+    expect(find.text('Command'), findsOneWidget);
+  });
+
+  testWidgets('application cursor mode changes the arrow sequence', (tester) async {
+    final api = await openSession(tester);
+    api.out!.add({'type': 'output', 'data': '\x1B[?1hmenu', 'next': 9});
+    api.out!.add({'type': 'mode', 'mode': 'keys', 'program': 'fzf'});
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await flushKeys(tester);
+    expect(api.inputs, ['\x1BOA']);
+  });
+
+  testWidgets('password prompts are masked and never kept in history', (tester) async {
+    final api = await openSession(tester);
+    api.out!.add({'type': 'mode', 'mode': 'secret', 'program': 'sudo'});
+    await tester.pumpAndSettle();
+    final field = tester.widget<TextField>(find.byKey(const ValueKey('secret-input')));
+    expect(field.obscureText, isTrue);
+    await tester.enterText(find.byKey(const ValueKey('secret-input')), 'hunter2');
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pumpAndSettle();
+    expect(api.inputs, ['hunter2\n']);
+    api.out!.add({'type': 'mode', 'mode': 'line', 'program': null});
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Previous command'));
+    await tester.pump();
+    expect(find.text('hunter2'), findsNothing);
+  });
+
+  testWidgets('manual Keys toggle, and a prompt returning resets it', (tester) async {
+    final api = await openSession(tester);
+    await tester.tap(find.text('Keys'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Keys mode (manual)'), findsOneWidget);
+    await tester.tap(find.text('Back to line'));
+    await tester.pumpAndSettle();
+    expect(find.text('Command'), findsOneWidget);
+    expect(api.inputs, isEmpty);
+  });
+
+  testWidgets('inputs stay in order even when a request is slow', (tester) async {
+    final api = await openSession(tester);
+    final hold = Completer<void>();
+    api.holdNextInput = hold;
+    await tester.enterText(find.byType(TextField), 'first');
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pump();
+    await tester.tap(find.text('Ctrl-C'));
+    await tester.pump();
+    expect(api.inputs, isEmpty); // Ctrl-C waits behind the slow first send
+    hold.complete();
+    await tester.pumpAndSettle();
+    expect(api.inputs, ['first\n', '\x03']);
   });
 }
 

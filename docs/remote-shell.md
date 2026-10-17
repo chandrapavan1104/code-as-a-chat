@@ -18,6 +18,25 @@ Library → Terminal runs live zsh sessions on the Mac from the phone.
 - Limits: 3 live sessions, 30 min idle, 12 h lifetime; closing hangs up the whole
   process group; server shutdown kills every shell.
 
+## Interactive programs (raw-key mode)
+
+The Mac reads the terminal's own mode and streams `mode` frames
+(`hello` includes the current one), with the program in front:
+
+- `line` — canonical + echo (commands, `read`): the text box, send adds Enter.
+- `keys` — non-canonical / raw (gh/npm/inquirer menus, y/n keys, fzf, REPLs):
+  the phone shows a key pad (arrows, Enter as `\r`, Space, Backspace, Tab, Esc,
+  a Ctrl latch, Ctrl-C) and a field that sends each key as typed. Keys typed
+  within 30 ms go out together; inputs are strictly ordered. Arrows follow the
+  program's application-cursor mode (`ESC O x` after `ESC[?1h`).
+- `secret` — canonical, echo off (password prompts): a masked field, never kept
+  in history or on screen.
+
+A manual **Keys** toggle covers programs the detection misreads; it resets when
+the shell prompt returns. Pagers are disabled (`PAGER`, `GIT_PAGER`,
+`MANPAGER=cat`) and `GIT_EDITOR=true`, so `git commit` without `-m` aborts with
+"empty commit message" and `git rebase -i` keeps the todo list as is.
+
 ## Security
 
 1. Same `X-API-Token` as every `/api` route; tailnet-only (Tailscale Serve).
@@ -28,14 +47,17 @@ Library → Terminal runs live zsh sessions on the Mac from the phone.
    only the token — get 403. It is an API, not a skill, so the agent cannot call it.
 3. `REMOTE_SHELL_ENABLED=0` in `.env` turns it off.
 4. Audit log (`~/.codeasachat/shell.db`): pair/start/input/close with time,
-   session and directory. Output is never stored. Input sent while the terminal
-   has echo off (password prompts) is recorded as `[hidden input]`.
+   session and directory. Output is never stored. Input is logged by the mode it
+   arrived in: `line` verbatim, `secret` as `[hidden input]`, `keys` as key
+   names with typed text only counted (`↓ ↓ ⏎`, `[5 chars]`) — some raw-mode
+   password fields draw their own `***`, so their content is never kept.
 5. The phone asks for fingerprint / screen lock every time Terminal opens.
 
 On the Mac: `scripts/remote-shell status | unbind | audit [N]`.
 
 ## Limits
 
-Full-screen programs (vim, top, less) do not render; colours are stripped.
+Full-screen programs (vim, top, less) still do not render (Phase 2: a server-side
+pyte screen); colours are stripped.
 Residual risk: before the first pairing, a holder of the API token could pair
 first; the push alert reveals it and `scripts/remote-shell unbind` removes it.

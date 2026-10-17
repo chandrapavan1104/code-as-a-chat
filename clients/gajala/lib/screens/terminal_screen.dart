@@ -53,6 +53,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   bool _follow = true;
   final List<String> _history = [];
   int _historyPos = 0;
+  // How the program in front reads the terminal, as the Mac reports it:
+  // 'line' (commands), 'keys' (arrow-key menus, y/n keys, REPLs) or 'secret'
+  // (a password prompt). [_forceKeys] is the manual override for the rare
+  // program the detection gets wrong.
+  String _mode = 'line';
+  String? _program;
+  bool _forceKeys = false;
+  bool _ctrl = false; // Ctrl latch: the next typed letter becomes a control key
+  bool _appCursor = false; // DECCKM: arrows as ESC O x instead of ESC [ x
+  // Keys typed in quick succession go out as one request; every input waits for
+  // the previous one so keystrokes can never arrive out of order.
+  Future<void> _outbox = Future.value();
+  String _pendingKeys = '';
+  Timer? _keyFlush;
+  static const _sentinel = '\u200B'; // lets Backspace on an "empty" field be seen
+  final _keysInput = TextEditingController(text: _sentinel);
+  final _secretInput = TextEditingController();
 
   GajalaApi? get _api => ref.read(apiProvider);
   TerminalBuffer get _buffer => _buffers.putIfAbsent(_sid ?? '', TerminalBuffer.new);
@@ -72,6 +89,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   void dispose() {
     _sub?.cancel();
     _retry?.cancel();
+    _keyFlush?.cancel();
+    _keysInput.dispose();
+    _secretInput.dispose();
     _input.dispose();
     _focus.dispose();
     _scroll.dispose();
@@ -207,9 +227,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     switch (frame['type']) {
       case 'hello':
         _retries = 0;
-        setState(() => _connected = true);
+        setState(() {
+          _connected = true;
+          _mode = frame['mode']?.toString() ?? 'line';
+          _program = frame['program']?.toString();
+        });
+      case 'mode':
+        setState(() {
+          _mode = frame['mode']?.toString() ?? 'line';
+          _program = frame['program']?.toString();
+          _ctrl = false;
+          if (_mode == 'line') _forceKeys = false; // back at a prompt: drop the override
+        });
       case 'output':
-        buffer.append(frame['data']?.toString() ?? '');
+        final data = frame['data']?.toString() ?? '';
+        final on = data.lastIndexOf('\x1B[?1h'), off = data.lastIndexOf('\x1B[?1l');
+        if (on != off) _appCursor = on > off;
+        buffer.append(data);
         _offsets[id] = (frame['next'] as num).toInt();
         setState(() {});
         _scrollToEnd();
@@ -332,15 +366,62 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     await _loadSessions();
   }
 
-  Future<void> _send(String data) async {
+  Future<void> _send(String data) {
     final id = _sid;
-    if (id == null || _ended.contains(id)) return;
-    try {
-      await _api!.shellInput(_key!, id, data);
-      _follow = true;
-    } catch (e) {
-      _snack(_detail(e));
+    if (id == null || _ended.contains(id) || data.isEmpty) return _outbox;
+    _follow = true;
+    return _outbox = _outbox.then((_) async {
+      try {
+        await _api!.shellInput(_key!, id, data);
+      } catch (e) {
+        _snack(_detail(e));
+      }
+    });
+  }
+
+  String get _effectiveMode =>
+      _mode == 'secret' ? 'secret' : (_forceKeys || _mode == 'keys' ? 'keys' : 'line');
+
+  /// One key (or a typed burst) in keys mode. Sent ~30 ms later together with
+  /// whatever else was typed meanwhile.
+  void _typeKey(String seq) {
+    if (_ctrl && seq.length == 1 && RegExp('[a-zA-Z@\\[\\]\\\\^_ ]').hasMatch(seq)) {
+      seq = String.fromCharCode(seq.toUpperCase().codeUnitAt(0) & 0x1f);
+      setState(() => _ctrl = false);
     }
+    _pendingKeys += seq;
+    _keyFlush?.cancel();
+    _keyFlush = Timer(const Duration(milliseconds: 30), () {
+      final batch = _pendingKeys;
+      _pendingKeys = '';
+      _send(batch);
+    });
+  }
+
+  String _arrow(String dir) => _appCursor ? '\x1BO$dir' : '\x1B[$dir';
+
+  /// The keys-mode field never holds text: whatever lands in it is sent and the
+  /// field resets to one invisible character, so Backspace is still noticed.
+  void _onKeysTyped(String value) {
+    if (!value.contains(_sentinel)) {
+      _typeKey('\x7f');
+    } else {
+      final typed = value.replaceAll(_sentinel, '');
+      for (final ch in typed.split('')) {
+        _typeKey(ch == '\n' ? '\r' : ch);
+      }
+    }
+    _keysInput.value = const TextEditingValue(
+      text: _sentinel,
+      selection: TextSelection.collapsed(offset: 1),
+    );
+  }
+
+  void _submitSecret() {
+    final text = _secretInput.text;
+    _secretInput.clear(); // never kept in history or on screen
+    _send('$text\n');
+    _focus.requestFocus();
   }
 
   void _submit() {
@@ -518,69 +599,195 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
                     ),
             ),
           ),
-          if (_sid != null && !ended) ...[
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                children: [
-                  for (final (label, data) in const [
-                    ('Ctrl-C', '\x03'),
-                    ('Ctrl-D', '\x04'),
-                    ('Tab', '\t'),
-                    ('Esc', '\x1b'),
-                    ('y ⏎', 'y\n'),
-                  ])
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: ActionChip(label: Text(label), onPressed: () => _send(data)),
-                    ),
-                  IconButton(
-                    tooltip: 'Previous command',
-                    icon: const Icon(Icons.keyboard_arrow_up),
-                    onPressed: () => _recall(-1),
-                  ),
-                  IconButton(
-                    tooltip: 'Next command',
-                    icon: const Icon(Icons.keyboard_arrow_down),
-                    onPressed: () => _recall(1),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _input,
-                      focusNode: _focus,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      textCapitalization: TextCapitalization.none,
-                      keyboardType: TextInputType.visiblePassword, // no autocorrect/predictions
-                      style: const TextStyle(fontFamily: 'monospace'),
-                      decoration: const InputDecoration(
-                        hintText: 'Command',
-                        isDense: true,
-                        border: OutlineInputBorder(),
-                      ),
-                      onSubmitted: (_) => _submit(),
-                      textInputAction: TextInputAction.send,
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Run',
-                    icon: const Icon(Icons.send),
-                    onPressed: _submit,
-                  ),
-                ],
-              ),
-            ),
-          ],
+          if (_sid != null && !ended) ..._inputArea(),
         ],
       ),
     );
   }
+
+  List<Widget> _inputArea() => switch (_effectiveMode) {
+    'keys' => _keysArea(),
+    'secret' => _secretArea(),
+    _ => _lineArea(),
+  };
+
+  Widget _chips(List<Widget> children) => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    child: Row(
+      children: [
+        for (final c in children)
+          Padding(padding: const EdgeInsets.only(right: 6), child: c),
+      ],
+    ),
+  );
+
+  List<Widget> _lineArea() => [
+    _chips([
+      for (final (label, data) in const [
+        ('Ctrl-C', '\x03'),
+        ('Ctrl-D', '\x04'),
+        ('Tab', '\t'),
+        ('Esc', '\x1b'),
+        ('y ⏎', 'y\n'),
+      ])
+        ActionChip(label: Text(label), onPressed: () => _send(data)),
+      ActionChip(
+        avatar: const Icon(Icons.keyboard_outlined, size: 18),
+        label: const Text('Keys'),
+        tooltip: 'Send each key as you press it',
+        onPressed: () => setState(() => _forceKeys = true),
+      ),
+      IconButton(
+        tooltip: 'Previous command',
+        icon: const Icon(Icons.keyboard_arrow_up),
+        onPressed: () => _recall(-1),
+      ),
+      IconButton(
+        tooltip: 'Next command',
+        icon: const Icon(Icons.keyboard_arrow_down),
+        onPressed: () => _recall(1),
+      ),
+    ]),
+    Padding(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _input,
+              focusNode: _focus,
+              autocorrect: false,
+              enableSuggestions: false,
+              textCapitalization: TextCapitalization.none,
+              keyboardType: TextInputType.visiblePassword, // no autocorrect/predictions
+              style: const TextStyle(fontFamily: 'monospace'),
+              decoration: const InputDecoration(
+                hintText: 'Command',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+              textInputAction: TextInputAction.send,
+            ),
+          ),
+          IconButton(tooltip: 'Run', icon: const Icon(Icons.send), onPressed: _submit),
+        ],
+      ),
+    ),
+  ];
+
+  /// Raw-key programs: an arrow pad and a field that sends each key as typed.
+  List<Widget> _keysArea() {
+    Widget key(String label, String seq, {IconData? icon, String? tip}) => SizedBox(
+      height: 40,
+      child: OutlinedButton(
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          minimumSize: const Size(44, 40),
+        ),
+        onPressed: () => _typeKey(seq),
+        child: icon != null
+            ? Icon(icon, size: 20, semanticLabel: tip ?? label)
+            : Text(label),
+      ),
+    );
+    final who = _program ?? 'The program';
+    return [
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 6, 4, 2),
+        child: Row(
+          children: [
+            const Icon(Icons.keyboard_outlined, size: 16),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                _forceKeys && _mode != 'keys'
+                    ? 'Keys mode (manual): each key goes straight to the shell'
+                    : '$who is reading keys — they go straight through',
+                style: const TextStyle(fontSize: 12.5),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (_forceKeys && _mode != 'keys')
+              TextButton(
+                onPressed: () => setState(() => _forceKeys = false),
+                child: const Text('Back to line'),
+              ),
+          ],
+        ),
+      ),
+      _chips([
+        key('↑', _arrow('A'), icon: Icons.arrow_upward, tip: 'Up'),
+        key('↓', _arrow('B'), icon: Icons.arrow_downward, tip: 'Down'),
+        key('←', _arrow('D'), icon: Icons.arrow_back, tip: 'Left'),
+        key('→', _arrow('C'), icon: Icons.arrow_forward, tip: 'Right'),
+        key('Enter', '\r', icon: Icons.keyboard_return, tip: 'Enter'),
+        key('Space', ' ', icon: Icons.space_bar, tip: 'Space'),
+        key('⌫', '\x7f', icon: Icons.backspace_outlined, tip: 'Backspace'),
+        key('Tab', '\t'),
+        key('Esc', '\x1b'),
+        FilterChip(
+          label: const Text('Ctrl'),
+          selected: _ctrl,
+          tooltip: 'Make the next letter a control key',
+          onSelected: (on) => setState(() => _ctrl = on),
+        ),
+        key('Ctrl-C', '\x03'),
+      ]),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+        child: TextField(
+          key: const ValueKey('keys-input'),
+          controller: _keysInput,
+          focusNode: _focus,
+          autocorrect: false,
+          enableSuggestions: false,
+          textCapitalization: TextCapitalization.none,
+          keyboardType: TextInputType.visiblePassword,
+          style: const TextStyle(fontFamily: 'monospace'),
+          decoration: InputDecoration(
+            hintText: _ctrl ? 'Type a letter for Ctrl-…' : 'Type — each key is sent',
+            isDense: true,
+            border: const OutlineInputBorder(),
+          ),
+          onChanged: _onKeysTyped,
+          onEditingComplete: () => _typeKey('\r'), // keeps the keyboard open
+          textInputAction: TextInputAction.go,
+        ),
+      ),
+    ];
+  }
+
+  /// Password prompts: masked, never echoed on the phone or saved in history.
+  List<Widget> _secretArea() => [
+    _chips([ActionChip(label: const Text('Ctrl-C'), onPressed: () => _send('\x03'))]),
+    Padding(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              key: const ValueKey('secret-input'),
+              controller: _secretInput,
+              focusNode: _focus,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.lock_outline, size: 18),
+                hintText: 'Password (hidden, not saved)',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submitSecret(),
+              textInputAction: TextInputAction.send,
+            ),
+          ),
+          IconButton(tooltip: 'Send', icon: const Icon(Icons.send), onPressed: _submitSecret),
+        ],
+      ),
+    ),
+  ];
 }

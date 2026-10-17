@@ -10,6 +10,7 @@ Mac's .env switches the whole feature off.
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/shell", tags=["shell"])
 
 MIN_KEY_CHARS = 32
 HEARTBEAT_SECONDS = 15
+MODE_POLL_SECONDS = 0.3   # a program can switch to raw mode without printing
 MAX_INPUT_CHARS = 4096
 _CONTROL_NAMES = {"\x03": "^C", "\x04": "^D", "\x1a": "^Z", "\t": "<tab>", "\x1b": "<esc>"}
 
@@ -61,10 +63,42 @@ def _raise(exc: ShellError):
     raise HTTPException(exc.status, str(exc))
 
 
-def _audit_text(data: str, echo_on: bool) -> str:
-    """What the audit log keeps of an input chunk; hidden input is never stored."""
-    if not echo_on:
+_KEY_NAMES = {"\x1b[A": "↑", "\x1bOA": "↑", "\x1b[B": "↓", "\x1bOB": "↓",
+              "\x1b[C": "→", "\x1bOC": "→", "\x1b[D": "←", "\x1bOD": "←",
+              "\x1b[H": "<home>", "\x1bOH": "<home>", "\x1b[F": "<end>", "\x1bOF": "<end>",
+              "\x1b[3~": "<del>", "\x1b[5~": "<pgup>", "\x1b[6~": "<pgdn>"}
+_KEY_TOKEN = re.compile(r"\x1b\[[0-9;]*[~A-Za-z]|\x1bO[A-Za-z]|[\x00-\x1f\x7f]|[^\x00-\x1f\x7f]+")
+
+
+def _key_summary(data: str) -> str:
+    """Raw-mode input as key names. Typed text is only counted: some raw-mode
+    password fields draw their own `***`, so content is never kept."""
+    out = []
+    for token in _KEY_TOKEN.findall(data):
+        if token in _KEY_NAMES:
+            out.append(_KEY_NAMES[token])
+        elif token.startswith("\x1b") and len(token) > 1:
+            out.append("<key>")
+        elif token in ("\r", "\n"):
+            out.append("⏎")
+        elif token in ("\x7f", "\b"):
+            out.append("⌫")
+        elif token in _CONTROL_NAMES:
+            out.append(_CONTROL_NAMES[token])
+        elif len(token) == 1 and ord(token) < 32:
+            out.append("^" + chr(ord(token) + 64))
+        else:
+            out.append(f"[{len(token)} char{'s' if len(token) != 1 else ''}]")
+    return " ".join(out)
+
+
+def _audit_text(data: str, mode: str) -> str:
+    """What the audit log keeps of an input chunk, by the terminal's mode when it
+    arrived: commands verbatim, password prompts never, raw keys as key names."""
+    if mode == "secret":
         return "[hidden input]"
+    if mode == "keys":
+        return _key_summary(data)
     text = data
     for char, name in _CONTROL_NAMES.items():
         text = text.replace(char, name)
@@ -175,12 +209,12 @@ def send_input(session_id: str, body: Input, x_shell_device: str | None = Header
     device = require_device(x_shell_device)
     try:
         session = manager.get(session_id)
-        hidden = not session.echo_on()      # read before writing: a password prompt
+        mode = session.mode()               # read before writing: the prompt's own mode
         session.write(body.data)
     except ShellError as exc:
         _raise(exc)
     shell_store.audit("input", session_id=session_id, device=device.get("label"),
-                      cwd=session.cwd, text=_audit_text(body.data, not hidden))
+                      cwd=session.cwd, text=_audit_text(body.data, mode))
     return {"ok": True, "end": session.end}
 
 
@@ -188,7 +222,8 @@ def send_input(session_id: str, body: Input, x_shell_device: str | None = Header
 async def stream_output(session_id: str, offset: int = 0,
                         x_shell_device: str | None = Header(default=None)):
     """NDJSON: `output` frames (with `next` to resume from), `gap` when asked-for
-    output has rotated out, `heartbeat` every 15 s of silence, `exit` at the end."""
+    output has rotated out, `mode` when the program in front switches between
+    line / keys / secret input, `heartbeat` every 15 s of silence, `exit` at the end."""
     require_device(x_shell_device)
     try:
         session = manager.get(session_id)
@@ -197,9 +232,15 @@ async def stream_output(session_id: str, offset: int = 0,
 
     async def frames():
         pos = max(0, offset)
-        yield json.dumps({"type": "hello", **session.info()}) + "\n"
+        shown = (session.mode(), session.foreground())
+        yield json.dumps({"type": "hello", **session.info(),
+                          "mode": shown[0], "program": shown[1]}) + "\n"
         last = time.monotonic()
         while True:
+            now_mode = (session.mode(), session.foreground())
+            if now_mode != shown and not session.closed:
+                shown = now_mode
+                yield json.dumps({"type": "mode", "mode": shown[0], "program": shown[1]}) + "\n"
             changed = session.changed
             gap, data, nxt = session.read(pos)
             if gap is not None:
@@ -215,7 +256,7 @@ async def stream_output(session_id: str, offset: int = 0,
                 yield json.dumps({"type": "exit", "code": session.exit_code, "next": pos}) + "\n"
                 return
             try:
-                await asyncio.wait_for(changed.wait(), HEARTBEAT_SECONDS)
+                await asyncio.wait_for(changed.wait(), MODE_POLL_SECONDS)
             except TimeoutError:
                 pass
             if time.monotonic() - last >= HEARTBEAT_SECONDS:
