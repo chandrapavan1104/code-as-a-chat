@@ -12,6 +12,9 @@ from pathlib import Path
 
 @pytest.fixture(autouse=True)
 def isolate_agent_run_traces(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAST_COMMANDS_ENABLED", "0")
+    from server import tool_runtime
+    monkeypatch.setattr(tool_runtime, "DB_PATH", tmp_path / "tool_operations.db")
     from server import config, claude_quota
     monkeypatch.setattr(claude_quota, "refresh", lambda cwd: None)
     from server import brain_health

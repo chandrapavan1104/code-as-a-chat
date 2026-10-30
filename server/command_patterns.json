@@ -1,0 +1,671 @@
+{
+  "name": "Generic command-routing trial",
+  "entities": [
+    {
+      "id": "mac",
+      "kind": "computers",
+      "name": "Mac",
+      "aliases": [
+        "my mac",
+        "mac mini",
+        "computer"
+      ]
+    },
+    {
+      "id": "music",
+      "kind": "apps",
+      "name": "YouTube Music",
+      "aliases": [
+        "youtube music app"
+      ]
+    },
+    {
+      "id": "backup",
+      "kind": "workflows",
+      "name": "Backup",
+      "aliases": [
+        "my backup",
+        "nightly backup"
+      ]
+    },
+    {
+      "id": "spotify",
+      "name": "Spotify",
+      "kind": "apps",
+      "aliases": []
+    },
+    {
+      "id": "youtube",
+      "name": "YouTube",
+      "kind": "apps",
+      "aliases": []
+    },
+    {
+      "id": "maps",
+      "name": "Google Maps",
+      "kind": "apps",
+      "aliases": [
+        "maps"
+      ]
+    },
+    {
+      "id": "whatsapp",
+      "name": "WhatsApp",
+      "kind": "apps",
+      "aliases": []
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "home.power",
+      "name": "Set a named light or fan",
+      "category": "fast_action",
+      "sentences": [
+        "turn {power} [the] {devices:target}",
+        "turn [the] {devices:target} {power}",
+        "switch {power} [the] {devices:target}",
+        "switch [the] {devices:target} {power}"
+      ],
+      "required": [
+        "target",
+        "power"
+      ]
+    },
+    {
+      "id": "home.brightness",
+      "name": "Set light brightness",
+      "category": "fast_action",
+      "sentences": [
+        "dim [the] {dimmers:target} to {1..100:level} [percent]",
+        "set [the] {dimmers:target} [brightness] to {1..100:level} [percent]"
+      ],
+      "required": [
+        "target",
+        "level"
+      ]
+    },
+    {
+      "id": "home.state",
+      "name": "Read a named device state",
+      "category": "fast_read",
+      "sentences": [
+        "is [the] {devices:target} (on|off)",
+        "[what is] [the] state of [the] {devices:target}",
+        "[what is] [the] status of [the] {devices:target}"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "computer.lock",
+      "name": "Lock computer",
+      "category": "fast_action",
+      "sentences": [
+        "lock [the] {computers:target}",
+        "lock [the] {computers:target} screen"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "computer.wake",
+      "name": "Wake display; does not bypass macOS authentication",
+      "category": "fast_action",
+      "sentences": [
+        "wake [up] [the] {computers:target}",
+        "unlock [the] {computers:target}",
+        "turn on [the] {computers:target}"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "app.open",
+      "name": "Open application",
+      "category": "fast_action",
+      "sentences": [
+        "open [the] {apps:target}",
+        "launch [the] {apps:target}"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "workflow.start",
+      "name": "Start registered workflow",
+      "category": "fast_action",
+      "sentences": [
+        "start [the] {workflows:target}",
+        "run [the] {workflows:target}"
+      ],
+      "required": [
+        "target"
+      ],
+      "asynchronous": true
+    },
+    {
+      "id": "timer.start",
+      "name": "Start timer",
+      "category": "fast_action",
+      "sentences": [
+        "[set|start] [a] timer [for] {1..1440:minutes} minute[s]"
+      ],
+      "required": [
+        "minutes"
+      ]
+    },
+    {
+      "id": "calendar.next",
+      "name": "Look up next calendar event",
+      "category": "fast_read",
+      "sentences": [
+        "(what|when) is my next (meeting|event|appointment)",
+        "show my next (meeting|event|appointment)"
+      ],
+      "required": []
+    },
+    {
+      "id": "files.backup_status",
+      "name": "Read backup status",
+      "category": "fast_read",
+      "sentences": [
+        "[what is] [the] backup status",
+        "is [the|my] backup (done|finished|running)"
+      ],
+      "required": []
+    },
+    {
+      "id": "operation.inspect",
+      "name": "Explain the preceding action without executing",
+      "category": "fast_read",
+      "sentences": [
+        "what did you (do|turn on|turn off)",
+        "what fan (did you turn on|i mean|do i mean)"
+      ],
+      "required": []
+    },
+    {
+      "id": "system.ports",
+      "name": "List listening ports",
+      "category": "fast_read",
+      "sentences": [
+        "show [the] [listening] ports",
+        "(what|which) ports are (open|listening|in use)"
+      ],
+      "required": []
+    },
+    {
+      "id": "system.usage",
+      "name": "Read provider usage",
+      "category": "fast_read",
+      "sentences": [
+        "show [my] usage",
+        "[what is] [my] claude usage",
+        "[what is] [my] codex usage"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.volume",
+      "name": "Adjust phone volume",
+      "category": "fast_action",
+      "sentences": [
+        "(volume up|increase [the] volume|make it louder)",
+        "louder",
+        "turn [it] up [the volume]"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.volume_down",
+      "name": "Lower phone volume",
+      "category": "fast_action",
+      "sentences": [
+        "(volume down|decrease [the] volume|make it quieter)",
+        "quieter",
+        "lower [the] volume",
+        "turn [it] down [the volume]"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.media_pause",
+      "name": "Pause media",
+      "category": "fast_action",
+      "sentences": [
+        "pause [the] (music|song|playback)",
+        "stop [the] (music|song|playback)"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.flashlight",
+      "name": "Set phone flashlight",
+      "category": "fast_action",
+      "sentences": [
+        "turn {power} [the] (flashlight|torch)",
+        "(flashlight|torch) {power}"
+      ],
+      "required": [
+        "power"
+      ]
+    },
+    {
+      "id": "notes.list",
+      "name": "Read notes",
+      "category": "fast_read",
+      "sentences": [
+        "show [my] notes",
+        "list [my] notes"
+      ],
+      "required": []
+    },
+    {
+      "id": "reminders.list",
+      "name": "Read reminders",
+      "category": "fast_read",
+      "sentences": [
+        "show [my] reminders",
+        "list [my] reminders"
+      ],
+      "required": []
+    },
+    {
+      "id": "computer.sleep",
+      "name": "Sleep Mac",
+      "category": "fast_action",
+      "sentences": [
+        "(sleep|put to sleep) [the] {computers:target}",
+        "put [the] {computers:target} to sleep"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "computer.screenshot",
+      "name": "Capture Mac screen",
+      "category": "fast_action",
+      "sentences": [
+        "take [a] screenshot (of|on) [the] {computers:target}",
+        "{computers:target} screenshot"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "computer.photo",
+      "name": "Capture Mac webcam",
+      "category": "fast_action",
+      "sentences": [
+        "take [a] (photo|picture) (on|with) [the] {computers:target}",
+        "{computers:target} webcam [photo]"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "computer.say",
+      "name": "Speak on Mac",
+      "category": "fast_action",
+      "sentences": [
+        "make [the] {computers:target} say {free_text:text}",
+        "say {free_text:text} on [the] {computers:target}",
+        "speak (on|in) [the] {computers:target} {free_text:text}"
+      ],
+      "required": [
+        "target",
+        "text"
+      ]
+    },
+    {
+      "id": "computer.notify",
+      "name": "Show a Mac notification",
+      "category": "fast_action",
+      "sentences": [
+        "notify [the] {computers:target} {free_text:text}",
+        "show [a] notification on [the] {computers:target} saying {free_text:text}"
+      ],
+      "required": [
+        "target",
+        "text"
+      ]
+    },
+    {
+      "id": "computer.open_url",
+      "name": "Open web URL on Mac",
+      "category": "fast_action",
+      "sentences": [
+        "open {free_text:url} on [the] {computers:target}"
+      ],
+      "required": [
+        "target",
+        "url"
+      ]
+    },
+    {
+      "id": "computer.bluetooth",
+      "name": "Set Mac Bluetooth",
+      "category": "fast_action",
+      "sentences": [
+        "turn {power} bluetooth on [the] {computers:target}",
+        "turn bluetooth {power} on [the] {computers:target}",
+        "{computers:target} bluetooth {power}"
+      ],
+      "required": [
+        "target",
+        "power"
+      ]
+    },
+    {
+      "id": "computer.bluetooth_list",
+      "name": "List Mac Bluetooth devices",
+      "category": "fast_read",
+      "sentences": [
+        "list bluetooth devices on [the] {computers:target}"
+      ],
+      "required": [
+        "target"
+      ]
+    },
+    {
+      "id": "computer.bluetooth_connect",
+      "name": "Connect paired Mac Bluetooth device",
+      "category": "fast_action",
+      "sentences": [
+        "connect {free_text:device} to [the] {computers:target} [via bluetooth]"
+      ],
+      "required": [
+        "target",
+        "device"
+      ],
+      "confirmation": "resolve one paired Bluetooth device; clarify ambiguous matches"
+    },
+    {
+      "id": "computer.bluetooth_disconnect",
+      "name": "Disconnect Mac Bluetooth device",
+      "category": "fast_action",
+      "sentences": [
+        "disconnect {free_text:device} from [the] {computers:target}"
+      ],
+      "required": [
+        "target",
+        "device"
+      ]
+    },
+    {
+      "id": "phone.media_resume",
+      "name": "Resume phone playback",
+      "category": "fast_action",
+      "sentences": [
+        "(resume|unpause) [the] (music|song|playback)"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.media_next",
+      "name": "Next track",
+      "category": "fast_action",
+      "sentences": [
+        "(next|skip) [this] (song|track)"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.media_previous",
+      "name": "Previous track",
+      "category": "fast_action",
+      "sentences": [
+        "(previous|last) (song|track)",
+        "go back a (song|track)"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.volume_set",
+      "name": "Set phone volume",
+      "category": "fast_action",
+      "sentences": [
+        "set [the] [phone] volume to {0..100:level} [percent]"
+      ],
+      "required": [
+        "level"
+      ]
+    },
+    {
+      "id": "phone.mute",
+      "name": "Mute phone audio",
+      "category": "fast_action",
+      "sentences": [
+        "mute [the] (phone|sound|volume)"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.unmute",
+      "name": "Unmute phone audio",
+      "category": "fast_action",
+      "sentences": [
+        "unmute [the] (phone|sound|volume)"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.dnd",
+      "name": "Set Do Not Disturb",
+      "category": "fast_action",
+      "sentences": [
+        "turn {power} [the] (dnd|do not disturb)",
+        "(dnd|do not disturb) {power}"
+      ],
+      "required": [
+        "power"
+      ],
+      "confirmation": "requires enabled phone ability and Android Do Not Disturb access"
+    },
+    {
+      "id": "phone.settings",
+      "name": "Open phone settings panel",
+      "category": "fast_action",
+      "sentences": [
+        "open [the] {settings_panel:panel} [settings] [on my phone]",
+        "turn {power} {settings_panel:panel} [on my phone]"
+      ],
+      "required": [
+        "panel"
+      ]
+    },
+    {
+      "id": "phone.camera",
+      "name": "Open phone camera",
+      "category": "fast_action",
+      "sentences": [
+        "open [the] [phone] camera",
+        "take [a] (photo|picture) [on my phone]"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.selfie",
+      "name": "Open front camera",
+      "category": "fast_action",
+      "sentences": [
+        "take [a] selfie",
+        "open [the] front camera"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.notifications",
+      "name": "Read phone notifications",
+      "category": "fast_read",
+      "sentences": [
+        "(read|show) [my] [phone] notifications"
+      ],
+      "required": [],
+      "confirmation": "requires explicitly enabled notification reading and Android access"
+    },
+    {
+      "id": "phone.battery",
+      "name": "Read phone battery",
+      "category": "fast_read",
+      "sentences": [
+        "[what is] [my] phone battery [level]",
+        "how much battery (does my phone have|is left on my phone)"
+      ],
+      "required": []
+    },
+    {
+      "id": "phone.call",
+      "name": "Call after fresh confirmation",
+      "category": "fast_action",
+      "sentences": [
+        "call {free_text:to}",
+        "dial {free_text:to}"
+      ],
+      "required": [
+        "to"
+      ],
+      "confirmation": "resolve contact or number locally; ask fresh spoken confirmation before dialing"
+    },
+    {
+      "id": "phone.navigate",
+      "name": "Open phone navigation",
+      "category": "fast_action",
+      "sentences": [
+        "navigate to {free_text:to}",
+        "get directions to {free_text:to}"
+      ],
+      "required": [
+        "to"
+      ]
+    },
+    {
+      "id": "phone.search",
+      "name": "Search web on phone",
+      "category": "fast_action",
+      "sentences": [
+        "search [the] web for {free_text:query}",
+        "google {free_text:query}"
+      ],
+      "required": [
+        "query"
+      ]
+    },
+    {
+      "id": "phone.play",
+      "name": "Search and request music playback",
+      "category": "fast_action",
+      "sentences": [
+        "(play|put on|listen to) {free_text:query} (on|in) {apps:target}",
+        "(play|put on|listen to) {free_text:query}"
+      ],
+      "required": [
+        "query",
+        "target"
+      ],
+      "confirmation": "verify matching advancing playback; opening search is not completion",
+      "defaults": {
+        "target": "music"
+      }
+    },
+    {
+      "id": "phone.alarm",
+      "name": "Set explicit 24-hour alarm",
+      "category": "fast_action",
+      "sentences": [
+        "set [an] alarm for {0..23:hour} [colon] {0..59:minute}"
+      ],
+      "required": [
+        "hour",
+        "minute"
+      ]
+    },
+    {
+      "id": "phone.timer_seconds",
+      "name": "Set seconds timer",
+      "category": "fast_action",
+      "sentences": [
+        "(set|start) [a] timer for {1..86400:seconds} second[s]"
+      ],
+      "required": [
+        "seconds"
+      ]
+    },
+    {
+      "id": "phone.alarm_12h",
+      "name": "Set explicit AM/PM alarm",
+      "category": "fast_action",
+      "sentences": [
+        "set [an] alarm for {1..12:hour} {meridiem:period}",
+        "set [an] alarm for {1..12:hour} colon {0..59:minute} {meridiem:period}"
+      ],
+      "required": [
+        "hour",
+        "period"
+      ]
+    },
+    {
+      "id": "phone.compose_sms",
+      "name": "Compose SMS draft",
+      "category": "fast_action",
+      "sentences": [
+        "text {free_text:to} saying {free_text:message}",
+        "compose [a] (sms|text) to {free_text:to} saying {free_text:message}"
+      ],
+      "required": [
+        "to",
+        "message"
+      ],
+      "confirmation": "resolve recipient locally; owner reviews and taps Send"
+    },
+    {
+      "id": "phone.compose_whatsapp",
+      "name": "Compose WhatsApp draft",
+      "category": "fast_action",
+      "sentences": [
+        "whatsapp {free_text:to} saying {free_text:message}"
+      ],
+      "required": [
+        "to",
+        "message"
+      ],
+      "confirmation": "resolve recipient locally; owner reviews and taps Send"
+    },
+    {
+      "id": "home.room_power",
+      "name": "Set room lights or fans",
+      "category": "fast_action",
+      "sentences": [
+        "turn {power} [all] [the] {rooms:room} {device_kind:kind}",
+        "turn [all] [the] {rooms:room} {device_kind:kind} {power}"
+      ],
+      "required": [
+        "power",
+        "room",
+        "kind"
+      ]
+    },
+    {
+      "id": "computer.volume",
+      "name": "Set Mac volume",
+      "category": "fast_action",
+      "sentences": [
+        "set [the] volume to {0..100:level} [percent] (on|in) [the] {computers:target}",
+        "increase [the] volume to max (on|in) [the] {computers:target}"
+      ],
+      "required": [
+        "target"
+      ],
+      "defaults": {
+        "level": 100
+      }
+    }
+  ]
+}

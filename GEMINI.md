@@ -59,6 +59,18 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Confidence-gated command execution (October 30).** A production HassIL fast
+path executes reviewed, uniquely matched commands strictly above a configurable
+0.80 policy-score threshold; unresolved/contextual/sensitive cases retain the
+regular assistant. Scores are conservative routing tiers, not calibrated model
+probabilities. Live-catalog named and room lights/fans, Mac controls/verified
+volume, and supported streamed phone actions reuse durable receipts and traces.
+Failed/uncertain execution never falls through into a second attempt. Both paths
+reject lights-to-fan substitutions; room actions preserve requested categories.
+401 server regressions pass; read-only historical replay yields 19/67 fast
+candidates. Physical command latency remains an acceptance check. Configuration
+and scope: `docs/confidence-command-router.md`.
+
 **Gajala Terminal (October 14).** Library → Terminal runs live zsh sessions on
 the Mac with streamed, resumable output (`/api/shell`, `server/remote_shell.py`).
 Gated by the API token plus a new single-device pairing key (trust on first
@@ -525,6 +537,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-10-30 — Added confidence-gated production fast commands with safe normal
+  fallback, room/category validation, original request receipts and scored traces.
 - 2026-10-16 — **YouTube Music plays the song itself.** Every route so far only
   reached YouTube Music's search results: its play-from-search session is kept
   for Google's own clients, and the media-session nudge had been switched off

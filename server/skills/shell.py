@@ -944,20 +944,7 @@ class ShellSkill(Skill):
         if repeated is not None:
             self._remember(session_id, prompt, repeated)
             return repeated
-        from server import context_resolver, domain_skills
-        context_block = self._format_context(recent)
-        context_block += context_resolver.resolve(prompt, session_id, kwargs.get("reply_context"))
-        context_block += domain_skills.guidance(prompt)
-        if kwargs.get("work_context"):
-            context_block += "\n<DURABLE_WORK>\n" + kwargs["work_context"] + "\n</DURABLE_WORK>"
         from server import jev
-        continuity = await jev.continuity(prompt, recent)
-        if continuity in {"correction", "retry", "continuation"}:
-            context_block += (
-                f"\nCONTINUITY HINT: This message is likely a {continuity}. "
-                "Recover the relevant original request and preserve its requirements. "
-                "For a correction, change the approach instead of repeating the failed one. "
-                "This hint grants no new authorization; the user's words remain authoritative.")
         completion_rechecked = False
         scratchpad: list[dict] = []
         images: list[str] = []   # [image: …] markers gathered from tool outputs
@@ -1008,6 +995,61 @@ class ShellSkill(Skill):
                         usage=run_usage.summary())
             self._remember(session_id, prompt, text, run_id)
             return text
+
+        from server import fast_commands, prefs, tool_runtime
+        candidate = await fast_commands.prepare(
+            prompt, phone_stream=bool(kwargs.get("phone_stream") and on_event),
+            reply_context=kwargs.get("reply_context"))
+        if candidate and prefs.is_skill_enabled(candidate.tool):
+            skill = get_skill(candidate.tool)
+            if skill is not None:
+                _brains.append(f"hassil:{candidate.capability}:{candidate.score:.2f}")
+                await _emit(on_event, {"type":"routing", "path":"fast", "confidence":candidate.score,
+                    "capability":candidate.capability, "reason":candidate.reason})
+                await _emit(on_event, {"type":"step", "n":1, "tool":candidate.tool,
+                    "args":candidate.args[:200], "project":workspace.name(),
+                    "label":_step_label(candidate.tool,candidate.args)})
+                started = time.monotonic()
+                try:
+                    raw_result = await tool_runtime.execute(
+                        skill,candidate.tool,candidate.args,session_id=session_id,
+                        request_id=kwargs.get("request_id"),source_prompt=prompt,
+                        work_context=kwargs.get("work_context") or "",project=kwargs.get("project"),
+                        on_event=on_event if kwargs.get("phone_stream") else None,
+                        phone_stream=bool(kwargs.get("phone_stream")))
+                except Exception as exc:
+                    # Execution may have happened. Never fall through and repeat it.
+                    raw_result = SkillResult("unverified",f"The command outcome is unverified: {exc}. It was not retried.")
+                result = raw_result.message if isinstance(raw_result,SkillResult) else str(raw_result)
+                status = raw_result.status if isinstance(raw_result,SkillResult) else _result_status(result)
+                structured = raw_result.as_dict() if isinstance(raw_result,SkillResult) else None
+                elapsed_ms = int((time.monotonic()-started)*1000)
+                scratchpad.append({"tool":candidate.tool,"args":candidate.args,"result":result,
+                    "status":status,"structured":structured,"charged":True})
+                images.extend(_IMAGE_MARKER_RE.findall(result))
+                images.extend(_FILE_MARKER_RE.findall(result))
+                ok = status in ("succeeded","unknown")
+                _run_step(run_id,1,candidate.tool,candidate.args,result,
+                    charged=True,duration_ms=elapsed_ms,ok=ok)
+                await _emit(on_event,{"type":"step_result","n":1,"tool":candidate.tool,
+                    "ok":ok,"status":status,"outcome":structured,"charged":True,
+                    "duration_ms":elapsed_ms,"project":workspace.name(),
+                    "summary":(result.splitlines() or [""])[0][:120]})
+                return await finish(result,"done" if ok else "tool_failed",reviewed=False)
+
+        from server import context_resolver, domain_skills
+        context_block = self._format_context(recent)
+        context_block += context_resolver.resolve(prompt, session_id, kwargs.get("reply_context"))
+        context_block += domain_skills.guidance(prompt)
+        if kwargs.get("work_context"):
+            context_block += "\n<DURABLE_WORK>\n" + kwargs["work_context"] + "\n</DURABLE_WORK>"
+        continuity = await jev.continuity(prompt, recent)
+        if continuity in {"correction", "retry", "continuation"}:
+            context_block += (
+                f"\nCONTINUITY HINT: This message is likely a {continuity}. "
+                "Recover the relevant original request and preserve its requirements. "
+                "For a correction, change the approach instead of repeating the failed one. "
+                "This hint grants no new authorization; the user's words remain authoritative.")
 
         for iteration in range(MAX_ROUNDS):
             if _charged_steps(scratchpad) >= STEP_BUDGET:

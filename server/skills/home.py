@@ -39,7 +39,9 @@ class HomeSkill(Skill):
     agent_doc='''HOME AUTOMATION, not phone controls. For household lights/fans, dimming,
 thermostats, garage, panel status and home schedules use home. First call home list
 (or status) to retrieve exact devices/rooms/states; never invent an id or silently
-pick between similar devices. Bedroom 3 is Br3; master bedroom is Mbr. JSON args:
+pick between similar devices. Never substitute a fan for a light (or vice versa),
+including when the original target is unavailable. A blocked action is not permission
+to change device category or expand the requested scope. Bedroom 3 is Br3; master bedroom is Mbr. JSON args:
 {"action":"switch","target":"exact-id","state":true,"level":50},
 {"action":"room","room":"exact room","kind":"lights","state":false},
 {"action":"climate","target":"level-2","cool":74,"mode":"cool"},
@@ -78,7 +80,11 @@ therefore connected/Ready does not mean the house is protected.'''
             if reply.get('ok') is not True or approval.get('confirmed') is not True or approval.get('present') is not True:
                 return SkillResult('blocked','Garage command cancelled; no command was sent')
             return await home_control.perform(body,garage_confirmed=True)
-        result=await home_control.perform(body)
+        from server.fast_commands import requested_kind
+        expected_kind=requested_kind(source)
+        if body.action=='all_off' and expected_kind:
+            return SkillResult('blocked','All-off includes both lights and fans; use the requested category without expanding it. No command was sent.')
+        result=await home_control.perform(body,expected_kind=expected_kind)
         # Tool observations must carry the catalog for routing, not just a count.
         if body.action in ('status','list','history','automations'):
             return SkillResult(result.status,result.message+'\n'+json.dumps(result.data,ensure_ascii=False),data=result.data)
