@@ -129,7 +129,7 @@ async def set_switch(row, state, level=None):
     return SkillResult('unverified', f"{row['name']}: {desired} command acknowledged, but the matching device state is not verified", changed=True, data={'device':current})
 
 
-async def perform(body: HomeAction, *, garage_confirmed=False):
+async def perform(body: HomeAction, *, garage_confirmed=False, expected_kind=None):
     try:
         action = body.action
         if action in ('status','list'):
@@ -152,8 +152,15 @@ async def perform(body: HomeAction, *, garage_confirmed=False):
                 raise HomeError('The home device catalog is still loading; no command was sent')
             rows = data.get('switches',[])
             if action=='switch':
-                return await set_switch(resolve(rows,body.target),body.state,body.level)
+                row = resolve(rows,body.target)
+                if expected_kind and (not isinstance(row.get('fan'),bool) or bool(row.get('fan')) != (expected_kind=='fans')):
+                    raise HomeError('The selected device does not match the requested '+expected_kind+'; no command was sent')
+                return await set_switch(row,body.state,body.level)
             if action=='room':
+                if expected_kind and body.kind not in ('all',expected_kind):
+                    raise HomeError('The requested device category cannot be changed during recovery; no command was sent')
+                if expected_kind:
+                    body=body.model_copy(update={'kind':expected_kind})
                 rooms = sorted({r['room'] for r in rows})
                 key = normalized(body.room)
                 matches = [r for r in rooms if normalized(r)==key] or [r for r in rooms if key in normalized(r)]

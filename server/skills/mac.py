@@ -25,7 +25,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from server.skills.base import Skill
+from server.skills.base import Skill, SkillResult
 from server.skills import register
 from server import notify
 
@@ -313,6 +313,15 @@ class MacSkill(Skill):
         cmd = parts[0].lower() if parts else ""
         rest = parts[1].strip() if len(parts) > 1 else ""
 
+        if cmd == "volume":
+            if not rest.isdigit() or not 0 <= int(rest) <= 100:
+                return SkillResult("blocked", "Mac volume must be 0–100.")
+            level = int(rest)
+            rc, out, err = await _run(["osascript", "-e", f"set volume output volume {level}",
+                "-e", "output volume of (get volume settings)"])
+            if rc == 0 and out.strip() == str(level):
+                return SkillResult("succeeded", f"Mac volume is {level}%.", changed=True)
+            return SkillResult("unverified", "I couldn't verify Mac volume: " + (err or out)[:200])
         if cmd == "lock":
             return await _lock()
         if cmd in ("wake", "unlock", "wakeup"):

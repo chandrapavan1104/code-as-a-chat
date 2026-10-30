@@ -22,3 +22,6 @@ requests>=2.31.0
 
 # Native Claude /usage terminal screen, without OAuth credential extraction.
 pyte>=0.8.2,<0.9
+
+# Deterministic confidence-gated command parsing.
+hassil>=3.12,<4
