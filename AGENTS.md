@@ -59,8 +59,10 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
-**Confidence-gated command execution (October 30).** A production HassIL fast
-path executes reviewed, uniquely matched commands strictly above a configurable
+**Confidence-gated command execution (October 30).** Implemented and tested on
+`codex/confidence-command-router`; production activation awaits explicit approval
+after automatic deployment review blocked it. The prepared HassIL fast path
+executes reviewed, uniquely matched commands strictly above a configurable
 0.80 policy-score threshold; unresolved/contextual/sensitive cases retain the
 regular assistant. Scores are conservative routing tiers, not calibrated model
 probabilities. Live-catalog named and room lights/fans, Mac controls/verified

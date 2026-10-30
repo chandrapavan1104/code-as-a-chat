@@ -1,5 +1,9 @@
 # Confidence-gated command execution
 
+Status: implemented and verified in `codex/confidence-command-router`. Automatic
+deployment review requires explicit production activation approval. The live
+router has not changed.
+
 Gajala now attempts a small validated command route before context retrieval,
 continuity review and the model loop. A unique whole-command grammar match must
 map to a reviewed executor, satisfy argument/target checks and score strictly
