@@ -7,6 +7,7 @@ import 'dashboard_screen.dart' show UpdateBanner;
 import 'library_screen.dart';
 import 'notifications_screen.dart';
 import 'tasks_screen.dart';
+import 'trading_screen.dart';
 import 'work_result_screen.dart';
 
 /// The app shell: Chats / Work / Library / Alerts as a persistent bottom nav. An
@@ -36,6 +37,8 @@ class HomeShellState extends ConsumerState<HomeShell> {
       showWorkResult(context, id);
     };
     Push.onOpenNotifications = () => go(3);
+    Push.onOpenTrading = (id) => Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => TradingScreen(focusTicketId: id)));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) Push.flushPendingRoute();
     });
@@ -46,6 +49,7 @@ class HomeShellState extends ConsumerState<HomeShell> {
     Push.onOpenWork = null;
     Push.onOpenTasks = null;
     Push.onOpenNotifications = null;
+    Push.onOpenTrading = null;
     super.dispose();
   }
 

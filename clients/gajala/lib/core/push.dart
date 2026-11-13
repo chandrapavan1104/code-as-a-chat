@@ -56,6 +56,9 @@ class Push {
   /// arrives while the app is foregrounded (keeps the badge + lists live).
   static void Function()? onPush;
 
+  /// Opens the Trading screen, focused on a ticket when one is given.
+  static void Function(int? ticketId)? onOpenTrading;
+
   /// Initialise Firebase + local notifications. Safe to call more than once.
   static Future<void> init() async {
     if (_inited) return;
@@ -176,6 +179,15 @@ class Push {
         _pendingRoute = data;
       } else {
         onOpenTasks!();
+      }
+      return;
+    }
+    if (type == 'trade_ticket' || type == 'trade_status') {
+      final id = int.tryParse('${data['ref_id'] ?? ''}');
+      if (onOpenTrading == null) {
+        _pendingRoute = data;
+      } else {
+        onOpenTrading!(type == 'trade_ticket' ? id : null);
       }
       return;
     }
