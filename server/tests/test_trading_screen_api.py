@@ -74,6 +74,18 @@ def test_overview_works_while_the_desk_is_off(api, monkeypatch):
     assert body["enabled"] is False and body["watchlist"]       # research stays readable
 
 
+def test_desk_off_shows_the_research_watchlist_file(api, monkeypatch):
+    import json
+    monkeypatch.setattr(config, "TRADING_ENABLED", False)
+    store.replace_watchlist([])                                  # nothing synced yet
+    (config.FINANCE_PROJECT_DIR / "watchlist.json").write_text(json.dumps({"symbols": [
+        {"symbol": "elmd", "status": "WATCH", "memo": "memos/ELMD.md"},
+        {"symbol": "bad ticker!", "status": "ELIGIBLE"}]}))
+    body = api.get("/api/trade/overview", headers=h()).json()
+    assert body["watchlist"] == [{"symbol": "ELMD", "status": "WATCH",
+                                  "memo": "memos/ELMD.md", "confirmed": False}]
+
+
 def test_account_reads_are_cached_and_a_slow_read_keeps_the_last_value(api, monkeypatch):
     from server import trading_api
     calls = []
