@@ -7,6 +7,7 @@ import '../core/storage.dart';
 import '../core/theme.dart';
 import '../core/update.dart';
 import 'home_shell.dart';
+import 'trading_screen.dart';
 import 'work_result_screen.dart';
 
 /// Alerts tab — the durable inbox of everything Gajala tells you: needs-input
@@ -74,6 +75,10 @@ class NotificationsScreen extends ConsumerWidget {
       return (color: GajalaColors.green, icon: Icons.system_update);
     case 'reminder':
       return (color: GajalaColors.pink, icon: Icons.alarm);
+    case 'trade_ticket':
+      return (color: GajalaColors.warn, icon: Icons.request_quote_outlined);
+    case 'trade_status':
+      return (color: GajalaColors.teal, icon: Icons.show_chart);
     default:
       return (color: GajalaColors.teal, icon: Icons.notifications);
   }
@@ -156,6 +161,14 @@ class _NotifTile extends ConsumerWidget {
         break;
       case 'gajala_update':
         await _runUpdate(context, ref);
+        break;
+      case 'trade_ticket':
+        if (n.refId != null) await showTicketSheet(context, ref, n.refId!);
+        ref.invalidate(notificationsProvider);
+        break;
+      case 'trade_status':
+        await Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const TradingScreen()));
         break;
     }
   }

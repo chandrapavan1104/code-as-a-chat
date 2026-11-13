@@ -212,7 +212,8 @@ async def propose(raw: dict, *, source: str = "") -> dict:
         return await approve(ticket["id"], actor="auto")
     body = "\n".join(x for x in (
         ticket["reason"], f"Thesis: {ticket['thesis_ref']}" if ticket["thesis_ref"] else "",
-        f"Reply 'approve' or 'reject', or /trade approve {ticket['id']}") if x)
+        "Tap to review it in Gajala (Approve / Reject)"
+        + ("" if ticket["mode"] == "live" else f", or /trade approve {ticket['id']}")) if x)
     await _notify("ticket", ticket, body, needs_response=True)
     return ticket
 

@@ -59,6 +59,16 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Gajala Trading screen (November 13).** Library → Trading is the owner's
+view of the desk: mode/pause switch, account and today's spend against the cap,
+tickets with plain-language Approve/Reject (live: fingerprint + paired-phone key),
+holdings, the watchlist with one-tap owner confirmation, research memos and
+reports (read-only, `memos/` and `reports/` only), recent activity with the
+rule that stopped a ticket, and the safety rules. Trade alerts open the ticket
+sheet; pushes open the screen. Backed by `GET /api/trade/overview` (account read
+cached 60 s, last value kept on a slow read), watchlist confirm, pause/resume and
+`/api/trade/doc`. When the desk is off the screen explains how to start in paper.
+
 **Trading desk (November 13).** Built on `feat/trading-desk`; not merged or
 deployed, off by default (`TRADING_ENABLED=false`), paper mode by default. The
 desk (`server/trading/`) takes order proposals from a separate research project
@@ -566,6 +576,11 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-13 — **Trading screen and Approve/Reject in Gajala.** Fixed the gap
+  where a trade alert opened nothing (so live tickets could not be approved at
+  all). New overview/confirm/pause/doc endpoints; ticket header shows the real
+  maximum cost (whole shares); readable report titles; alert text points to the
+  app. 8 server + 13 app tests, incl. a 360-pt large-text layout check.
 - 2026-11-13 — **Trading desk review fixes (`fix/trading-desk-review` → PR #50).**
   Verified against the real CLI: the research run could read and write outside
   its project (canary read, file written outside); now confined, and a buy needs

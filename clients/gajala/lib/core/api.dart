@@ -372,6 +372,38 @@ class GajalaApi {
     }
   }
 
+  // ── trading desk (Library → Trading) ────────────────────────────────────────
+  Future<Map<String, dynamic>> tradeOverview({bool refresh = false, String? deviceKey}) async =>
+      Map<String, dynamic>.from((await _dio.get(
+        '/api/trade/overview',
+        queryParameters: {if (refresh) 'refresh': 'true'},
+        options: deviceKey == null ? null : _shell(deviceKey),
+      )).data);
+
+  Future<Map<String, dynamic>> tradeTicket(int id) async =>
+      Map<String, dynamic>.from((await _dio.get('/api/trade/tickets/$id')).data);
+
+  /// [deviceKey] is required by the Mac for a LIVE ticket (the paired phone).
+  Future<Map<String, dynamic>> tradeApprove(int id, {String? deviceKey}) async =>
+      Map<String, dynamic>.from((await _dio.post(
+        '/api/trade/tickets/$id/approve',
+        options: deviceKey == null ? null : _shell(deviceKey),
+      )).data['ticket']);
+
+  Future<Map<String, dynamic>> tradeReject(int id) async =>
+      Map<String, dynamic>.from((await _dio.post('/api/trade/tickets/$id/reject')).data['ticket']);
+
+  Future<void> tradeConfirm(String symbol, bool confirmed) async => confirmed
+      ? _dio.post('/api/trade/watchlist/$symbol/confirm')
+      : _dio.delete('/api/trade/watchlist/$symbol/confirm');
+
+  Future<void> tradePause(bool paused) async =>
+      _dio.post(paused ? '/api/trade/pause' : '/api/trade/resume');
+
+  Future<String> tradeDoc(String path) async =>
+      ((await _dio.get('/api/trade/doc', queryParameters: {'path': path})).data['text'] ?? '')
+          .toString();
+
   Future<void> cancelResearch(String id) async {
     await _dio.post('/api/work/$id/stop');
   }

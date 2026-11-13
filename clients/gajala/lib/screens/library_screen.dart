@@ -7,6 +7,7 @@ import 'dashboard_screen.dart';
 import 'settings_screen.dart';
 import 'home_screen.dart';
 import 'terminal_screen.dart';
+import 'trading_screen.dart';
 
 /// A stable home for saved information and less frequent controls.
 class LibraryScreen extends ConsumerWidget {
@@ -117,6 +118,23 @@ class LibraryScreen extends ConsumerWidget {
                     trailing: const Icon(Icons.chevron_right, size: 20),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const TerminalScreen()),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  margin: EdgeInsets.zero,
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    dense: true,
+                    minTileHeight: 48,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                    leading: const Icon(Icons.show_chart, size: 20),
+                    title: const Text('Trading'),
+                    subtitle: const Text('Approve tickets, watchlist, research'),
+                    trailing: const Icon(Icons.chevron_right, size: 20),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const TradingScreen()),
                     ),
                   ),
                 ),
