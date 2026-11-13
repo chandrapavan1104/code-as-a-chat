@@ -30,12 +30,13 @@ from server.media import ensure_uploads_dir, is_served_path
 from server.work_orders import WorkOrderSpec
 
 router = APIRouter(prefix="/api", tags=["app"])
-from server import ports_api, reminders_api, library_api, home_api, shell_api
+from server import ports_api, reminders_api, library_api, home_api, shell_api, trading_api
 router.include_router(ports_api.router)
 router.include_router(reminders_api.router)
 router.include_router(library_api.router)
 router.include_router(home_api.router)
 router.include_router(shell_api.router)
+router.include_router(trading_api.router)
 
 # Cap an inbound image upload. Phone screenshots/photos are a few MB; 25 MB is
 # generous headroom without inviting abuse.
@@ -1297,6 +1298,18 @@ async def notifications_respond(notif_id: int, body: NotifResponse):
         if job is not None:
             await night_shift.run_now(int(n["ref_id"]))
             result["job"] = _job_view(job)
+    # A trade ticket: only a plain approve/reject does anything (desk.respond).
+    if n.get("type") == "trade_ticket" and n.get("ref_id"):
+        from server.trading import desk
+        try:
+            ticket = await desk.respond(int(n["ref_id"]), body.response, actor="app")
+            result["ticket"] = trading_api._view(ticket)
+        except desk.DeskDisabled as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "no such ticket") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
     return result
 
 

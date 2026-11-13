@@ -153,6 +153,7 @@ def _argv(engine: str, repo: str, prompt: str, model: str) -> list[str]:
     if engine == "claude":
         cmd = ["claude", "-p", prompt, "--output-format", "json",
                "--permission-mode", "bypassPermissions"]
+        cmd += config.claude_deny_args()   # unattended runs never get order tools
         if model:
             cmd += ["--model", model]
         return cmd

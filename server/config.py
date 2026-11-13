@@ -249,6 +249,56 @@ NIGHT_TICK: int = int(os.getenv("NIGHT_TICK", "120"))                 # dispatch
 RESEARCH_ENGINE: str = os.getenv("RESEARCH_ENGINE", "gemini").lower()
 RESEARCH_TIMEOUT: int = int(os.getenv("RESEARCH_TIMEOUT", "1800"))
 
+# ── Trading desk (server/trading/) ────────────────────────────────────────────
+# Off by default. In paper mode nothing leaves this machine: fills are simulated
+# in ~/.codeasachat/trading.db. Live mode needs a registered live broker and is
+# only ever switched on by the owner.
+TRADING_ENABLED: bool = os.getenv("TRADING_ENABLED", "false").lower() in ("1", "true", "yes")
+TRADING_MODE: str = os.getenv("TRADING_MODE", "paper").strip().lower()      # paper | live
+# When false (the default) every ticket waits for an explicit approve.
+TRADE_AUTO_APPROVE: bool = os.getenv("TRADE_AUTO_APPROVE", "false").lower() in ("1", "true", "yes")
+TRADE_MAX_ORDER_USD: float = float(os.getenv("TRADE_MAX_ORDER_USD", "25"))
+TRADE_MAX_DAILY_USD: float = float(os.getenv("TRADE_MAX_DAILY_USD", "50"))
+TRADE_TICKET_TTL_HOURS: float = float(os.getenv("TRADE_TICKET_TTL_HOURS", "24"))
+TRADE_PAPER_START_CASH: float = float(os.getenv("TRADE_PAPER_START_CASH", "100"))
+# Last four digits of the only brokerage account the live broker may use.
+TRADE_ACCOUNT_LAST4: str = os.getenv("TRADE_ACCOUNT_LAST4", "").strip()
+FINANCE_PROJECT_DIR: Path = Path(
+    os.getenv("FINANCE_PROJECT_DIR", str(Path.home() / "Projects" / "finance-agent"))
+).expanduser()
+TRADE_TICK: int = int(os.getenv("TRADE_TICK", "300"))                    # runner cadence (s)
+# Model for the short, tool-restricted runs that read quotes and place an order.
+TRADE_CLI_MODEL: str = os.getenv("TRADE_CLI_MODEL", "sonnet")
+# Scheduled read-only research runs in FINANCE_PROJECT_DIR (separate opt-in).
+FINANCE_ROUTINES_ENABLED: bool = os.getenv(
+    "FINANCE_ROUTINES_ENABLED", "false").lower() in ("1", "true", "yes")
+FINANCE_RESEARCH_MODEL: str = os.getenv("FINANCE_RESEARCH_MODEL", "opus")
+FINANCE_ROUTINE_TIMEOUT: int = int(os.getenv("FINANCE_ROUTINE_TIMEOUT", "2700"))
+FINANCE_DAILY_CHECK_AT: str = os.getenv("FINANCE_DAILY_CHECK_AT", "16:30")     # weekdays
+FINANCE_WEEKLY_SCREEN_AT: str = os.getenv("FINANCE_WEEKLY_SCREEN_AT", "09:00")  # Saturday
+FINANCE_WEEKLY_REPORT_AT: str = os.getenv("FINANCE_WEEKLY_REPORT_AT", "18:00")  # Sunday
+
+# The Claude CLI this server shells out to can carry a brokerage connector, and
+# the coding and night runs use bypassPermissions. Without a deny list, any of
+# those runs (including one steered by text it read on the web) could place or
+# cancel an order. Order tools are therefore denied for every Claude run this
+# server starts, except the trading desk's own narrowly scoped executor.
+BROKER_TOOL_PREFIX: str = os.getenv("BROKER_TOOL_PREFIX", "mcp__claude_ai_Robinhood__")
+BROKER_ORDER_TOOLS: tuple[str, ...] = (
+    "place_equity_order", "place_option_order", "place_crypto_order", "place_advanced_order",
+    "cancel_equity_order", "cancel_option_order", "cancel_crypto_order", "cancel_advanced_order",
+    "exercise_option", "cancel_option_exercise", "decline_trade_approval",
+)
+CLAUDE_ALLOW_BROKER_ORDERS: bool = os.getenv(
+    "CLAUDE_ALLOW_BROKER_ORDERS", "false").lower() in ("1", "true", "yes")
+
+
+def claude_deny_args() -> list[str]:
+    """CLI arguments that remove broker order tools from a general Claude run."""
+    if CLAUDE_ALLOW_BROKER_ORDERS:
+        return []
+    return ["--disallowedTools", ",".join(BROKER_TOOL_PREFIX + t for t in BROKER_ORDER_TOOLS)]
+
 # ── FCM push (Gajala Android app) ─────────────────────────────────────────────
 # Service-account key downloaded from Firebase console; lets the server send
 # pushes to registered devices via the FCM HTTP v1 API. If the file is absent,

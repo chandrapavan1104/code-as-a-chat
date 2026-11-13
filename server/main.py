@@ -8,12 +8,14 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from server import ask_cards, config, fcm, orchestrator, research_runner, workspace
 from server.db import store as memory
+from server.db import trading_store
 from server.db import (agent_runs_store, capability_store, cli_runs_store, deployment_store,
                        errors_store, night_queue_store, notifications_store,
                        assistant_tasks_store)
 from server.scheduler import scheduler_loop
 from server.night_shift import night_shift_loop
 from server.queue_supervisor import supervisor_loop
+from server.trading.runner import trading_loop
 
 
 from server.remote_shell import manager as shell_manager  # noqa: E402
@@ -29,12 +31,14 @@ async def lifespan(app: FastAPI):
     capability_store.init()
     assistant_tasks_store.init()
     assistant_tasks_store.recover_orphans()
+    trading_store.init()
     orchestrator.init()
     research_runner.recover()
     tasks = [
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(night_shift_loop()),
         asyncio.create_task(supervisor_loop()),
+        asyncio.create_task(trading_loop()),
         asyncio.create_task(shell_manager.reap_loop()),
     ]
     try:
