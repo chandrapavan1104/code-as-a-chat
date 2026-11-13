@@ -63,6 +63,26 @@ async def _account(refresh: bool) -> tuple[dict | None, float | None, str | None
     return status, _account_cache[current][0], None
 
 
+def _watchlist() -> dict[str, dict]:
+    """The desk's synced watchlist; while the desk is off nothing syncs it, so
+    show the research project's own file (read-only) instead of an empty list."""
+    names = store.watchlist()
+    if names or config.TRADING_ENABLED:
+        return names
+    from server.trading import runner
+    data = runner._read_json(Path(config.FINANCE_PROJECT_DIR) / "watchlist.json") or {}
+    out = {}
+    for e in data.get("symbols") or []:
+        if not isinstance(e, dict):
+            continue
+        sym = str(e.get("symbol") or "").strip().upper()
+        if risk._SYMBOL.match(sym):
+            out[sym] = {"memo": str(e.get("memo") or "")[:200],
+                        "status": "ELIGIBLE" if str(e.get("status") or "").upper() == "ELIGIBLE"
+                        else "WATCH"}
+    return dict(sorted(out.items()))
+
+
 def _reports() -> list[dict]:
     folder = Path(config.FINANCE_PROJECT_DIR) / "reports"
     try:
@@ -112,7 +132,7 @@ async def trade_overview(refresh: bool = False,
         "recent_tickets": [_view(t) for t in recent],
         "watchlist": [{"symbol": sym, "status": e["status"], "memo": e["memo"],
                        "confirmed": sym in confirmed}
-                      for sym, e in store.watchlist().items()],
+                      for sym, e in _watchlist().items()],
         "reports": _reports(),
         "phone": {"paired": bool(bound), "this_device": owner_device(x_shell_device)},
         "server_time": time.time(),
