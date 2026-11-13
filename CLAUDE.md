@@ -59,6 +59,33 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Trading desk (November 13).** Built on `feat/trading-desk`; not merged or
+deployed, off by default (`TRADING_ENABLED=false`), paper mode by default. The
+desk (`server/trading/`) takes order proposals from a separate research project
+(`FINANCE_PROJECT_DIR`, default `~/Projects/finance-agent`) through three small
+JSON files, checks each against coded rules (`risk.py`: stocks only, whole-share
+limit orders, per-order and daily caps, 5 positions, 25% per name, 20% cash
+floor, market-mood ceiling, drawdown brakes, watchlist name must be marked
+ELIGIBLE) and stores it as a ticket (`server/db/trading_store.py`, audit trail).
+The owner approves with `/trade approve <id>` or a reply to the ticket alert;
+the gate runs again at approval. `trade` is not exposed to the shell agent.
+Paper mode simulates fills. Live mode submits through a tool-restricted headless
+Claude run against the Robinhood connector (`robinhood_cli.py`) and has only
+ever run against a stub: the first real order is an owner action. Quotes come
+through a read-only restricted run and are bounds-checked. Coding and Night
+Shift Claude runs are now denied broker order tools (`config.claude_deny_args`).
+Not built: Approve/Reject buttons in Gajala, a direct market-data feed.
+Review hardening (`fix/trading-desk-review`): a buy also needs the owner's
+`/trade watchlist confirm SYM`, not only research's ELIGIBLE; live tickets are
+approved only with the paired phone's key (`X-Shell-Device`), so Telegram and
+`/trade approve` work in paper only; TRADE_AUTO_APPROVE is ignored in live; the
+research run's files are confined to its project with a broker read allowlist;
+Night Shift runs with `--strict-mcp-config`; other brokerage connectors found by
+`server/broker_guard.py` are denied whole to coding runs; the executor pauses if
+another recent order in the same name appears; only "approve"/"yes" approves.
+`test_scheduler_daily_delivery_advances_across_dst` fails when run between
+midnight and 09:00 local; that predates this branch.
+
 **Confidence-gated command execution (October 30).** Implemented and tested on
 `codex/confidence-command-router`; production activation awaits explicit approval
 after automatic deployment review blocked it. The prepared HassIL fast path
@@ -539,6 +566,27 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-13 — **Trading desk review fixes (`fix/trading-desk-review` → PR #50).**
+  Verified against the real CLI: the research run could read and write outside
+  its project (canary read, file written outside); now confined, and a buy needs
+  owner confirmation of the name. Live approval required only the shared token,
+  which can also start a coding run that writes proposal files; it now needs the
+  paired phone. Auto-approve is paper-only. Night Shift loads no connectors
+  (strict MCP; checked via the CLI's init message), coding runs deny other
+  brokerage servers whole (whole-server deny verified). Executor checks for a
+  duplicate order. 22 new tests; 103 trading tests pass.
+- 2026-11-13 — **Trading desk (branch `feat/trading-desk`, not deployed).** New
+  `server/trading/` (risk gate, desk, paper broker, Robinhood adapters, runner),
+  `trading_store`, `trade` skill, `/api/trade/*` and a `trade_ticket` branch in
+  the notification respond hook. Proposals enter only from the research
+  project's outbox; there is no API to create a ticket. Found while building:
+  bypass-mode Claude runs started by this server could reach the brokerage
+  connector's order tools; they are now denied for the coding skill and Night
+  Shift (verified against the CLI). Also verified live: read-only quotes through
+  a restricted run, and one paper trade end to end. Short runs sometimes start
+  before the connector is ready, so a run that made no tool call is retried and
+  a timed-out run is killed; an unclear executor outcome pauses trading. 81 new
+  tests. The live order path was never run.
 - 2026-10-30 — Added confidence-gated production fast commands with safe normal
   fallback, room/category validation, original request receipts and scored traces.
 - 2026-10-16 — **YouTube Music plays the song itself.** Every route so far only

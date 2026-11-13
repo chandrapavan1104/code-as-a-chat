@@ -153,6 +153,9 @@ def _argv(engine: str, repo: str, prompt: str, model: str) -> list[str]:
     if engine == "claude":
         cmd = ["claude", "-p", prompt, "--output-format", "json",
                "--permission-mode", "bypassPermissions"]
+        # Unattended: load no MCP connector at all (a brokerage one included),
+        # and still deny order tools by name in case that flag is ever dropped.
+        cmd += ["--strict-mcp-config", *config.claude_deny_args(repo)]
         if model:
             cmd += ["--model", model]
         return cmd
