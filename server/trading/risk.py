@@ -63,6 +63,7 @@ class Snapshot:
     watchlist: frozenset[str]             # names marked ELIGIBLE: the only buyable ones
     quote: Quote | None
     watching: frozenset[str] = frozenset()   # followed but not buy-eligible
+    unconfirmed: frozenset[str] = frozenset()  # research says ELIGIBLE, owner has not confirmed
 
 
 def _positive(x: float) -> bool:
@@ -128,7 +129,10 @@ def check(p: Proposal, s: Snapshot, limits: Limits) -> list[str]:
 def _check_buy(p: Proposal, s: Snapshot, limits: Limits, q: Quote | None,
                dd: float) -> list[str]:
     v: list[str] = []
-    if p.symbol in s.watching and p.symbol not in s.watchlist:
+    if p.symbol in s.unconfirmed and p.symbol not in s.watchlist:
+        v.append(f"{p.symbol} is marked eligible by research but you have not confirmed it "
+                 f"(/trade watchlist confirm {p.symbol})")
+    elif p.symbol in s.watching and p.symbol not in s.watchlist:
         v.append(f"{p.symbol} is on the watchlist but not marked buy-eligible "
                  "(its trust checks have not all passed)")
     elif p.symbol not in s.watchlist:

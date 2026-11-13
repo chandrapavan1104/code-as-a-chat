@@ -4,10 +4,13 @@ Subcommands (passed via prompt):
   status            account, limits, mood, pause state
   list [all]        tickets waiting for a decision (or the latest 20)
   show <id>         one ticket with its full history
-  approve <id>      approve and submit a ticket
+  approve <id>      approve and submit a ticket (paper mode only; live orders are
+                    approved from the paired Gajala phone)
   reject <id>       turn a ticket down
   pause / resume    kill switch for all new orders
   watchlist         followed names, and which of them a buy may target
+  watchlist confirm|unconfirm <SYM>
+                    your own yes for a name research marked ELIGIBLE; a buy needs both
 
 This skill is NOT exposed to the shell agent. Approving an order has to be the
 owner typing /trade or tapping a ticket, never a model deciding mid-conversation
@@ -73,12 +76,32 @@ class TradeSkill(Skill):
             if sub == "list":
                 return self._list(show_all=arg.strip().lower() == "all")
             if sub == "watchlist":
+                words = arg.split()
+                if len(words) == 2 and words[0].lower() in ("confirm", "unconfirm"):
+                    symbol = words[1].upper()
+                    if words[0].lower() == "unconfirm":
+                        store.unconfirm_watchlist(symbol, actor=actor)
+                        return f"{symbol} is no longer confirmed; buys of it are blocked."
+                    entry = store.watchlist().get(symbol)
+                    if not entry or entry["status"] != "ELIGIBLE":
+                        return (f"{symbol} is not marked ELIGIBLE by research, so there is "
+                                "nothing to confirm.")
+                    store.confirm_watchlist(symbol, actor=actor)
+                    return f"Confirmed {symbol}: buy tickets for it can now pass the gate."
                 names = store.watchlist()
                 if not names:
                     return ("The watchlist is empty. Buys are blocked until the weekly "
                             "screen fills it.")
-                return "Watchlist (only ELIGIBLE names can be bought):\n" + "\n".join(
-                    f"  {s:<6} {e['status']:<9} {e['memo']}".rstrip() for s, e in names.items())
+                confirmed = store.confirmed_watchlist()
+
+                def label(symbol: str, status: str) -> str:
+                    if status != "ELIGIBLE":
+                        return status
+                    return "ELIGIBLE" if symbol in confirmed else "UNCONFIRMED"
+                return ("Watchlist (a buy needs ELIGIBLE from research AND your "
+                        "/trade watchlist confirm):\n" + "\n".join(
+                            f"  {s:<6} {label(s, e['status']):<11} {e['memo']}".rstrip()
+                            for s, e in names.items()))
             if sub in ("pause", "resume"):
                 (desk.pause if sub == "pause" else desk.resume)(actor)
                 return ("Trading paused. No ticket can be approved until /trade resume."
@@ -95,7 +118,7 @@ class TradeSkill(Skill):
                 ticket = await desk.approve(ticket_id, actor=actor)
                 note = f"\n{ticket['gate_notes']}" if ticket["status"] == "rejected" else ""
                 return _line(ticket) + note
-        except desk.DeskDisabled as exc:
+        except (desk.DeskDisabled, desk.NeedsOwnerDevice) as exc:
             return str(exc)
         except (KeyError, ValueError) as exc:     # IllegalTransition is a ValueError
             return str(exc).strip("'\"")
@@ -113,9 +136,12 @@ class TradeSkill(Skill):
             f"Market mood: {s['mood'] or 'unknown (treated as risk_off)'}",
             f"Today's buys: ${s['committed_today']:.2f} of ${s['limits']['max_daily_usd']:.2f}  "
             f"(per order ${s['limits']['max_order_usd']:.2f})",
-            f"Approval: {'automatic' if s['auto_approve'] else 'you approve each ticket'}",
+            f"Approval: {'automatic' if s['auto_approve'] else 'you approve each ticket'}"
+            + ("  (TRADE_AUTO_APPROVE is ignored in live mode)"
+               if s.get("auto_approve_ignored") else ""),
             f"Open tickets: {s['open_tickets']}   Watchlist: {len(s['watchlist'])} names, "
-            f"{sum(1 for v in s['watchlist'].values() if v == 'ELIGIBLE')} buy-eligible",
+            f"{sum(1 for k, v in s['watchlist'].items() if v == 'ELIGIBLE' and k in s['confirmed'])}"
+            " buy-eligible (confirmed by you)",
         ]
         for symbol, value in sorted(s["positions"].items()):
             lines.append(f"  {symbol}  ${value:.2f}")
