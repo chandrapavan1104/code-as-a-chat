@@ -41,6 +41,10 @@ class DeskDisabled(RuntimeError):
     """Trading is switched off in config."""
 
 
+class NeedsOwnerDevice(PermissionError):
+    """A live order may only be approved from the owner's paired phone."""
+
+
 def configure(*, data: MarketData | None = None, live_broker: Broker | None = None) -> None:
     """Register the quote source and/or the live broker (done once at startup)."""
     global _data, _live_broker
@@ -54,6 +58,12 @@ def configure(*, data: MarketData | None = None, live_broker: Broker | None = No
 
 def mode() -> str:
     return "live" if config.TRADING_MODE == "live" else "paper"
+
+
+def auto_approve() -> bool:
+    """Auto-approve only ever applies to paper. Proposals come from a research run
+    that reads the web, so in live mode a person approves every order."""
+    return config.TRADE_AUTO_APPROVE and mode() == "paper"
 
 
 def limits() -> risk.Limits:
@@ -124,13 +134,16 @@ async def snapshot(symbol: str | None = None) -> risk.Snapshot:
     current = mode()
     equity, cash, positions, quote = await _account(current, symbol)
     names = store.watchlist()
+    confirmed = store.confirmed_watchlist()
+    eligible = {s for s, e in names.items() if e["status"] == "ELIGIBLE"}
     return risk.Snapshot(
         equity=equity, cash=cash, positions=positions,
         peak_equity=_peak(current, equity),
         committed_today=store.committed_today(current),
         mood=store.get_state("mood"), paused=is_paused(),
-        watchlist=frozenset(s for s, e in names.items() if e["status"] == "ELIGIBLE"),
+        watchlist=frozenset(eligible & confirmed),
         watching=frozenset(s for s, e in names.items() if e["status"] != "ELIGIBLE"),
+        unconfirmed=frozenset(eligible - confirmed),
         quote=quote)
 
 
@@ -195,7 +208,7 @@ async def propose(raw: dict, *, source: str = "") -> dict:
 
     ticket = store.create_ticket(
         status="proposed", expires_at=time.time() + config.TRADE_TICKET_TTL_HOURS * 3600, **common)
-    if config.TRADE_AUTO_APPROVE:
+    if auto_approve():
         return await approve(ticket["id"], actor="auto")
     body = "\n".join(x for x in (
         ticket["reason"], f"Thesis: {ticket['thesis_ref']}" if ticket["thesis_ref"] else "",
@@ -206,14 +219,24 @@ async def propose(raw: dict, *, source: str = "") -> dict:
 
 # ── decisions ─────────────────────────────────────────────────────────────────
 
-async def approve(ticket_id: int, *, actor: str = "owner") -> dict:
+async def approve(ticket_id: int, *, actor: str = "owner",
+                  owner_device: bool = False) -> dict:
     """Approve and submit one ticket. Returns the ticket in its final state for
-    this call: filled, submitted, failed, rejected (gate) or expired."""
+    this call: filled, submitted, failed, rejected (gate) or expired.
+
+    A live ticket needs `owner_device`: the request carried the paired phone's
+    key (server/db/shell_store.py). The shared API token alone is not enough,
+    because anything holding it can also start a coding run that writes a
+    proposal file, and must not be able to approve its own order."""
     _require_enabled()
     ticket = store.get_ticket(ticket_id)
     if ticket is None:
         raise KeyError(f"no ticket #{ticket_id}")
     current = mode()
+    if current == "live" and not owner_device:
+        raise NeedsOwnerDevice(
+            "Live orders can only be approved from your paired Gajala phone "
+            "(Alerts → the ticket). Telegram and /trade approve work in paper mode only.")
     if ticket["mode"] != current:
         raise store.IllegalTransition(
             f"ticket #{ticket_id} is a {ticket['mode']} ticket; the desk is in {current} mode")
@@ -278,12 +301,21 @@ def reject(ticket_id: int, *, actor: str = "owner") -> dict:
     return store.transition(ticket_id, "rejected", actor=actor)
 
 
-async def respond(ticket_id: int, response: str, *, actor: str = "owner") -> dict:
+APPROVE_WORDS = ("approve", "approved", "yes")
+
+
+def is_approval(response: str) -> bool:
+    return (response or "").strip().lower().rstrip(".!") in APPROVE_WORDS
+
+
+async def respond(ticket_id: int, response: str, *, actor: str = "owner",
+                  owner_device: bool = False) -> dict:
     """Handle a free-text answer to a ticket notification. Only an unambiguous
-    yes or no does anything; any other text leaves the ticket waiting."""
+    yes or no does anything; any other text leaves the ticket waiting. Casual
+    acknowledgements ("ok", "go", "y") never move money."""
     word = (response or "").strip().lower().rstrip(".!")
-    if word in ("approve", "approved", "yes", "y", "ok", "go"):
-        return await approve(ticket_id, actor=actor)
+    if word in APPROVE_WORDS:
+        return await approve(ticket_id, actor=actor, owner_device=owner_device)
     if word in ("reject", "rejected", "no", "n", "skip", "cancel"):
         return reject(ticket_id, actor=actor)
     raise ValueError("Answer 'approve' or 'reject'.")
@@ -313,13 +345,15 @@ async def status() -> dict:
     peak = _peak(current, equity)
     return {
         "enabled": config.TRADING_ENABLED, "mode": current, "paused": is_paused(),
-        "auto_approve": config.TRADE_AUTO_APPROVE,
+        "auto_approve": auto_approve(),
+        "auto_approve_ignored": config.TRADE_AUTO_APPROVE and not auto_approve(),
         "equity": equity, "cash": cash, "positions": positions, "peak_equity": peak,
         "drawdown": max(0.0, 1 - equity / peak) if peak > 0 else 0.0,
         "mood": store.get_state("mood"),
         "committed_today": store.committed_today(current),
         "open_tickets": len(store.list_tickets(current, store.OPEN_STATUSES)),
         "watchlist": {s: e["status"] for s, e in store.watchlist().items()},
+        "confirmed": sorted(store.confirmed_watchlist()),
         "limits": {"max_order_usd": config.TRADE_MAX_ORDER_USD,
                    "max_daily_usd": config.TRADE_MAX_DAILY_USD},
     }

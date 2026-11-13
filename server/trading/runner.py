@@ -48,9 +48,29 @@ ROUTINES: dict[str, tuple[frozenset[int], str]] = {
 # ToolSearch is the loader for connector tools; without it a run has none.
 RESEARCH_BUILTINS = ("Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch",
                      "ToolSearch")
-# Connector tools a research run has no use for, beyond the order tools.
-RESEARCH_EXTRA_DENY = ("review_equity_order", "review_option_order", "review_advanced_order",
-                       "preview_crypto_order")
+# The research run reads the open web and social posts (x-signals), so it is
+# treated as steerable by whatever it reads. Its file access is limited to the
+# finance project (an Edit rule covers Write and Edit; reads outside the working
+# directory are refused unless allowed), and env files there are off limits.
+RESEARCH_DENY_FILES = ("Read(./**/.env)", "Read(./**/.env.*)", "Read(./**/*.pem)",
+                       "Read(./**/*.key)")
+# Brokerage tools it may use, as an allowlist: a tool the connector adds later
+# stays unavailable until it is listed here. Market data and the owner's own
+# holdings only: no banking or card data, which a web-reading run could leak.
+RESEARCH_BROKER_TOOLS = (
+    "search", "get_accounts", "get_portfolio", "get_equity_positions", "get_equity_orders",
+    "get_equity_quotes", "get_equity_historicals", "get_equity_fundamentals",
+    "get_equity_analyst_ratings", "get_equity_price_book", "get_equity_technical_indicators",
+    "get_equity_tradability", "get_financials", "get_earnings_calendar", "get_earnings_results",
+    "get_index_quotes", "get_index_historicals", "get_indexes", "get_sec_filing",
+    "get_sec_filing_index", "get_sec_filing_facts", "get_sec_filing_facts_catalog",
+    "get_politician_trades", "get_popular_watchlists", "get_watchlists", "get_watchlist_items",
+    "get_scans", "get_scanner_datapoints", "get_scanner_filter_specs", "preview_scan",
+    "run_scan", "get_option_chains", "get_option_quotes", "get_option_instruments",
+    "get_option_historicals", "get_realized_pnl", "get_pnl_trade_history",
+)
+# The finance project's own MCP server (see its .mcp.json).
+RESEARCH_PROJECT_MCP = ("mcp__x-signals",)
 
 _running: dict[str, asyncio.Task] = {}
 _watchlist_mtime: float = 0.0
@@ -86,7 +106,26 @@ def ingest_watchlist() -> int | None:
     if data is None or not isinstance(data.get("symbols"), list):
         return None
     _watchlist_mtime = mtime
-    return desk.sync_watchlist(data["symbols"])
+    before = {s for s, e in store.watchlist().items() if e["status"] == "ELIGIBLE"}
+    size = desk.sync_watchlist(data["symbols"])
+    fresh = sorted({s for s, e in store.watchlist().items() if e["status"] == "ELIGIBLE"}
+                   - before - store.confirmed_watchlist())
+    if fresh:
+        _schedule_eligible_notice(fresh)
+    return size
+
+
+def _schedule_eligible_notice(symbols: list[str]) -> None:
+    """Tell the owner research wants to make names buyable; they confirm them."""
+    from server.notifier import notify_app
+    body = ("Research marked these buy-eligible. Nothing can be bought until you confirm: "
+            + ", ".join(f"/trade watchlist confirm {s}" for s in symbols))
+    try:
+        asyncio.get_running_loop().create_task(notify_app(
+            "trade_status", title=f"Watchlist: {', '.join(symbols)} awaiting your OK",
+            body=body, telegram=True))
+    except RuntimeError:        # no loop (a direct call in a script or test)
+        log.info("eligible names awaiting confirmation: %s", symbols)
 
 
 def ingest_mood() -> str | None:
@@ -149,9 +188,14 @@ async def reconcile() -> list[dict]:
 
 def research_argv(prompt: str) -> list[str]:
     """Command line for a read-only research run in the finance project."""
-    denied = [config.BROKER_TOOL_PREFIX + t
-              for t in (*config.BROKER_ORDER_TOOLS, *RESEARCH_EXTRA_DENY)]
-    allowed = [*RESEARCH_BUILTINS, config.BROKER_TOOL_PREFIX.rstrip("_"), "mcp__x-signals"]
+    project = _project().resolve()
+    # `//` makes the rule an absolute path. Read, Glob and Grep inside the working
+    # directory need no rule; outside it they are refused in a headless run.
+    allowed = [f"Edit(/{project}/**)", "WebSearch", "WebFetch", "ToolSearch",
+               *(config.BROKER_TOOL_PREFIX + t for t in RESEARCH_BROKER_TOOLS),
+               *RESEARCH_PROJECT_MCP]
+    denied = [*(config.BROKER_TOOL_PREFIX + t for t in config.BROKER_ORDER_TOOLS),
+              *RESEARCH_DENY_FILES]
     return ["claude", "-p", prompt, "--output-format", "json",
             "--model", config.FINANCE_RESEARCH_MODEL,
             "--tools", ",".join(RESEARCH_BUILTINS),      # no Bash, no agents

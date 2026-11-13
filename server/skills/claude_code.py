@@ -1,5 +1,5 @@
 import json
-from server import config
+from server import config, workspace
 from server.skills.cli_base import CLISubprocessSkill
 from server.skills import register
 
@@ -27,7 +27,7 @@ class ClaudeCodeSkill(CLISubprocessSkill):
             "--permission-mode", "bypassPermissions",
         ]
         # bypassPermissions must never extend to moving money (see config).
-        cmd += config.claude_deny_args()
+        cmd += config.claude_deny_args(workspace.active())
         if model:  # e.g. opus / sonnet / haiku — resolved by cli_base (primary/backup)
             cmd += ["--model", model]
         if resume_id:  # claude mints its own id; we only resume, never set new_id

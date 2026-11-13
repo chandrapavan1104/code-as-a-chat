@@ -75,6 +75,14 @@ ever run against a stub: the first real order is an owner action. Quotes come
 through a read-only restricted run and are bounds-checked. Coding and Night
 Shift Claude runs are now denied broker order tools (`config.claude_deny_args`).
 Not built: Approve/Reject buttons in Gajala, a direct market-data feed.
+Review hardening (`fix/trading-desk-review`): a buy also needs the owner's
+`/trade watchlist confirm SYM`, not only research's ELIGIBLE; live tickets are
+approved only with the paired phone's key (`X-Shell-Device`), so Telegram and
+`/trade approve` work in paper only; TRADE_AUTO_APPROVE is ignored in live; the
+research run's files are confined to its project with a broker read allowlist;
+Night Shift runs with `--strict-mcp-config`; other brokerage connectors found by
+`server/broker_guard.py` are denied whole to coding runs; the executor pauses if
+another recent order in the same name appears; only "approve"/"yes" approves.
 `test_scheduler_daily_delivery_advances_across_dst` fails when run between
 midnight and 09:00 local; that predates this branch.
 
@@ -558,6 +566,15 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-13 — **Trading desk review fixes (`fix/trading-desk-review` → PR #50).**
+  Verified against the real CLI: the research run could read and write outside
+  its project (canary read, file written outside); now confined, and a buy needs
+  owner confirmation of the name. Live approval required only the shared token,
+  which can also start a coding run that writes proposal files; it now needs the
+  paired phone. Auto-approve is paper-only. Night Shift loads no connectors
+  (strict MCP; checked via the CLI's init message), coding runs deny other
+  brokerage servers whole (whole-server deny verified). Executor checks for a
+  duplicate order. 22 new tests; 103 trading tests pass.
 - 2026-11-13 — **Trading desk (branch `feat/trading-desk`, not deployed).** New
   `server/trading/` (risk gate, desk, paper broker, Robinhood adapters, runner),
   `trading_store`, `trade` skill, `/api/trade/*` and a `trade_ticket` branch in

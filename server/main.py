@@ -16,6 +16,7 @@ from server.scheduler import scheduler_loop
 from server.night_shift import night_shift_loop
 from server.queue_supervisor import supervisor_loop
 from server.trading.runner import trading_loop
+from server import broker_guard
 
 
 from server.remote_shell import manager as shell_manager  # noqa: E402
@@ -39,6 +40,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(night_shift_loop()),
         asyncio.create_task(supervisor_loop()),
         asyncio.create_task(trading_loop()),
+        asyncio.create_task(broker_guard.watch_loop()),
         asyncio.create_task(shell_manager.reap_loop()),
     ]
     try:

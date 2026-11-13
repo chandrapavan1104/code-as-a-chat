@@ -283,12 +283,43 @@ class ClaudeRobinhoodBroker:
             return OrderResult(status="submitted", order_id=order_id, detail=(
                 "Order sent but it could not be confirmed against the broker's records. "
                 "Trading is paused; check the Robinhood app."))
+        # The executor run was allowed the order tool and only told to use it
+        # once. Check the broker for any other recent order in this name: a second
+        # placement (say, after an ambiguous tool error) would otherwise go unseen.
+        others = await self.recent_orders(symbol, exclude=order_id)
+        if others is None or others:
+            store.set_state("paused", "1", actor="executor")
+            found = (f"other recent {symbol} order(s) {', '.join(others)}" if others
+                     else f"whether other {symbol} orders were placed")
+            return OrderResult(status="submitted", order_id=order_id, detail=(
+                f"Order sent, but could not rule out a duplicate ({found}). Trading is "
+                "paused; check the Robinhood app."))
         if seen["state"] == "filled" and seen["filled_quantity"] > 0:
             return OrderResult(status="filled", order_id=order_id,
                                quantity=seen["filled_quantity"], price=seen["average_price"],
                                detail="filled")
         return OrderResult(status="submitted", order_id=order_id,
                            detail=f"{shares} share(s) resting at ${limit:.2f}")
+
+    async def recent_orders(self, symbol: str, *, exclude: str,
+                            minutes: int = 30) -> list[str] | None:
+        """Ids of other equity orders for `symbol` created in the last `minutes`
+        that were not cancelled or rejected, or None when that cannot be read."""
+        last4 = config.TRADE_ACCOUNT_LAST4
+        reply = await run_restricted(
+            f"In the brokerage account ending in {last4}, list every equity order for the "
+            f"stock {symbol} created in the last {minutes} minutes, in any state. Reply with "
+            'only this JSON object and no other text: {"orders": [{"id": "<order id>", '
+            '"state": "<the order state from the tool, lower case>"}]}. Use an empty list '
+            "if there are none. Copy values exactly from the tool.",
+            READ_ORDERS)
+        rows = (reply or {}).get("orders")
+        if not isinstance(rows, list):
+            return None
+        dead = ("cancelled", "canceled", "rejected", "failed")
+        return [str(r.get("id"))[:80] for r in rows
+                if isinstance(r, dict) and str(r.get("id")) != exclude
+                and str(r.get("state") or "").lower() not in dead]
 
     async def lookup(self, order_id: str) -> dict | None:
         """Read one order back from the broker with a read-only run."""

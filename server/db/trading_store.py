@@ -105,6 +105,13 @@ def init() -> None:
                 status   TEXT NOT NULL DEFAULT 'WATCH',
                 added_at REAL NOT NULL
             );
+            -- Names the owner has confirmed as buyable. Kept apart from the
+            -- research-written watchlist, which a replace never touches here.
+            CREATE TABLE IF NOT EXISTS watchlist_confirmed (
+                symbol       TEXT PRIMARY KEY,
+                confirmed_at REAL NOT NULL,
+                actor        TEXT NOT NULL DEFAULT ''
+            );
         """)
         c.commit()
 
@@ -296,6 +303,33 @@ def watchlist() -> dict[str, dict]:
     with _conn() as c:
         return {r["symbol"]: {"memo": r["memo"], "status": r["status"]} for r in c.execute(
             "SELECT symbol, memo, status FROM watchlist ORDER BY symbol").fetchall()}
+
+
+def confirm_watchlist(symbol: str, *, actor: str = "owner") -> None:
+    """The owner's own yes for one name. Research can mark a name ELIGIBLE, but
+    the research run reads the web, so its say-so alone never makes a name
+    buyable."""
+    init()
+    with _conn() as c:
+        c.execute("INSERT OR REPLACE INTO watchlist_confirmed (symbol, confirmed_at, actor) "
+                  "VALUES (?,?,?)", (symbol.upper(), time.time(), actor))
+        _audit(c, None, "watchlist:confirmed", actor, {"symbol": symbol.upper()})
+        c.commit()
+
+
+def unconfirm_watchlist(symbol: str, *, actor: str = "owner") -> bool:
+    init()
+    with _conn() as c:
+        cur = c.execute("DELETE FROM watchlist_confirmed WHERE symbol = ?", (symbol.upper(),))
+        _audit(c, None, "watchlist:unconfirmed", actor, {"symbol": symbol.upper()})
+        c.commit()
+        return cur.rowcount == 1
+
+
+def confirmed_watchlist() -> set[str]:
+    init()
+    with _conn() as c:
+        return {r["symbol"] for r in c.execute("SELECT symbol FROM watchlist_confirmed")}
 
 
 def audit_log(ticket_id: int | None = None, limit: int = 100) -> list[dict]:

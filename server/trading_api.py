@@ -8,9 +8,9 @@ be used to invent an order.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
-from server.db import trading_store as store
+from server.db import shell_store, trading_store as store
 from server.trading import desk
 
 router = APIRouter()
@@ -45,13 +45,22 @@ def trade_ticket(ticket_id: int):
     return {"ticket": _view(ticket), "history": store.audit_log(ticket_id)}
 
 
-async def decide(ticket_id: int, decision: str, actor: str) -> dict:
-    """Shared by the two routes below and by the notification respond hook."""
+def owner_device(x_shell_device: str | None) -> bool:
+    """True when the request carries the paired phone's key. Live approvals need
+    it; the API token alone is shared with Telegram, widgets and coding runs."""
+    return bool(x_shell_device) and shell_store.matches(x_shell_device)
+
+
+async def decide(ticket_id: int, decision: str, actor: str, *,
+                 device: bool = False) -> dict:
+    """Shared by the two routes below."""
     try:
         if decision == "approve":
-            ticket = await desk.approve(ticket_id, actor=actor)
+            ticket = await desk.approve(ticket_id, actor=actor, owner_device=device)
         else:
             ticket = desk.reject(ticket_id, actor=actor)
+    except desk.NeedsOwnerDevice as exc:
+        raise HTTPException(403, str(exc)) from exc
     except desk.DeskDisabled as exc:
         raise HTTPException(409, str(exc)) from exc
     except KeyError as exc:
@@ -62,8 +71,9 @@ async def decide(ticket_id: int, decision: str, actor: str) -> dict:
 
 
 @router.post("/trade/tickets/{ticket_id}/approve")
-async def trade_approve(ticket_id: int):
-    return {"ticket": await decide(ticket_id, "approve", "app")}
+async def trade_approve(ticket_id: int, x_shell_device: str | None = Header(default=None)):
+    return {"ticket": await decide(ticket_id, "approve", "app",
+                                   device=owner_device(x_shell_device))}
 
 
 @router.post("/trade/tickets/{ticket_id}/reject")

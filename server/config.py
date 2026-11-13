@@ -293,11 +293,18 @@ CLAUDE_ALLOW_BROKER_ORDERS: bool = os.getenv(
     "CLAUDE_ALLOW_BROKER_ORDERS", "false").lower() in ("1", "true", "yes")
 
 
-def claude_deny_args() -> list[str]:
-    """CLI arguments that remove broker order tools from a general Claude run."""
+def claude_deny_args(cwd: Path | str | None = None) -> list[str]:
+    """CLI arguments that remove broker order tools from a general Claude run:
+    the configured connector's order tools by name, plus any other brokerage
+    connector found on this Mac or in `cwd`'s .mcp.json, denied whole
+    (server/broker_guard.py). Unattended runs should also pass
+    --strict-mcp-config, which loads no connector at all."""
     if CLAUDE_ALLOW_BROKER_ORDERS:
         return []
-    return ["--disallowedTools", ",".join(BROKER_TOOL_PREFIX + t for t in BROKER_ORDER_TOOLS)]
+    from server import broker_guard
+    denied = [BROKER_TOOL_PREFIX + t for t in BROKER_ORDER_TOOLS]
+    denied += broker_guard.denied_servers(cwd)
+    return ["--disallowedTools", ",".join(denied)]
 
 # ── FCM push (Gajala Android app) ─────────────────────────────────────────────
 # Service-account key downloaded from Firebase console; lets the server send
