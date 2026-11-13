@@ -793,6 +793,12 @@ class GajalaApi {
 
   /// Answer a "needs your input" notification; the server re-runs the job with
   /// the answer appended.
-  Future<void> respondNotification(int id, String response) async =>
-      _dio.post('/api/notifications/$id/respond', data: {'response': response});
+  /// [deviceKey] is this phone's paired key: the Mac accepts an approval of a
+  /// live trade ticket only with it (the shared token alone is not enough).
+  Future<void> respondNotification(int id, String response, {String? deviceKey}) async =>
+      _dio.post(
+        '/api/notifications/$id/respond',
+        data: {'response': response},
+        options: deviceKey == null ? null : _shell(deviceKey),
+      );
 }

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
 import '../core/models.dart';
 import '../core/state.dart';
+import '../core/storage.dart';
 import '../core/theme.dart';
 import '../core/update.dart';
 import 'home_shell.dart';
@@ -186,8 +187,9 @@ class _NotifTile extends ConsumerWidget {
             onPressed: () async {
               if (reply.text.trim().isEmpty) return;
               try {
-                await ref.read(apiProvider)
-                    ?.respondNotification(n.id, reply.text.trim());
+                await ref.read(apiProvider)?.respondNotification(
+                    n.id, reply.text.trim(),
+                    deviceKey: await Storage.shellDeviceKey());
                 ref.invalidate(notificationsProvider);
                 ref.invalidate(unreadCountProvider);
                 ref.invalidate(queueProvider);
