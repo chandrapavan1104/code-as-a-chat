@@ -59,6 +59,22 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Reliability incident repair (November 17).** Diagnosed project-chat failures:
+expired/unrefreshable Claude OAuth credentials, unsupported Gemini CLI presented
+as a login problem, raw resumed-session telemetry mistaken for a fresh bill, and
+typed slash commands entering the model loop. Native Claude status can report
+saved sign-in while a real tool-free request fails OAuth refresh. Auth checks now
+separate saved credentials from provider verification; failures do not trigger a
+same-provider model retry. CLI errors retain the diagnostic without cumulative
+session telemetry, including historical context; explicit slash commands dispatch
+to their registered skills, and partial recovery retains useful coding reports.
+523 tests pass with one trading test failure reproduced unchanged on live #78.
+Claude was updated to 2.1.326; after owner-completed sign-in, a real tool-free
+provider request passed. Recurring token invalidation is not claimed resolved.
+Mac sleep is disabled, power schedules are empty, autorestart is off and requires
+owner/admin activation. November 17 ResetCounter records undervoltage-named boot
+faults; exact physical cause is unproven. See `docs/reliability-incident-2026-11-17.md`.
+
 **Gajala Trading screen (November 13).** Library → Trading is the owner's
 view of the desk: mode/pause switch, account and today's spend against the cap,
 tickets with plain-language Approve/Reject (live: fingerprint + paired-phone key),
@@ -576,6 +592,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-17 — Diagnosed chat/provider/power failures; fixed deterministic slash
+  dispatch, OAuth status/error semantics and misleading session-error telemetry.
 - 2026-11-13 — **Trading screen and Approve/Reject in Gajala.** Fixed the gap
   where a trade alert opened nothing (so live tickets could not be approved at
   all). New overview/confirm/pause/doc endpoints; ticket header shows the real

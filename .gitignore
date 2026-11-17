@@ -40,3 +40,6 @@ venv/
 .claude/settings.local.json
 .claude/
 .env.bak.*
+
+# Timestamped local environment backups must never enter a commit.
+.env.bak-*

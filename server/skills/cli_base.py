@@ -5,7 +5,7 @@ import shutil
 import time
 from server.skills.base import Skill, SkillResult
 from server import config
-from server import run_usage, usage_limits, workspace
+from server import run_usage, usage_limits, workspace, cli_errors, brain_health
 from server.db import cli_runs_store, cli_sessions_store, native_sessions
 
 
@@ -71,6 +71,7 @@ class CLISubprocessSkill(Skill):
         thread: doing so silently forks the project's conversation.
         """
         text = f"{stdout}\n{stderr}".lower()
+        if cli_errors.kind(text):return False
         return any(marker in text for marker in (
             "session not found", "session does not exist", "invalid session",
             "unknown session", "conversation not found", "no conversation found",
@@ -109,7 +110,7 @@ class CLISubprocessSkill(Skill):
             total, billable = self.extract_usage(stdout)
             if total:
                 run_usage.add(self.name, model or None, input_tokens=total,
-                              cost_usd=self.extract_cost(stdout))
+                              cost_usd=(None if self.session_engine=='claude' and session_id else self.extract_cost(stdout)))
             status = ("timeout" if rc is None
                       else ("error" if self._failed(rc, stdout) else "success"))
             cli_runs_store.add(
@@ -252,7 +253,10 @@ class CLISubprocessSkill(Skill):
         # it in the same session. The model may change, but the project's thread
         # must not fork merely because a fallback was needed.
         fell_back = False
-        if self._failed(rc, stdout) and backup and backup != primary:
+        failure_kind=cli_errors.kind(cli_errors.detail(stdout,stderr)) if self._failed(rc,stdout) else None
+        if failure_kind:
+            brain_health.failed(self.session_engine,RuntimeError(cli_errors.detail(stdout,stderr)))
+        if self._failed(rc, stdout) and not failure_kind and backup and backup != primary:
             rc, stdout, stderr, new_id, resume_id = await self._attempt(
                 prompt, cwd, backup, source=source)
             fell_back = True
@@ -260,14 +264,21 @@ class CLISubprocessSkill(Skill):
         if rc is None:
             return f"[{self.name}] Timed out after {self.timeout}s"
 
-        if rc != 0:
-            limit = usage_limits.notice(self.name.capitalize(), f"{stdout}\n{stderr}")
+        if rc != 0 or self._failed(rc,stdout):
+            diagnostic=cli_errors.detail(stdout,stderr)
+            failure_kind=cli_errors.kind(diagnostic)
+            if failure_kind:
+                note=('The installed client is no longer supported; this needs a supported client, not another login.'
+                      if failure_kind=='unsupported_client' else
+                      'The saved login could not refresh for this request, even if local status says signed in. Run `claude auth login` on the Mac, then `/auth claude verify`.' if self.session_engine=='claude' else 'The provider rejected the saved credentials; check native login and verify a real provider request.')
+                return SkillResult('failed',f'{self.name}: {diagnostic}\n{note}',data={'kind':failure_kind,'engine':self.session_engine})
+            limit = usage_limits.notice(self.name.capitalize(), diagnostic)
             if limit:
                 return SkillResult("failed", limit, data={
                     "kind": "usage_limit", "engine": self.session_engine})
             return SkillResult("failed", (
                 f"[{self.name} error code {rc}]\n"
-                f"{stderr.strip() or stdout.strip() or '(no output)'}"))
+                f"{diagnostic}"))
 
         # Remember the session id so the next call in this project continues it.
         # CLI-assigned engines report it in output; client-assigned ones already
