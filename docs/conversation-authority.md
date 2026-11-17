@@ -90,8 +90,14 @@ Release validation: all 216 Flutter tests pass. The server suite's known
 this change on deployed #78 and is excluded explicitly; the trading guard is not
 weakened. Final server counts, build and deployment evidence are recorded below.
 
-Final verification: 540 server tests passed, 1 known baseline failure explicitly
+Final verification: 543 server tests passed, 1 known baseline failure explicitly
 excluded; 216 Flutter tests passed. Android release assembly passed, including the
 new Kotlin worker and RemoteViews providers. Static analysis has no errors or
 warnings in the new navigation/widget code (style info remains). APK SHA-256:
 `f15f2c4f73cf74dbaaba29a7a08dff9a805b30b94b1f8ffaa548fc84a9ef0daf`.
+
+Live release #81 passed localhost/authenticated/Tailscale checks. Three synthetic
+chat turns preserved a label across requests and returned a normal explanation
+containing "deployed" through the OpenAI fallback. Claude reported its 5-hour quota,
+not expired login; the acceptance follow-up extends quota recognition to hyphenated
+and spaced windows. APK build 1794950326 is published via the existing updater.

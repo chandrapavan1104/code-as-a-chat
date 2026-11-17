@@ -69,9 +69,10 @@ observations preserve corrections without promoting assistant prose to facts.
 Interactive turns serialize before message insertion; task snapshots and revision
 checks protect newer corrections from older completions. Explanations no longer
 fail keyword-only execution checks. Shared Quick access opens Terminal/Trading
-from all four tabs. Widgets use an awaited app-owned worker with interrupted-job
+from all four tabs. Live acceptance found Claude quota wording `5-hour`, now
+recognized with its reset time instead of a generic provider failure. Widgets use an awaited app-owned worker with interrupted-job
 non-replay, duplicate coalescing, queued launch routing, explicit stale/failure
-states and copyable bounded diagnostics. 540 server and 216 Flutter tests pass
+states and copyable bounded diagnostics. 543 server and 216 Flutter tests pass
 (one previously documented trading test excluded); release APK compiles. Physical-phone
 background/launcher acceptance remains pending. See `docs/conversation-authority.md`.
 

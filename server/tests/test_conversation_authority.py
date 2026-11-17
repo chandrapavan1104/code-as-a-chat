@@ -245,3 +245,14 @@ def test_fresh_session_is_kept_for_backup_model(tmp_path, monkeypatch):
     assert len(calls) == 2 and '--resume' not in calls[0]
     assert calls[1][calls[1].index('--resume') + 1] == 'fresh-owned'
     assert 'backup answer' in result
+
+
+@pytest.mark.parametrize('window', ['5-hour', '5 hour', 'weekly'])
+def test_live_quota_wording_is_not_authentication(window):
+    from server import usage_limits, brain_health
+    text = f"You've hit your {window} limit · resets 2:50pm (America/Los_Angeles)"
+    assert usage_limits.is_usage_limit(text)
+    brain_health.failed('claude', RuntimeError(text))
+    assert brain_health.snapshot()['claude']['reason'] == 'quota or rate limit reached'
+    assert 'usage limit is reached' in brain_health.fallback_note()
+    assert 'not a sign-in problem' in brain_health.fallback_note()
