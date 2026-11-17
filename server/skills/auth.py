@@ -21,7 +21,7 @@ import asyncio
 import re
 import shutil
 
-from server.skills.base import Skill
+from server.skills.base import Skill, SkillResult
 from server.skills import register
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -169,9 +169,9 @@ class AuthSkill(Skill):
                 await _claude_cli('Reply only OK. Do not use tools.','Synthetic provider authentication check.',timeout=20,model='haiku')
             except Exception as exc:
                 brain_health.failed('claude',exc)
-                return 'Claude provider verification failed: '+str(exc)[:300]
+                return SkillResult('failed','Claude provider verification failed: '+str(exc)[:300])
             brain_health.succeeded('claude')
-            return 'Claude provider authentication verified with a bounded tool-free request.'
+            return SkillResult('succeeded','Claude provider authentication verified with a bounded tool-free request.',evidence=['native tool-free provider response'])
         if arg in ("claude", "anthropic"):
             return await _claude_status()
         if arg in ("gemini", "google"):

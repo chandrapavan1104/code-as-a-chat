@@ -68,7 +68,7 @@ separate saved credentials from provider verification; failures do not trigger a
 same-provider model retry. CLI errors retain the diagnostic without cumulative
 session telemetry, including historical context; explicit slash commands dispatch
 to their registered skills, and partial recovery retains useful coding reports.
-523 tests pass with one trading test failure reproduced unchanged on live #78.
+524 tests pass with one trading test failure reproduced unchanged on live #78.
 Claude was updated to 2.1.326; after owner-completed sign-in, a real tool-free
 provider request passed. Recurring token invalidation is not claimed resolved.
 Mac sleep is disabled, power schedules are empty, autorestart is off and requires

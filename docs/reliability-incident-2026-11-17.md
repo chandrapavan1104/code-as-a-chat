@@ -70,7 +70,7 @@ into a privileged daemon.
 
 ## Verification
 
-Eleven focused incident regressions pass. Full server suite: 523 passed, one
+Twelve focused incident regressions pass. Full server suite: 524 passed, one
 existing failure. The identical trading test fails on untouched live #78:
 test_notification_reply_approves_through_the_api directly passes FastAPI's
 Header default object instead of a paired device key. Its approval guard was
@@ -90,3 +90,11 @@ footer explicitly labels them as a session estimate, not an invoice.
 Owner completed a new sign-in during the investigation. A subsequent real,
 tool-free Claude provider request returned OK. Current provider access is restored;
 this does not establish why earlier refresh credentials were invalidated.
+
+Deployment #79 passed local/authenticated/Tailscale checks. Native provider
+verification through the phone URL completed in 3.26 seconds; a normal tool-free
+chat returned READY in 5.23 seconds. This exposed a slash-command boundary issue:
+although the tool succeeded, missing shell events marked it unverified and
+skipped assistant chat persistence. Explicit commands now emit their own durable
+run/step/completion trace, retain request receipts, and save their replies. Provider
+verification returns a typed outcome, so a successful check is completed.
