@@ -59,6 +59,22 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Conversation authority and widget recovery (November 17).** Conversation-bound
+coding sessions now use conversation + canonical workspace + engine, cannot follow
+newer Mac sessions, and reject cross-chat native-session attachment. Legacy shared
+pointers and all transcripts remain readable; ambiguous bindings start fresh with
+saved context. One bounded, source-labeled context package follows router fallback
+and coding delegation. Extractive user-source state, historical coverage and typed
+observations preserve corrections without promoting assistant prose to facts.
+Interactive turns serialize before message insertion; task snapshots and revision
+checks protect newer corrections from older completions. Explanations no longer
+fail keyword-only execution checks. Shared Quick access opens Terminal/Trading
+from all four tabs. Widgets use an awaited app-owned worker with interrupted-job
+non-replay, duplicate coalescing, queued launch routing, explicit stale/failure
+states and copyable bounded diagnostics. 540 server and 216 Flutter tests pass
+(one previously documented trading test excluded); release APK compiles. Physical-phone
+background/launcher acceptance remains pending. See `docs/conversation-authority.md`.
+
 **Reliability incident repair (November 17).** Diagnosed project-chat failures:
 expired/unrefreshable Claude OAuth credentials, unsupported Gemini CLI presented
 as a login problem, raw resumed-session telemetry mistaken for a fresh bill, and
@@ -592,6 +608,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-17 — Conversation-owned context/session isolation, reliable explanations,
+  shared Terminal/Trading quick access, and widget background-worker recovery.
 - 2026-11-17 — Diagnosed chat/provider/power failures; fixed deterministic slash
   dispatch, OAuth status/error semantics and misleading session-error telemetry.
 - 2026-11-13 — **Trading screen and Approve/Reject in Gajala.** Fixed the gap

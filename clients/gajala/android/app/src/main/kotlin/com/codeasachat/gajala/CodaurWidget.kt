@@ -8,7 +8,6 @@ import android.text.format.DateUtils
 import android.view.View
 import android.util.TypedValue
 import android.widget.RemoteViews
-import es.antonborri.home_widget.HomeWidgetBackgroundIntent
 import es.antonborri.home_widget.HomeWidgetLaunchIntent
 import es.antonborri.home_widget.HomeWidgetProvider
 
@@ -80,8 +79,11 @@ class CodaurWidget : HomeWidgetProvider() {
                     val provider = widgetData.getString("codaur_name$suffix", defaults[index])
                         ?.takeIf { it.isNotBlank() } ?: defaults[index]
                     val isLocal = provider.equals("Qwen", ignoreCase = true)
-                    val hasPrimary = widgetData.getBoolean("codaur_has_primary$suffix", false)
-                    val hasSecondary = widgetData.getBoolean("codaur_has_secondary$suffix", false)
+                    val dataEpoch = widgetData.getLong("codaur_updated_epoch", 0L)
+                    val expired = widgetData.getBoolean("codaur_stale", false) || dataEpoch <= 0L ||
+                        System.currentTimeMillis() - dataEpoch > STALE_AFTER_MS
+                    val hasPrimary = !expired && widgetData.getBoolean("codaur_has_primary$suffix", false)
+                    val hasSecondary = !expired && widgetData.getBoolean("codaur_has_secondary$suffix", false)
                     val primary = widgetData.getInt("codaur_primary_pct$suffix", 0).coerceIn(0, 100)
                     val secondary = widgetData.getInt("codaur_secondary_pct$suffix", 0).coerceIn(0, 100)
                     val tokenActivity = widgetData.getString("codaur_tokens$suffix", null)
@@ -145,7 +147,7 @@ class CodaurWidget : HomeWidgetProvider() {
 
                 setOnClickPendingIntent(
                     R.id.codaur_refresh,
-                    HomeWidgetBackgroundIntent.getBroadcast(context, Uri.parse("gajala://codaur")),
+                    GajalaWidgetReceiver.pending(context, "gajala://codaur"),
                 )
                 setOnClickPendingIntent(
                     R.id.widget_root,

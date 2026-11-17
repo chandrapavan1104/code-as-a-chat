@@ -1,4 +1,4 @@
-from server import config
+from server import config, conversation
 from server.skills import discover, get_skill, command_map
 from server.skills.base import SkillResult
 
@@ -14,6 +14,7 @@ def init() -> None:
     COMMAND_MAP = command_map()
 
 
+@conversation.serialized
 async def route(command: str, prompt: str = "", **kwargs) -> str:
     from server import prefs
     # Mobile sends typed slash commands inside a shell request. These are exact
@@ -86,4 +87,5 @@ async def _typed_command(command,args,original_prompt,**kwargs):
     await shell._emit(on_event,{'type':'completion','status':completion,'reason':reason,'brains':'direct:'+command})
     shell._run_finish(run_id,reason,result,brains='direct:'+command,usage=run_usage.summary())
     shell.ShellSkill._remember(sid,original_prompt,result,run_id)
+    conversation.observe(sid,run_id,completion,[step])
     return result

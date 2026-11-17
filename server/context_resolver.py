@@ -41,7 +41,7 @@ def resolve(prompt: str, session_id: str | None, reply_context=None) -> str:
                                    if t.lower() not in _STOP))[:8]
         candidates = {}
         from server import context_index
-        for row in context_index.search(session_id, ' '.join(terms), all_conversations=True, limit=20):
+        for row in context_index.search(session_id, ' '.join(terms), all_conversations=False, limit=20):
             candidates[row['id']] = row
         ranked = sorted(candidates.values(), key=lambda r: (
             sum(t in r['content'].lower() for t in terms), r['ts']), reverse=True)

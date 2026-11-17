@@ -1,3 +1,4 @@
+import '../widgets/quick_access.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
@@ -31,6 +32,7 @@ class TasksScreen extends ConsumerWidget {
         appBar: AppBar(
           title: const Text('Work'),
           actions: [
+          const QuickAccessButton(),
             IconButton(
               tooltip: 'Work settings',
               icon: const Icon(Icons.tune),

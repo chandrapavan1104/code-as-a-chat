@@ -114,6 +114,7 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
     });
     final api = ref.read(apiProvider);
     if (api != null) Push.registerWith(api);
+    WidgetsBinding.instance.addPostFrameCallback((_) => flushWidgetLaunch());
     return MaterialApp(
       title: 'Gajala',
       debugShowCheckedModeBanner: false,

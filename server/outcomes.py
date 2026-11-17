@@ -34,8 +34,16 @@ def false_switch_claim(reply: str, *, switched: bool, project_names: list[str],
     return False
 
 
+def execution_claim(reply: str) -> bool:
+    """An asserted action is different from explaining the word 'deployed'."""
+    return bool(re.search(
+        r"\b(?:I|we)\s+(?:(?:have|successfully|just)\s+)*(?:deployed|committed|pushed|cloned|saved|created|deleted|scheduled|locked|unlocked|started|stopped)\b|"
+        r"\b(?:the|your|our|this)\s+[\w ./-]{1,80}\s+(?:is|are)\s+(?:running|healthy|live|working|functioning)\b|"
+        r"\b(?:deployment|command|operation|task)\s+(?:has\s+)?(?:completed|succeeded)\b", reply, re.I))
+
+
 def completion_status(reply: str, reason: str, steps: list[dict],
-                      rejected: bool = False) -> str:
+                      rejected: bool = False, *, response_kind: str | None = None) -> str:
     if reason in {'llm_error', 'error', 'tool_failed'}:
         return 'failed'
     if re.search(r'please (?:provide|upload)|missing (?:input|image|attachment)', reply, re.I):
@@ -51,6 +59,6 @@ def completion_status(reply: str, reason: str, steps: list[dict],
         if OBSERVED_CLAIM.search(reply) and not (
                 meaningful and all(s.get('status') == 'succeeded' for s in meaningful)):
             return 'unverified'
-    elif OBSERVED_CLAIM.search(reply):
+    elif execution_claim(reply) or response_kind == 'execution_report':
         return 'unverified'
     return 'completed'

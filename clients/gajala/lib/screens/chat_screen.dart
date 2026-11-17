@@ -1,3 +1,4 @@
+import '../widgets/quick_access.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -674,6 +675,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       builder: (_) => ChatContextSheet(
         api: api,
         currentDir: _dir,
+        conversationId: _sid,
         currentModel: _model,
         onChanged: (dir, model) async {
           if (!mounted) return;
@@ -739,6 +741,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       appBar: AppBar(
         title: _buildTitle(context),
         actions: [
+          const QuickAccessButton(),
           if (widget.command == 'shell')
             IconButton(
               tooltip: 'Conversations',
@@ -746,16 +749,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               onPressed: _chooseConversation,
             ),
           if (widget.command == 'shell')
-            IconButton(
-              tooltip: 'New conversation',
-              icon: const Icon(Icons.add_comment_outlined),
-              onPressed: _newConversation,
-            ),
-          if (widget.command == 'shell')
-            IconButton(
-              tooltip: 'Review changes',
-              icon: const Icon(Icons.difference_outlined),
-              onPressed: _reviewChanges,
+            PopupMenuButton<String>(
+              tooltip: 'Chat options',
+              onSelected: (value) {
+                if (value == 'new') _newConversation();
+                if (value == 'diff') _reviewChanges();
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'new', child: Text('New conversation')),
+                PopupMenuItem(value: 'diff', child: Text('Review changes')),
+              ],
             ),
           if (widget.command == 'shell')
             IconButton(
@@ -1436,12 +1439,14 @@ class _StatusBubble extends StatelessWidget {
 class ChatContextSheet extends StatefulWidget {
   final GajalaApi api;
   final String? currentDir;
+  final String? conversationId;
   final String currentModel;
   final Future<void> Function(String? dir, String? model) onChanged;
   const ChatContextSheet({
     super.key,
     required this.api,
     required this.currentDir,
+    this.conversationId,
     required this.currentModel,
     required this.onChanged,
   });
@@ -1498,7 +1503,7 @@ class ChatContextSheetState extends State<ChatContextSheet> {
   Future<void> _loadSessions() async {
     final request = ++_sessionLoad;
     try {
-      final sess = await widget.api.activeSessions();
+      final sess = await widget.api.activeSessions(sessionId: widget.conversationId, project: _dir);
       if (!mounted || request != _sessionLoad) return;
       setState(() => _sessions = List<Map<String, dynamic>>.from(sess['sessions'] ?? []));
     } catch (_) { /* session discovery cannot hide project choices */ }

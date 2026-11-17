@@ -1,3 +1,4 @@
+import '../widgets/quick_access.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
@@ -22,6 +23,7 @@ class NotificationsScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Alerts'),
         actions: [
+          const QuickAccessButton(),
           TextButton(
             onPressed: () async {
               await ref.read(apiProvider)?.markAllRead();

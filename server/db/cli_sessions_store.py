@@ -125,3 +125,61 @@ def all_for(workspace: str) -> dict[str, str]:
             (workspace,),
         ).fetchall()
     return {r["engine"]: r["session_id"] for r in rows}
+
+
+class SessionOwned(ValueError):
+    def __init__(self, owner):
+        self.owner = owner
+        super().__init__('This native session belongs to another conversation. '
+                         'Open that conversation or start a fresh session.')
+
+
+def _conversation_init(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS conversation_cli_sessions (
+        conversation_id TEXT NOT NULL, workspace TEXT NOT NULL, engine TEXT NOT NULL,
+        session_id TEXT NOT NULL, updated_at REAL NOT NULL,
+        PRIMARY KEY(conversation_id, workspace, engine),
+        UNIQUE(engine, session_id))''')
+
+
+def conversation_get(conversation_id, workspace, engine):
+    with _conn() as c:
+        _conversation_init(c)
+        row = c.execute('SELECT session_id FROM conversation_cli_sessions '
+                        'WHERE conversation_id=? AND workspace=? AND engine=?',
+                        (conversation_id, str(Path(workspace).resolve()), engine)).fetchone()
+    return row['session_id'] if row else None
+
+
+def conversation_owner(engine, session_id):
+    with _conn() as c:
+        _conversation_init(c)
+        row = c.execute('SELECT conversation_id FROM conversation_cli_sessions '
+                        'WHERE engine=? AND session_id=?', (engine, session_id)).fetchone()
+    return row['conversation_id'] if row else None
+
+
+def conversation_set(conversation_id, workspace, engine, session_id):
+    if not session_id:
+        return
+    with _conn() as c:
+        _conversation_init(c)
+        c.execute('BEGIN IMMEDIATE')
+        owner = c.execute('SELECT conversation_id FROM conversation_cli_sessions '
+                          'WHERE engine=? AND session_id=?', (engine, session_id)).fetchone()
+        if owner and owner['conversation_id'] != conversation_id:
+            raise SessionOwned(owner['conversation_id'])
+        c.execute('INSERT INTO conversation_cli_sessions VALUES (?,?,?,?,?) '
+                  'ON CONFLICT(conversation_id,workspace,engine) DO UPDATE SET '
+                  'session_id=excluded.session_id,updated_at=excluded.updated_at',
+                  (conversation_id, str(Path(workspace).resolve()), engine, session_id, time.time()))
+        c.commit()
+
+
+def conversation_clear(conversation_id, workspace, engine):
+    with _conn() as c:
+        _conversation_init(c)
+        c.execute('DELETE FROM conversation_cli_sessions WHERE conversation_id=? '
+                  'AND workspace=? AND engine=?',
+                  (conversation_id, str(Path(workspace).resolve()), engine))
+        c.commit()

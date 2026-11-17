@@ -4,7 +4,7 @@
     android:minHeight="225dp"
     android:targetCellWidth="4"
     android:targetCellHeight="4"
-    android:updatePeriodMillis="0"
+    android:updatePeriodMillis="1800000"
     android:initialLayout="@layout/widget_codaur"
     android:previewLayout="@layout/widget_codaur"
     android:resizeMode="horizontal|vertical"

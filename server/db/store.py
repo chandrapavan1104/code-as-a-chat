@@ -354,6 +354,8 @@ def clear(session_id: str) -> int:
         cur = c.execute(
             "DELETE FROM conversations WHERE session_id = ?", (session_id,)
         )
+        if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_state'").fetchone():
+            c.execute('DELETE FROM conversation_state WHERE session_id=?', (session_id,))
         c.commit()
         return cur.rowcount
 
