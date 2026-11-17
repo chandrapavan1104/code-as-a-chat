@@ -16,6 +16,14 @@ def init() -> None:
 
 async def route(command: str, prompt: str = "", **kwargs) -> str:
     from server import prefs
+    # Mobile sends typed slash commands inside a shell request. These are exact
+    # owner commands, not suggestions for an LLM to reinterpret.
+    if command in ("shell",config.DEFAULT_SKILL) and prompt.lstrip().startswith('/'):
+        token,_,rest=prompt.lstrip().partition(' ')
+        explicit=token[1:]
+        if explicit not in COMMAND_MAP:
+            return f"Unknown command: /{explicit}"
+        command,prompt=explicit,rest.strip()
     skill_name = COMMAND_MAP.get(command, config.DEFAULT_SKILL)
     skill = get_skill(skill_name)
     if skill is None:

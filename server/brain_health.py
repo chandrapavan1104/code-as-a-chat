@@ -1,14 +1,15 @@
 """Expose real provider availability without retaining prompts or credentials."""
 import time
 
-from server import usage_limits
+from server import usage_limits, cli_errors
 
 _failures: dict[str, dict] = {}
 
 
 def failed(provider: str, error: Exception) -> None:
     text = str(error).lower()
-    reason = ('authentication expired or rejected' if any(s in text for s in (
+    reason = ('installed client is unsupported; update or migrate it (not a login failure)' if cli_errors.kind(text)=='unsupported_client' else
+        'authentication expired or rejected' if any(s in text for s in (
         'oauth', 'authenticate', 'authentication', '401', 'not logged in')) else
         'quota or rate limit reached' if usage_limits.is_usage_limit(text) or 'quota' in text else
         str(error) if isinstance(error, TimeoutError) else

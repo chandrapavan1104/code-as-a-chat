@@ -930,6 +930,11 @@ class ShellSkill(Skill):
         # Streaming clients pass on_event to receive live progress; None = the
         # classic single-response path (Telegram bot, plain /run).
         on_event = kwargs.get("on_event")
+        if kwargs.get('work_context'):
+            from server.cli_errors import historical_context
+            prefix,marker,previous=kwargs['work_context'].partition('PREVIOUS RESULT:')
+            if marker:
+                kwargs={**kwargs,'work_context':prefix+marker+historical_context(previous)}
         prompt = prompt.strip()
         if not prompt:
             return (f"Em sangathi mava! {config.AGENT_NAME} ikkada 🔥\n"
@@ -1473,10 +1478,17 @@ class ShellSkill(Skill):
     def _partial_summary(scratchpad: list[dict], note: str = "") -> str:
         """One-line-per-step recap of what actually ran — used when the agent
         can't produce a clean final reply (LLM error or step limit)."""
+        if not scratchpad:
+            return ("I couldn't substantiate that answer with the available context. "
+                    "No tool action was taken. " + note).strip()
         lines = ["Observed actions:"]
         for i, step in enumerate(scratchpad, 1):
-            first = (step["result"].splitlines() or [""])[0]
-            lines.append(f"  {i}. {step['tool']}({step['args'][:40]}): {first[:80]}")
+            result=step['result']
+            if step['tool'] in ('claude','codex','antigravity') and step.get('status') not in ('failed','unsupported','needs_permission'):
+                lines.append(f"{i}. {step['tool']} report:\n{result[:6000]}")
+            else:
+                first=(result.splitlines() or [''])[0]
+                lines.append(f"  {i}. {step['tool']}({step['args'][:40]}): {first[:80]}")
         if note:
             lines.append(note)
         return "\n".join(lines)
@@ -1597,6 +1609,9 @@ class ShellSkill(Skill):
         for t in recent:
             role = "USER" if t["role"] == "user" else "ASSISTANT"
             content = t["content"]
+            if role=="ASSISTANT":
+                from server.cli_errors import historical_context
+                content=historical_context(content)
             if len(content) > 6000:
                 content = content[:6000] + "\n[Excerpt only; retrieve full source with memory.]"
             lines.append(f"{role}: {content}")

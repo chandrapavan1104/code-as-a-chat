@@ -16,6 +16,7 @@ starts the provider's own device-code flow and shows you the one-time code —
 you approve it in your own browser. The server just reads the resulting status.
 """
 
+import json
 import asyncio
 import re
 import shutil
@@ -60,14 +61,21 @@ async def _codex_status() -> str:
 async def _claude_status() -> str:
     if shutil.which("claude") is None:
         return "claude: not installed"
-    # No status subcommand; a tiny probe tells us if auth works right now.
-    rc, out = await _sh("claude", "-p", "ok", "--model", "haiku", timeout=30)
-    low = out.lower()
-    if rc == 0 and "error" not in low and out:
-        return "claude: ✅ working"
-    if any(w in low for w in ("login", "auth", "expired", "401", "unauthor")):
-        return "claude: ⚠️ needs login — run `claude` on the Mac to re-auth"
-    return f"claude: ⚠️ {out[:80] or 'no response'}"
+    # Native status is credential metadata; no model prompt, tools or MCP startup.
+    rc,out=await _sh("claude","auth","status",timeout=10)
+    try:
+        data=json.loads(out)
+    except (ValueError,TypeError):
+        return "claude: ⚠️ couldn't read native login status; no logout inferred"
+    if data.get('loggedIn') is True:
+        from server import brain_health
+        failure=brain_health.snapshot().get('claude',{})
+        if failure.get('reason')=='authentication expired or rejected':
+            return 'claude: ⚠️ saved sign-in exists, but a real request failed OAuth refresh. Run `claude auth login`, then /auth claude verify. Native status alone does not prove the session works.'
+        return "claude: saved sign-in exists (provider authentication not verified)"
+    if data.get('loggedIn') is False:
+        return "claude: ⚠️ native status reports signed out — run `claude auth login` on the Mac"
+    return "claude: ⚠️ native login state is unknown"
 
 
 async def _gemini_status() -> str:
@@ -76,6 +84,8 @@ async def _gemini_status() -> str:
     rc, out = await _sh("gemini", "-p", "ok", "--output-format", "json",
                         "--skip-trust", timeout=30)
     low = out.lower()
+    if "client is no longer supported" in low or "unsupported_client" in low:
+        return "gemini: ⚠️ installed client is unsupported; update/migrate it, not repeated re-login"
     if any(w in low for w in ("expired", "401", "unauthor", "api key",
                               "not authenticated", "please login", "please log in")):
         return "gemini: ⚠️ needs login — run `gemini` on the Mac to re-auth"
@@ -152,10 +162,18 @@ class AuthSkill(Skill):
             return await _status_all()
         if arg in ("codex", "openai", "login", "codex login", "relogin"):
             return await _codex_device_login()
+        if arg in ('claude verify','anthropic verify'):
+            from server.skills.shell import _claude_cli
+            from server import brain_health
+            try:
+                await _claude_cli('Reply only OK. Do not use tools.','Synthetic provider authentication check.',timeout=20,model='haiku')
+            except Exception as exc:
+                brain_health.failed('claude',exc)
+                return 'Claude provider verification failed: '+str(exc)[:300]
+            brain_health.succeeded('claude')
+            return 'Claude provider authentication verified with a bounded tool-free request.'
         if arg in ("claude", "anthropic"):
-            return ("Claude Code has no phone device-flow. If it's failing auth, "
-                    "run `claude` once on the Mac to sign in again. Send /auth to "
-                    "check current status.")
+            return await _claude_status()
         if arg in ("gemini", "google"):
             return ("Gemini CLI has no phone device-flow here. If it's failing "
                     "auth, run `gemini` on the Mac to re-auth. /auth to check.")

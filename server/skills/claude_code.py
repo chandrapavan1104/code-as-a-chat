@@ -34,6 +34,11 @@ class ClaudeCodeSkill(CLISubprocessSkill):
             cmd += ["--resume", resume_id]
         return cmd
 
+    def _failed(self, rc: int | None, stdout: str) -> bool:
+        if super()._failed(rc,stdout):return True
+        try:return json.loads(stdout).get('is_error') is True
+        except (ValueError,AttributeError):return False
+
     def extract_session_id(self, stdout: str) -> str | None:
         try:
             return json.loads(stdout).get("session_id")
@@ -53,7 +58,9 @@ class ClaudeCodeSkill(CLISubprocessSkill):
 
     def extract_cost(self, stdout: str) -> float | None:
         try:
-            cost = json.loads(stdout).get("total_cost_usd")
+            data = json.loads(stdout)
+            if data.get("is_error"):return None
+            cost = data.get("total_cost_usd")
         except (json.JSONDecodeError, AttributeError):
             return None
         return float(cost) if cost is not None else None
@@ -76,7 +83,7 @@ class ClaudeCodeSkill(CLISubprocessSkill):
                 f"tokens in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)}"
             )
         if cost is not None:
-            footer.append(f"cost ~${cost:.4f}")
+            footer.append(f"CLI-reported session estimate ~${cost:.4f} (not an invoice)")
         if footer:
             result += "\n\n— " + " | ".join(footer)
         return result
