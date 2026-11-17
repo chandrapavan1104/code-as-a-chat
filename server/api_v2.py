@@ -561,12 +561,20 @@ _RESUME_CMD = {
 
 
 @router.get("/sessions/active")
-def active_cli_sessions():
+def active_cli_sessions(session_id: str | None = None, project: str | None = None):
     """The persistent CLI sessions for the active project — one per engine that
     supports reuse — plus a ready-to-paste 'continue on the Mac' command. Lets
     the app show which thread it's continuing and hand it off to the terminal."""
     from server.db import cli_sessions_store, native_sessions
-    ws = str(workspace.active())
+    ws = str(workspace.for_turn(project, session_id))
+    if session_id:
+        sessions = {engine: sid for engine in _RESUME_CMD
+                    if (sid := cli_sessions_store.conversation_get(session_id, ws, engine))}
+        return {'workspace': Path(ws).name, 'workspace_path': ws,
+                'conversation_id': session_id, 'sessions': [
+                    {'engine': engine, 'session_id': sid,
+                     'resume_cmd': _RESUME_CMD[engine].format(sid=sid)}
+                    for engine, sid in sessions.items()]}
     sessions = cli_sessions_store.all_for(ws)
     # Reconcile before displaying: a terminal-started native thread should be
     # visible immediately, not only after Gajala has completed another turn.

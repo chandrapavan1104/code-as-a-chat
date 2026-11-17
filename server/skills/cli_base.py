@@ -163,20 +163,16 @@ class CLISubprocessSkill(Skill):
                 stdout_b.decode(errors="replace"),
                 stderr_b.decode(errors="replace"))
 
-    def _resume_id(self, cwd: str) -> str | None:
-        """Which session should this project+engine continue?
+    def _resume_id(self, cwd: str, conversation_id: str | None = None) -> str | None:
+        """A conversation owns its binding; legacy callers may follow native latest.
 
-        The rule is "the folder's most recent thread, whoever opened it". Our own
-        pointer only sees turns that came through the server — a session you open
-        by running the CLI yourself on the Mac never touches it, so trusting the
-        pointer alone forks the thread. Asking the CLI's own store instead makes
-        both sides resolve to the same session, which is the whole guarantee.
-
-        The pointer stays as the fallback for when native discovery finds nothing
-        (unreadable store, or an engine whose layout we don't parse).
+        Explicit session continuation attaches a durable conversation binding.
+        Native newest-in-folder discovery is retained only without a conversation.
         """
-        # "Continue session <id>" wins over newest-in-folder until it has run
-        # once; after that it IS the newest, so the pin is dropped (see run()).
+        if conversation_id:
+            # Conversation identity is stronger than newest-in-folder discovery,
+            # including when context projection is disabled for rollback.
+            return cli_sessions_store.conversation_get(conversation_id, cwd, self.session_engine)
         pin = cli_sessions_store.pinned(cwd, self.session_engine)
         if pin:
             return pin
@@ -194,12 +190,19 @@ class CLISubprocessSkill(Skill):
         return native_id
 
     async def _attempt(self, prompt: str, cwd: str, model: str,
-                       source: str = "server"):
+                       source: str = "server", conversation_id: str | None = None):
         """One model's run: resume the stored session if any, and if that resume
         fails, retry once fresh. Returns (rc, stdout, stderr, new_id, resume_id).
         A backup model resumes the same thread: models are replaceable workers,
         while the project+engine thread is the durable conversation."""
-        resume_id = self._resume_id(cwd) if self.supports_sessions else None
+        resume_id = self._resume_id(cwd, conversation_id) if self.supports_sessions else None
+
+        from server import conversation
+        package = conversation.current()
+        if package is not None:
+            package['session_binding'] = {'conversation_id': conversation_id,
+                'workspace': str(workspace.active().resolve()), 'engine': self.session_engine,
+                'native_session_id': resume_id, 'selection': 'conversation' if conversation_id else 'legacy'}
 
         def _fresh():
             nid = self.new_session_id() if self.supports_sessions else None
@@ -218,13 +221,22 @@ class CLISubprocessSkill(Skill):
         # resume attempt failed, forget it and retry once with a fresh session so
         # the user never gets stuck behind a dead id.
         if rc not in (0, None) and resume_id and self._resume_rejected(stdout, stderr):
-            cli_sessions_store.clear(cwd, self.session_engine)
-            cli_sessions_store.unpin(cwd, self.session_engine)
+            if conversation_id:
+                cli_sessions_store.conversation_clear(conversation_id, cwd, self.session_engine)
+            else:
+                cli_sessions_store.clear(cwd, self.session_engine)
+                cli_sessions_store.unpin(cwd, self.session_engine)
             resume_id = None
             cmd, new_id = _fresh()
             started_at = time.time()
             rc, stdout, stderr = await self._spawn(cmd, cwd)
             self._record_attempt(cwd, source, started_at, rc, stdout, new_id, model)
+        if conversation_id and self.supports_sessions:
+            attempted_id = self.extract_session_id(stdout) or new_id or resume_id
+            if attempted_id and not self._resume_rejected(stdout, stderr):
+                cli_sessions_store.conversation_set(conversation_id, cwd, self.session_engine, attempted_id)
+                if package is not None:
+                    package['session_binding']['native_session_id'] = attempted_id
         return rc, stdout, stderr, new_id, resume_id
 
     async def run(self, prompt: str = "", **kwargs) -> str | SkillResult:
@@ -236,6 +248,19 @@ class CLISubprocessSkill(Skill):
             return f"[{self.name}] CLI '{self.cli_name}' not installed.\n{self.install_hint}"
 
         cwd = str(workspace.active())
+        conversation_id = kwargs.get('session_id')
+        from server import conversation
+        package = conversation.current() if conversation_id else None
+        if package and package.get('conversation_id') != conversation_id:
+            package = None
+        if conversation_id and package is None:
+            from server.db import store as memory
+            package = conversation.compile_context(conversation_id, prompt,
+                memory.get_recent(conversation_id, n=config.MEMORY_TURNS),
+                reply_context=kwargs.get('reply_context'), work_context=kwargs.get('work_context', ''))
+        if package and not kwargs.get('context_included'):
+            prompt = ('<conversation_context>\n' + package['text'] +
+                      '\n</conversation_context>\nCURRENT REQUEST:\n' + prompt)
 
         # Read-side guard: converge the shared context BEFORE this engine acts, so
         # a model taking over from a different one reads the latest notes — not a
@@ -247,7 +272,7 @@ class CLISubprocessSkill(Skill):
         source = self._source(kwargs.get("session_id"))
 
         rc, stdout, stderr, new_id, resume_id = await self._attempt(
-            prompt, cwd, primary, source=source)
+            prompt, cwd, primary, source=source, conversation_id=conversation_id)
 
         # If the primary model failed and a distinct backup is set, retry once on
         # it in the same session. The model may change, but the project's thread
@@ -258,11 +283,13 @@ class CLISubprocessSkill(Skill):
             brain_health.failed(self.session_engine,RuntimeError(cli_errors.detail(stdout,stderr)))
         if self._failed(rc, stdout) and not failure_kind and backup and backup != primary:
             rc, stdout, stderr, new_id, resume_id = await self._attempt(
-                prompt, cwd, backup, source=source)
+                prompt, cwd, backup, source=source, conversation_id=conversation_id)
             fell_back = True
 
         if rc is None:
-            return f"[{self.name}] Timed out after {self.timeout}s"
+            return SkillResult('unverified', f'[{self.name}] Timed out after {self.timeout}s. '
+                               'The outcome is uncertain; it was not replayed.',
+                               data={'kind': 'timeout', 'engine': self.session_engine})
 
         if rc != 0 or self._failed(rc,stdout):
             diagnostic=cli_errors.detail(stdout,stderr)
@@ -286,8 +313,12 @@ class CLISubprocessSkill(Skill):
         if self.supports_sessions:
             sid = self.extract_session_id(stdout) or new_id or resume_id
             if sid:
-                cli_sessions_store.set(cwd, self.session_engine, sid)
-            cli_sessions_store.unpin(cwd, self.session_engine)
+                if conversation_id:
+                    cli_sessions_store.conversation_set(conversation_id, cwd, self.session_engine, sid)
+                else:
+                    cli_sessions_store.set(cwd, self.session_engine, sid)
+            if not conversation_id:
+                cli_sessions_store.unpin(cwd, self.session_engine)
 
         # Write-side sync: this engine may have edited its own context file —
         # converge them so the next engine (or the Mac) sees the update.

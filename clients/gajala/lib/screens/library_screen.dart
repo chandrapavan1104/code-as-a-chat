@@ -1,3 +1,4 @@
+import '../widgets/quick_access.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/models.dart';
@@ -19,6 +20,7 @@ class LibraryScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Library'),
         actions: [
+          const QuickAccessButton(),
           IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_outlined),

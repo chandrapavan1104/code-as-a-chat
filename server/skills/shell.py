@@ -129,8 +129,8 @@ Two valid shapes:
    directly and saves a step. Only use it when no persona-add is needed — for
    anything conversational, or when chaining more tools, omit it.
 
-(2) Finish and reply to the user:
-{"action":"done","reply":"<your final user-facing reply, plain-text, mobile-friendly>"}
+(2) Finish and reply to the user (response_kind is explanation, proposal, or execution_report):
+{"action":"done","response_kind":"explanation","reply":"<your final user-facing reply, plain-text, mobile-friendly>"}
 
 AVAILABLE TOOLS:
 {TOOL_DESCRIPTIONS}
@@ -951,6 +951,7 @@ class ShellSkill(Skill):
             return repeated
         from server import jev
         completion_rechecked = False
+        response_kind = None
         scratchpad: list[dict] = []
         images: list[str] = []   # [image: …] markers gathered from tool outputs
 
@@ -970,13 +971,16 @@ class ShellSkill(Skill):
             from server.outcomes import completion_status, OBSERVED_CLAIM, UNFINISHED
             rejected = (await jev.unsupported_success(prompt, text, scratchpad)
                         if reviewed is None else reviewed)
-            status = completion_status(text, reason, scratchpad, rejected)
-            unsupported_claim = (not scratchpad and status == 'unverified' and
-                                 OBSERVED_CLAIM.search(text) and
+            status = completion_status(text, reason, scratchpad, rejected, response_kind=response_kind)
+            from server.outcomes import execution_claim
+            unsupported_claim = (not scratchpad and execution_claim(text) and
                                  not UNFINISHED.search(text))
             if rejected or unsupported_claim:
-                text = ("I couldn't verify the requested outcome.\n\n" +
-                        self._partial_summary(scratchpad))
+                status = 'unverified'
+                if unsupported_claim:
+                    text = "I couldn't verify the requested outcome. No tool observation supports completion yet."
+                else:
+                    text += "\n\nVerification: the claimed outcome is not supported by the available observations."
             from server.outcomes import false_switch_claim
             if false_switch_claim(
                     text, switched=workspace.rebound_to() is not None,
@@ -999,6 +1003,15 @@ class ShellSkill(Skill):
             _run_finish(run_id, reason, text, brains=_brains.summary(),
                         usage=run_usage.summary())
             self._remember(session_id, prompt, text, run_id)
+            from server import conversation
+            try:
+                conversation.observe(session_id, run_id, status, scratchpad)
+                if run_id:
+                    from server.db import agent_runs_store
+                    agent_runs_store.annotate(run_id, **conversation.diagnostics(),
+                        fallback_reason=brain_health.fallback_note() if '->' in _brains.summary() else '')
+            except Exception:
+                _log.exception('Conversation outcome projection unavailable')
             return text
 
         from server import fast_commands, prefs, tool_runtime
@@ -1042,12 +1055,13 @@ class ShellSkill(Skill):
                     "summary":(result.splitlines() or [""])[0][:120]})
                 return await finish(result,"done" if ok else "tool_failed",reviewed=False)
 
-        from server import context_resolver, domain_skills
-        context_block = self._format_context(recent)
-        context_block += context_resolver.resolve(prompt, session_id, kwargs.get("reply_context"))
-        context_block += domain_skills.guidance(prompt)
-        if kwargs.get("work_context"):
-            context_block += "\n<DURABLE_WORK>\n" + kwargs["work_context"] + "\n</DURABLE_WORK>"
+        from server import conversation, domain_skills
+        package = conversation.compile_context(session_id, prompt, recent,
+            reply_context=kwargs.get('reply_context'), work_context=kwargs.get('work_context', ''))
+        context_block = package['text'] + domain_skills.guidance(prompt)
+        if run_id:
+            from server.db import agent_runs_store
+            agent_runs_store.annotate(run_id, **conversation.diagnostics(package))
         continuity = await jev.continuity(prompt, recent)
         if continuity in {"correction", "retry", "continuation"}:
             context_block += (
@@ -1120,17 +1134,10 @@ class ShellSkill(Skill):
                 action = "call"
 
             if action == "done":
-                decisive = [s for s in scratchpad if s.get("status") != "unknown"]
-                if decisive and decisive[-1].get("status") in {
-                        "failed", "unsupported", "needs_permission", "not_found"}:
-                    failed = decisive[-1]
-                    final = (
-                        "I couldn't complete the requested action.\n\n"
-                        f"LAST OBSERVATION:\n{failed['result']}\n\n"
-                        "The unfinished outcome is preserved; your next message "
-                        "can correct the approach or add the missing detail."
-                    )
-                    return await finish(self._attach_images(final, images), "tool_failed")
+                response_kind = decision.get('response_kind')
+                if response_kind not in {'explanation', 'proposal', 'execution_report'}:
+                    response_kind = 'execution_report' if scratchpad else 'explanation'
+                package['response_kind'] = response_kind
                 final = (decision.get("reply") or "").strip() or "[shell] empty reply"
                 rejected = await jev.unsupported_success(prompt, final, scratchpad)
                 if rejected:
@@ -1142,8 +1149,13 @@ class ShellSkill(Skill):
                             "Verify the missing outcome with an available tool, or clearly "
                             "report what remains unverified. Do not repeat successful mutations.")
                         continue
-                    final = self._partial_summary(
-                        scratchpad, note="I couldn't verify the complete requested outcome.")
+                    return await finish(final, 'done', reviewed=True)
+                decisive = [step for step in scratchpad if step.get('status') != 'unknown']
+                if decisive and decisive[-1].get('status') in {'failed', 'unsupported', 'needs_permission', 'not_found', 'blocked'}:
+                    observation = decisive[-1]['result']
+                    if observation not in final:
+                        final += '\n\nLast tool observation:\n' + observation
+                    return await finish(final, 'tool_failed', reviewed=False)
                 final = self._attach_images(final, images)
                 return await finish(final, "done", reviewed=False)
 
@@ -1151,9 +1163,8 @@ class ShellSkill(Skill):
                 tool_name = _decision_text(decision.get("tool"))
                 tool_args, repaired = _coerce_args(decision.get("args"), tool_name)
                 if tool_name in {"claude", "codex", "antigravity"}:
-                    tool_args += (
-                        "\n\nUSER REQUEST AND CONSTRAINTS (preserve scope):\n" + prompt +
-                        "\n" + (kwargs.get("work_context") or ""))
+                    tool_args += ('\n\n<conversation_context>\n' + package['text'] +
+                                  '\n</conversation_context>\nCURRENT USER REQUEST:\n' + prompt)
 
                 # An exact repeat of an earlier call adds no information. It used
                 # to be caught only when the first attempt TIMED OUT, so a router
@@ -1239,6 +1250,7 @@ class ShellSkill(Skill):
                 try:
                     raw_result = await tool_runtime.execute(
                         skill, tool_name, tool_args, session_id=session_id, source_prompt=prompt,
+                        context_included=tool_name in {"claude", "codex", "antigravity"},
                         work_context=kwargs.get("work_context") or "",
                         request_id=kwargs.get("request_id"),
                         project=kwargs.get("project"),

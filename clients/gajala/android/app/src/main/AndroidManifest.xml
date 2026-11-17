@@ -142,6 +142,8 @@
                 android:resource="@xml/widget_codaur_info" />
         </receiver>
 
+        <receiver android:name=".GajalaWidgetReceiver" android:exported="false" />
+
         <!-- Runs the Dart background callback when a widget tile is tapped. -->
         <receiver
             android:name="es.antonborri.home_widget.HomeWidgetBackgroundReceiver"

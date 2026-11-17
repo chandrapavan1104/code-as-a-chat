@@ -694,8 +694,8 @@ class GajalaApi {
   }
 
   /// Active CLI sessions for the current project + "continue on Mac" commands.
-  Future<Map<String, dynamic>> activeSessions() async =>
-      Map<String, dynamic>.from((await _dio.get('/api/sessions/active')).data);
+  Future<Map<String, dynamic>> activeSessions({String? sessionId, String? project}) async =>
+      Map<String, dynamic>.from((await _dio.get('/api/sessions/active', queryParameters: {if (sessionId != null) 'session_id': sessionId, if (project != null) 'project': project})).data);
 
   Future<List<Map<String, dynamic>>> usage() async {
     final r = await _dio.get(

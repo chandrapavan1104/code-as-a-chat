@@ -24,7 +24,7 @@ class PickerApi extends GajalaApi {
   @override
   Future<Map<String, dynamic>> model({bool refresh = false, bool includeCatalog = true}) => includeCatalog ? catalog.future : Future.value({'engine': 'auto'});
   @override
-  Future<Map<String, dynamic>> activeSessions() => sessions.future;
+  Future<Map<String, dynamic>> activeSessions({String? sessionId, String? project}) => sessions.future;
   String? pinned;
   @override
   Future<Map<String, dynamic>> setEngineModel(String engine, String model) async {

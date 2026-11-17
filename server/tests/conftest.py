@@ -12,6 +12,8 @@ from pathlib import Path
 
 @pytest.fixture(autouse=True)
 def isolate_agent_run_traces(tmp_path, monkeypatch):
+    from server import conversation
+    conversation._package.set(None)
     monkeypatch.setenv("FAST_COMMANDS_ENABLED", "0")
     from server import tool_runtime
     monkeypatch.setattr(tool_runtime, "DB_PATH", tmp_path / "tool_operations.db")
@@ -28,6 +30,11 @@ def isolate_agent_run_traces(tmp_path, monkeypatch):
     monkeypatch.setattr(night_queue_store, "DB_PATH", tmp_path / "night_queue.db")
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "conversations.db")
     store._init()
+    from server.db import cli_sessions_store, cli_runs_store
+    monkeypatch.setattr(cli_sessions_store, 'DB_PATH', tmp_path / 'cli_sessions.db')
+    cli_sessions_store._init()
+    monkeypatch.setattr(cli_runs_store, 'DB_PATH', tmp_path / 'cli_runs.db')
+    cli_runs_store.init()
     from server import media
     monkeypatch.setattr(media, "UPLOADS_DIR", tmp_path / "uploads")
 

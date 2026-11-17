@@ -83,6 +83,8 @@ def init() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
         if "brains" not in cols:
             conn.execute("ALTER TABLE runs ADD COLUMN brains TEXT")
+        if "context" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN context TEXT")
         if "usage" not in cols:   # tokens/cost per turn (JSON), see run_usage
             conn.execute("ALTER TABLE runs ADD COLUMN usage TEXT")
         conn.execute(
@@ -177,6 +179,10 @@ def get(run_id: str) -> dict | None:
         run["usage"] = json.loads(run["usage"]) if run.get("usage") else None
     except (TypeError, ValueError):
         run["usage"] = None
+    try:
+        run['context'] = json.loads(run.get('context') or '{}')
+    except (ValueError, TypeError):
+        run['context'] = {}
     run["steps"] = [dict(s) for s in steps]
     run["charged_steps"] = sum(1 for s in run["steps"] if s["charged"])
     run["duration_ms"] = int(
@@ -222,3 +228,13 @@ def list_runs(session_id: str | None = None, limit: int = 25) -> list[dict]:
                 ((run["ended_at"] or run["started_at"]) - run["started_at"]) * 1000)
             out.append(run)
     return out
+
+
+def annotate(run_id, **metadata):
+    """Metadata only: source IDs and binding, never another copy of prompt text."""
+    with _conn() as conn:
+        row = conn.execute('SELECT context FROM runs WHERE id=?', (run_id,)).fetchone()
+        value = json.loads(row['context'] or '{}') if row else {}
+        value.update(metadata)
+        conn.execute('UPDATE runs SET context=? WHERE id=?', (json.dumps(value), run_id))
+        conn.commit()

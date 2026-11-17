@@ -421,6 +421,13 @@ async def _continue_view(prefix: str, message: str, **kwargs) -> SkillResult:
             f"Session {_short_id(session['id'])} ran in {session['cwd']}, which is "
             "not a folder on this Mac any more, so it cannot be continued."))
 
+    conversation_id = kwargs.get('session_id')
+    if conversation_id:
+        owner = cli_sessions_store.conversation_owner(session['engine'], session['id'])
+        if owner and owner != conversation_id:
+            return SkillResult('blocked', 'This native session belongs to another conversation. '
+                               'Open that conversation or start a fresh session.',
+                               data={'kind': 'session_owned', 'owner_conversation_id': owner})
     changed, reason = workspace.rebind(folder)
     if not changed and reason.startswith("locked:"):
         return SkillResult("failed", (
@@ -431,7 +438,13 @@ async def _continue_view(prefix: str, message: str, **kwargs) -> SkillResult:
         workspace.persist_default(folder)
 
     engine = session["engine"]
-    cli_sessions_store.pin(str(folder), engine, session["id"])
+    if conversation_id:
+        try:
+            cli_sessions_store.conversation_set(conversation_id, str(folder), engine, session['id'])
+        except cli_sessions_store.SessionOwned as exc:
+            return SkillResult('blocked', str(exc), data={'owner_conversation_id': exc.owner})
+    else:
+        cli_sessions_store.pin(str(folder), engine, session['id'])
     marker = f"\n[[switch:{folder.name}]]" if changed else ""
     head = (f"CONTINUING SESSION {_short_id(session['id'])} [{engine.upper()}] in "
             f"{workspace.prettify(folder)}.\nThe next {engine} call here resumes "

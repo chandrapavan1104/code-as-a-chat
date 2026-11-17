@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../core/widget_bridge.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/app_lock.dart';
 import '../core/state.dart';
@@ -64,6 +66,23 @@ class SettingsScreen extends ConsumerWidget {
             onTap: () => Navigator.of(
               context,
             ).push(MaterialPageRoute(builder: (_) => const SkillsScreen())),
+          ),
+          ListTile(
+            leading: const Icon(Icons.widgets_outlined),
+            title: const Text('Widget diagnostics'),
+            subtitle: const Text('View or copy recent widget failures'),
+            onTap: () async {
+              final report = await widgetDiagnosticsReport();
+              if (!context.mounted) return;
+              showDialog<void>(context: context, builder: (dialog) => AlertDialog(
+                title: const Text('Widget diagnostics'),
+                content: SingleChildScrollView(child: SelectableText(report)),
+                actions: [
+                  TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: report)), child: const Text('Copy')),
+                  TextButton(onPressed: () => Navigator.pop(dialog), child: const Text('Close')),
+                ],
+              ));
+            },
           ),
           const Divider(),
           ListTile(

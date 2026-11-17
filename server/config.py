@@ -186,6 +186,8 @@ FIX_TIMEOUT: int = int(os.getenv("FIX_TIMEOUT", "600"))
 # Higher = better continuity, more tokens per call.
 # Bumped from 5 to 12 after losing project-priority context across long chats.
 MEMORY_TURNS: int = int(os.getenv("MEMORY_TURNS", "12"))
+# Roll back derived context without reverting conversation-owned native sessions.
+CONVERSATION_CONTEXT_ENABLED: bool = os.getenv('CONVERSATION_CONTEXT_ENABLED', '1') != '0'
 
 # Daily token budgets used by the /usage skill to compute a "% used today"
 # for providers that don't expose a real rate-limit snapshot locally.

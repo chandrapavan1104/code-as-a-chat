@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
 import android.widget.RemoteViews
-import es.antonborri.home_widget.HomeWidgetBackgroundIntent
 import es.antonborri.home_widget.HomeWidgetLaunchIntent
 import es.antonborri.home_widget.HomeWidgetProvider
 
@@ -35,11 +34,11 @@ class GajalaActionsWidget : HomeWidgetProvider() {
                 )
                 setOnClickPendingIntent(
                     R.id.tile_lock,
-                    HomeWidgetBackgroundIntent.getBroadcast(context, Uri.parse("gajala://lock")),
+                    GajalaWidgetReceiver.pending(context, "gajala://lock"),
                 )
                 setOnClickPendingIntent(
                     R.id.tile_wake,
-                    HomeWidgetBackgroundIntent.getBroadcast(context, Uri.parse("gajala://wake")),
+                    GajalaWidgetReceiver.pending(context, "gajala://wake"),
                 )
                 setOnClickPendingIntent(
                     R.id.tile_ask,
@@ -53,14 +52,17 @@ class GajalaActionsWidget : HomeWidgetProvider() {
                         context, MainActivity::class.java, Uri.parse("gajala://dump"),
                     ),
                 )
-                val status =
+                val busyUntil = widgetData.getLong("mac_busy_until", 0L)
+                val abandoned = busyUntil > 0L && System.currentTimeMillis() > busyUntil
+                val status = if (abandoned) "Previous action interrupted; check the Mac" else
                     widgetData.getString("mac_status", null) ?: "Ready"
                 setTextViewText(
                     R.id.mac_status,
                     status,
                 )
                 val unhealthy = status.lowercase().contains("fail") ||
-                    status.lowercase().contains("not connected")
+                    status.lowercase().contains("not connected") ||
+                    status.lowercase().contains("interrupted") || status.lowercase().contains("uncertain")
                 val busy = status.contains('…')
                 setImageViewResource(
                     R.id.mac_status_dot,

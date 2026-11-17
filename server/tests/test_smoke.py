@@ -377,7 +377,7 @@ def test_backup_model_keeps_the_same_cli_session(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "WORKSPACE_DIR", tmp_path)
     monkeypatch.setattr(prefs, "get_coding_model", lambda _engine: "opus")
     monkeypatch.setattr(prefs, "get_backup_model", lambda _engine: "sonnet")
-    monkeypatch.setattr(ClaudeCodeSkill, "_resume_id", lambda _self, _cwd: "same-session")
+    monkeypatch.setattr(ClaudeCodeSkill, "_resume_id", lambda _self, _cwd, _conversation_id=None: "same-session")
     monkeypatch.setattr(ClaudeCodeSkill, "_spawn", fake_spawn)
     monkeypatch.setattr(cli_runs_store, "add", lambda **_kwargs: None)
     monkeypatch.setattr(cli_sessions_store, "set", lambda *_args: None)

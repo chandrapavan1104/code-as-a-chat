@@ -195,10 +195,18 @@ def _work_failure(result: str) -> str | None:
     return None
 
 
+def _work_current(work: dict) -> bool:
+    current = assistant_tasks_store.get(work['id'])
+    return bool(current and current['revision'] == work['revision'])
+
+
 def _finish_work(work: dict, result: str, project: str, completion: dict,
                  run_id: str | None = None) -> dict:
     """A response arriving is not proof that the work succeeded."""
     from server.outcomes import completion_status
+    current = assistant_tasks_store.get(work['id'])
+    if current and current['revision'] != work['revision']:
+        return current  # Older work may publish its reply, never overwrite a newer correction.
     status = completion.get('status') or completion_status(result, 'no_action', [])
     if status not in {'completed', 'failed', 'unverified', 'waiting_for_user'}:
         status = 'unverified'
@@ -311,6 +319,7 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
     if receipt:
         return receipt
     work, created = _accept_work(body)
+    work_context_snapshot = assistant_tasks_store.context_for(work['id']) if work else ''
     if work and not created:
         # /run serves plain-text clients (Telegram, widgets): no ask cards.
         return {"command": body.command, "result": ask_cards.as_plain_text(
@@ -324,40 +333,42 @@ async def run(body: RunRequest, background_tasks: BackgroundTasks):
             completion.update(ev)
 
     try:
-        if work:
-            assistant_tasks_store.update(
-                work["id"], status="working", event="started",
-                next_action="Understanding the request")
-        with memory.turn_context(body.session_id, body.reply_to_message_id):
-            if body.session_id:
-                memory.append_turn(body.session_id, "user", body.prompt)
-            with workspace.bound(workspace.for_turn(body.project, body.session_id)):
-                result = await orchestrator.route(
-                    body.command, body.prompt, session_id=body.session_id,
-                    on_event=on_event,
-                    work_context=assistant_tasks_store.context_for(work['id']) if work else '',
-                    request_id=body.request_id, project=body.project,
-                    reply_context=reply_context,
+        from server import conversation
+        async with conversation.turn_lock(body.session_id):
+            if work and _work_current(work):
+                assistant_tasks_store.update(
+                    work["id"], status="working", event="started",
+                    next_action="Understanding the request")
+            with memory.turn_context(body.session_id, body.reply_to_message_id):
+                if body.session_id:
+                    memory.append_turn(body.session_id, "user", body.prompt)
+                with workspace.bound(workspace.for_turn(body.project, body.session_id)):
+                    result = await orchestrator.route(
+                        body.command, body.prompt, session_id=body.session_id,
+                        on_event=on_event,
+                        work_context=work_context_snapshot,
+                        request_id=body.request_id, project=body.project,
+                        reply_context=reply_context,
+                    )
+                    # Read inside the binding: the agent may have rebound the turn.
+                    ws_name = workspace.name()
+                _persist_skill_turn(
+                    body.command, body.session_id, body.prompt, result, body.request_id)
+                message_ids = memory.current_turn_ids()
+            if work:
+                work = _finish_work(work, result, ws_name, completion)
+            # Ping the phone once the (possibly long) run finishes, if asked and we
+            # have a session to deep-link back into. Runs after the response is sent.
+            if body.notify and body.session_id:
+                background_tasks.add_task(
+                    _push_reply, body.session_id, body.command, result
                 )
-                # Read inside the binding: the agent may have rebound the turn.
-                ws_name = workspace.name()
-            _persist_skill_turn(
-                body.command, body.session_id, body.prompt, result, body.request_id)
-            message_ids = memory.current_turn_ids()
-        if work:
-            work = _finish_work(work, result, ws_name, completion)
-        # Ping the phone once the (possibly long) run finishes, if asked and we
-        # have a session to deep-link back into. Runs after the response is sent.
-        if body.notify and body.session_id:
-            background_tasks.add_task(
-                _push_reply, body.session_id, body.command, result
-            )
-        # `workspace` lets the app follow project switches made *during* the turn
-        # (e.g. the agent used the projects tool) so its header + thread stay synced.
-        return {"command": body.command, "result": ask_cards.as_plain_text(result),
-                "workspace": ws_name, "work": work, **message_ids}
+            # `workspace` lets the app follow project switches made *during* the turn
+            # (e.g. the agent used the projects tool) so its header + thread stay synced.
+            return {"command": body.command, "result": ask_cards.as_plain_text(result),
+                    "workspace": ws_name, "work": work, "completion": completion or None, **message_ids}
     except Exception as exc:
-        if work:
+        if work and _work_current(work):
             assistant_tasks_store.update(
                 work["id"], status="failed", blocker=str(exc),
                 next_action="Retry from the preserved work item", event="failed")
@@ -389,6 +400,7 @@ async def run_stream(body: RunRequest):
             yield json.dumps({"type": "final", **receipt}) + "\n"
         return StreamingResponse(receipt_frame(), media_type="application/x-ndjson")
     work, created = _accept_work(body)
+    work_context_snapshot = assistant_tasks_store.context_for(work['id']) if work else ''
     if work and not created:
         async def duplicate_frames():
             yield json.dumps({"type": "work", "work": work,
@@ -410,12 +422,12 @@ async def run_stream(body: RunRequest):
             completion.update(ev)
         if ev.get("type") == "run":
             run_id = ev.get("run_id")
-            if work:
+            if work and _work_current(work):
                 assistant_tasks_store.update(
                     work["id"], run_id=run_id, status="working",
                     next_action="Planning the next action", event="run_started")
         elif ev.get("type") == "step":
-            if work and ev.get("label"):
+            if work and _work_current(work) and ev.get("label"):
                 assistant_tasks_store.update(
                     work["id"], status="working",
                     next_action=str(ev["label"]), event="action_started",
@@ -423,7 +435,7 @@ async def run_stream(body: RunRequest):
         elif ev.get("type") == "step_result":
             observed_statuses.append(str(ev.get("status") or
                                          ("succeeded" if ev.get("ok") else "failed")))
-            if work:
+            if work and _work_current(work):
                 assistant_tasks_store.update(
                     work["id"], event="action_observed",
                     payload={"tool": ev.get("tool"), "status": observed_statuses[-1],
@@ -432,45 +444,47 @@ async def run_stream(body: RunRequest):
 
     async def worker() -> None:
         try:
-            if work:
-                assistant_tasks_store.update(
-                    work["id"], status="working",
-                    next_action="Understanding the request", event="started")
-            with memory.turn_context(body.session_id, body.reply_to_message_id):
-                if body.session_id:
-                    memory.append_turn(body.session_id, "user", body.prompt)
-                with workspace.bound(workspace.for_turn(body.project, body.session_id)):
-                    result = await orchestrator.route(
-                        body.command, body.prompt,
-                        session_id=body.session_id, on_event=on_event,
-                        work_context=assistant_tasks_store.context_for(work['id']) if work else '',
-                        request_id=body.request_id, project=body.project,
-                        # This stream reaches the app, so the phone can answer
-                        # phone_request frames (see server/phone_bridge.py).
-                        phone_stream=True, reply_context=reply_context,
-                    )
-                    ws_name = workspace.name()
-                _persist_skill_turn(
-                    body.command, body.session_id, body.prompt, result, body.request_id)
-                message_ids = memory.current_turn_ids()
-            decisive = [s for s in observed_statuses if s != "unknown"]
-            failed = bool(decisive and decisive[-1] in
-                          ("failed", "unsupported", "needs_permission", "not_found"))
-            blocker = _work_failure(result)
-            failed = failed or blocker is not None
-            final_work = None
-            if work:
-                if failed and not completion:
-                    completion['status'] = 'failed'
-                final_work = _finish_work(work, result, ws_name, completion, run_id)
-            # `workspace` = the project the turn ENDED in, so the app can follow a
-            # switch the agent made mid-turn (projects tool) and keep its header +
-            # conversation thread in sync.
-            await queue.put({"type": "final", "result": result,
-                             "workspace": ws_name, "work": final_work,
-                             **message_ids})
-            if body.notify and body.session_id:
-                await _push_reply(body.session_id, body.command, result)
+            from server import conversation
+            async with conversation.turn_lock(body.session_id):
+                if work and _work_current(work):
+                    assistant_tasks_store.update(
+                        work["id"], status="working",
+                        next_action="Understanding the request", event="started")
+                with memory.turn_context(body.session_id, body.reply_to_message_id):
+                    if body.session_id:
+                        memory.append_turn(body.session_id, "user", body.prompt)
+                    with workspace.bound(workspace.for_turn(body.project, body.session_id)):
+                        result = await orchestrator.route(
+                            body.command, body.prompt,
+                            session_id=body.session_id, on_event=on_event,
+                            work_context=work_context_snapshot,
+                            request_id=body.request_id, project=body.project,
+                            # This stream reaches the app, so the phone can answer
+                            # phone_request frames (see server/phone_bridge.py).
+                            phone_stream=True, reply_context=reply_context,
+                        )
+                        ws_name = workspace.name()
+                    _persist_skill_turn(
+                        body.command, body.session_id, body.prompt, result, body.request_id)
+                    message_ids = memory.current_turn_ids()
+                decisive = [s for s in observed_statuses if s != "unknown"]
+                failed = bool(decisive and decisive[-1] in
+                              ("failed", "unsupported", "needs_permission", "not_found"))
+                blocker = _work_failure(result)
+                failed = failed or blocker is not None
+                final_work = None
+                if work:
+                    if failed and not completion:
+                        completion['status'] = 'failed'
+                    final_work = _finish_work(work, result, ws_name, completion, run_id)
+                # `workspace` = the project the turn ENDED in, so the app can follow a
+                # switch the agent made mid-turn (projects tool) and keep its header +
+                # conversation thread in sync.
+                await queue.put({"type": "final", "result": result,
+                                 "workspace": ws_name, "work": final_work,
+                                 **message_ids})
+                if body.notify and body.session_id:
+                    await _push_reply(body.session_id, body.command, result)
         except asyncio.CancelledError:
             current = assistant_tasks_store.get(work["id"]) if work else None
             status = current.get("status") if current else "cancelled"
@@ -480,7 +494,7 @@ async def run_stream(body: RunRequest):
                              "workspace": current.get("project") if current else body.project,
                              "work": current})
         except Exception as exc:
-            if work:
+            if work and _work_current(work):
                 assistant_tasks_store.update(
                     work["id"], status="failed", blocker=str(exc),
                     next_action="Retry from the preserved work item", event="failed")
