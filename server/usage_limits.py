@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo
 
 _LIMIT = re.compile(
-    r"hit your (?:\w+ )?limit|usage limit|session limit|rate limit|"
+    r"hit your (?:[\w‑–-]+ ){0,3}limit|usage limit|session limit|rate limit|"
     r"quota (?:exceeded|reached|exhausted)|\b429\b", re.I)
 # e.g. "resets 5:50pm (America/Los_Angeles)"
 _RESET = re.compile(
