@@ -53,7 +53,7 @@ def test_exact_slash_command_dispatch_does_not_call_model(monkeypatch):
  monkeypatch.setattr(orchestrator,'get_skill',lambda n:Probe() if n=='probe' else None)
  monkeypatch.setattr(prefs,'is_skill_enabled',lambda n:True)
  assert asyncio.run(orchestrator.route('shell','/probe status',request_id='stable'))=='actual command response'
- assert calls==[('status',{'request_id':'stable'})]
+ assert calls[0][0]=='status' and calls[0][1]['request_id']=='stable'
  assert 'Unknown command' in asyncio.run(orchestrator.route('shell','/invented nope'))
  assert len(calls)==1
 
@@ -99,10 +99,10 @@ def test_explicit_provider_verify_clears_failure_only_on_success(monkeypatch):
  probe=AsyncMock(return_value='OK')
  monkeypatch.setattr(shell,'_claude_cli',probe)
  brain_health.failed('claude',RuntimeError('OAuth session expired'))
- assert 'verified' in asyncio.run(auth.AuthSkill().run('claude verify'))
+ assert 'verified' in asyncio.run(auth.AuthSkill().run('claude verify')).message
  assert brain_health.available('claude')
  probe.side_effect=RuntimeError('OAuth session expired')
- assert 'failed' in asyncio.run(auth.AuthSkill().run('claude verify'))
+ assert 'failed' in asyncio.run(auth.AuthSkill().run('claude verify')).message
  assert not brain_health.available('claude')
 
 
@@ -117,3 +117,19 @@ def test_resumed_session_estimate_is_not_added_as_new_turn_cost(monkeypatch):
  assert run_usage.summary()['cost_usd'] is None
  assert run_usage.summary()['input_tokens']==15
  assert 'not an invoice' in ClaudeCodeSkill().parse_output(payload,'')
+
+
+def test_typed_command_persists_reply_and_reports_completed(monkeypatch):
+ from server import prefs
+ from server.db import agent_runs_store,store
+ class Probe:
+  async def run(self,prompt,**kwargs):return SkillResult('succeeded','Verified result')
+ monkeypatch.setattr(orchestrator,'COMMAND_MAP',{'probe':'probe','shell':'shell'})
+ monkeypatch.setattr(orchestrator,'get_skill',lambda n:Probe())
+ monkeypatch.setattr(prefs,'is_skill_enabled',lambda n:True)
+ events=[]
+ async def emit(event):events.append(event)
+ asyncio.run(orchestrator.route('shell','/probe status',session_id='test:typed',request_id='stable',on_event=emit))
+ assert next(e for e in events if e['type']=='completion')['status']=='completed'
+ assert agent_runs_store.list_runs('test:typed')[0]['brains']=='direct:probe'
+ assert any(t['role']=='assistant' and t['content']=='Verified result' for t in store.get_recent('test:typed'))
