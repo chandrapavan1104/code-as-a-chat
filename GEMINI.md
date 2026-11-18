@@ -59,6 +59,19 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Voice assistant upgrade (November 17).** The voice sheet keeps a 20-second
+first-command and 12-second follow-up window across early silence callbacks.
+Confirmations require fresh final speech. Voice settings rank installed offline
+Indian English voices and separate audition from saving. Passing 15 local
+enrollment samples switches the active wake phrase from “Hey Gajala” to “Gajala.”
+Opt-in locked voice uses a separate Android activity and on-device recognition.
+It accepts a fixed set of phone commands and confirmed calls to selected
+contacts. Allowed results archive through the voice journal after unlock.
+Phone commands include named countdowns, battery, exact media volume, and
+verified media-session controls. 223 Flutter tests and native command policy
+checks pass. Lock-screen compatibility, wake accuracy, battery impact, and
+call and timer delivery on a physical phone remain unverified.
+
 **Markdown reading view (November 17).** Coding and research results, trading
 reports and memos, and authenticated Markdown file previews use a shared native
 reader. It supports GitHub Flavored Markdown, selectable text, horizontally
@@ -617,6 +630,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-17 — Extended voice listening, added offline voice selection and
+  “Gajala” enrollment, and added opt-in locked voice and local phone commands.
 - 2026-11-17 — Added a native Markdown reader to Work reports, Trading documents,
   and Markdown previews from Files, chat attachments, and Work artifacts.
 - 2026-11-17 — Conversation-owned context/session isolation, reliable explanations,

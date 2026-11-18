@@ -67,6 +67,8 @@ class MainActivity : FlutterFragmentActivity() {
         MethodChannel(messenger, "gajala/wakeword/control").setMethodCallHandler { call, result ->
             when (call.method) {
                 "state" -> result.success(wakeWordState())
+                "phrase" -> result.success(WakeWordService.phrase(this))
+                "calibration" -> result.success(WakeWordService.calibration(this).let { listOf(it.first, it.second) })
                 "enable" -> enableWakeWord(result)
                 "disable" -> {
                     WakeWordService.setEnabled(this, false)
@@ -105,9 +107,41 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+        MethodChannel(messenger, "gajala/voice/phone").setMethodCallHandler { call, result ->
+            if (LockedVoice.locked(this) || visible !== this) {
+                result.error("locked", "Unlock your phone and ask again.", null)
+                return@setMethodCallHandler
+            }
+            when (call.method) {
+                "unlocked" -> result.success(true)
+                "setup" -> {
+                    startActivity(Intent(this, VoiceSetupActivity::class.java))
+                    result.success(null)
+                }
+                "execute" -> {
+                    val command = VoiceCommand.parse(call.arguments as? String ?: "")
+                    if (command == null) result.success(null)
+                    else EverydayVoice(this).execute(command, {
+                        visible === this && !LockedVoice.locked(this)
+                    }) { reply -> result.success(reply) }
+                }
+                "saveVoice" -> {
+                    LockedVoice.prefs(this).edit().putString("voice", call.arguments as? String).apply()
+                    result.success(null)
+                }
+                "journal" -> result.success(LockedVoice.prefs(this).getString("journal", "[]"))
+                "acknowledge" -> {
+                    (call.arguments as? String)?.let { LockedVoice.acknowledge(this, it) }
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
         phoneActions = VoiceActions(this)
         MethodChannel(messenger, "gajala/phone").setMethodCallHandler { call, result ->
-            if (phoneActions?.handle(call, result) != true) result.notImplemented()
+            if (LockedVoice.locked(this)) {
+                result.error("locked", "Unlock your phone and ask again.", null)
+            } else if (phoneActions?.handle(call, result) != true) result.notImplemented()
         }
     }
 

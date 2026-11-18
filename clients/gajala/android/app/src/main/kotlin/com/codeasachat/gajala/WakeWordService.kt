@@ -58,8 +58,7 @@ class WakeWordService : Service() {
     private val screen = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_OFF -> pause(SCREEN)
-                Intent.ACTION_USER_PRESENT -> unpause(SCREEN)
+                Intent.ACTION_SCREEN_OFF, Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> syncScreen()
                 PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> syncPowerSave()
             }
         }
@@ -77,11 +76,11 @@ class WakeWordService : Service() {
         }
         registerReceiver(screen, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT)
             addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
         })
-        val power = getSystemService(PowerManager::class.java)
-        if (!power.isInteractive) pause(SCREEN)
+        syncScreen()
         if (appHoldsMic) pause(HELD)
         syncPowerSave()
         startEngine()
@@ -122,6 +121,13 @@ class WakeWordService : Service() {
         updateNotification()
     }
 
+    fun syncScreen() {
+        val power = getSystemService(PowerManager::class.java)
+        val lockedEnabled = LockedVoice.enabled(this) && LockedVoice.unsupported(this) == null
+        if ((!power.isInteractive || LockedVoice.locked(this)) && !lockedEnabled) pause(SCREEN)
+        else unpause(SCREEN)
+    }
+
     private fun syncPowerSave() {
         if (getSystemService(PowerManager::class.java).isPowerSaveMode) pause(POWER_SAVE) else unpause(POWER_SAVE)
     }
@@ -145,6 +151,7 @@ class WakeWordService : Service() {
                     "ready" -> {
                             invokeMethod("configure", mapOf(
                                 "dir" to dir.absolutePath,
+                                "keywordFile" to keywordFile(this@WakeWordService),
                                 "threshold" to calibration(this@WakeWordService).first,
                                 "boost" to calibration(this@WakeWordService).second,
                             ), object : MethodChannel.Result {
@@ -248,14 +255,18 @@ class WakeWordService : Service() {
      * Listening resumes after a short cooldown unless voice mode holds the mic.
      */
     private fun onDetected() {
+        if (LockedVoice.locked(this) && (!LockedVoice.enabled(this) || LockedVoice.unsupported(this) != null)) {
+            syncScreen()
+            return
+        }
         pause(COOLDOWN)
         main.removeCallbacks(resumeAfterCooldown)
         main.postDelayed(resumeAfterCooldown, COOLDOWN_MS)
         val activity = MainActivity.visible
         val assistant = GajalaVoiceInteractionService.instance
         when {
-            activity != null -> activity.openVoice()
-            assistant != null -> assistant.showSession(Bundle(), 0)
+            activity != null && !LockedVoice.locked(this) -> activity.openVoice()
+            assistant != null -> runCatching { assistant.showSession(Bundle(), 0) }.onFailure { notifyTapToTalk() }
             else -> notifyTapToTalk()
         }
     }
@@ -264,7 +275,7 @@ class WakeWordService : Service() {
     private fun notifyTapToTalk() {
         val n = builder(TRIGGER_CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Heard “Hey Gajala”")
+            .setContentTitle("Heard “${phrase(this)}”")
             .setContentText("Tap to talk")
             .setContentIntent(voiceIntent(this))
             .setAutoCancel(true)
@@ -300,7 +311,7 @@ class WakeWordService : Service() {
             POWER_SAVE in pauses -> "Paused while Battery Saver is on"
             SCREEN in pauses -> "Paused while the screen is off"
             pauses.isNotEmpty() -> "Paused while Gajala is using the mic"
-            else -> "Listening for “Hey Gajala” — audio stays on this phone"
+            else -> "Listening for “${phrase(this)}” · on this phone"
         }
         val stop = PendingIntent.getService(
             this, 1, Intent(this, WakeWordService::class.java).setAction(ACTION_STOP),
@@ -347,7 +358,7 @@ class WakeWordService : Service() {
         private const val TRIGGER_ID = 7302
         private const val PREFS = "gajala_wakeword"
         val MODEL_FILES = listOf(
-            "encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt", "keywords.txt",
+            "encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt", "keywords.txt", "gajala.txt",
         )
 
         fun isEnabled(context: Context): Boolean =
@@ -357,6 +368,13 @@ class WakeWordService : Service() {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("enabled", on).apply()
         }
 
+        fun keywordFile(context: Context): String =
+            if (context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("single_word", false))
+                "gajala.txt" else "keywords.txt"
+
+        fun phrase(context: Context): String =
+            if (keywordFile(context) == "gajala.txt") "Gajala" else "Hey Gajala"
+
         fun calibration(context: Context): Pair<Double, Double> {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             return prefs.getFloat("threshold", 0.3f).toDouble() to
@@ -365,7 +383,7 @@ class WakeWordService : Service() {
 
         fun saveCalibration(context: Context, threshold: Double, boost: Double) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putFloat("threshold", threshold.toFloat())
+                .putBoolean("single_word", true).putFloat("threshold", threshold.toFloat())
                 .putFloat("boost", boost.toFloat()).apply()
         }
 

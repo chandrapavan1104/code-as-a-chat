@@ -7,6 +7,8 @@
     <!-- Voice: speech input, and "set an alarm/timer" handed to the clock app -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
     <!-- Phone abilities: each is off until enabled in-app, and only used while
          the owner is chatting. WRITE_CALENDAR is required by the calendar
@@ -28,6 +30,11 @@
         android:label="Gajala"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <activity android:name=".LockedVoiceActivity" android:exported="false"
+            android:excludeFromRecents="true" android:taskAffinity="com.codeasachat.gajala.locked"
+            android:launchMode="singleTop" />
+        <activity android:name=".VoiceSetupActivity" android:exported="false" />
+        <receiver android:name=".VoiceTimerReceiver" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
