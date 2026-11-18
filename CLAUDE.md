@@ -59,6 +59,14 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Markdown reading view (November 17).** Coding and research results, trading
+reports and memos, and authenticated Markdown file previews use a shared native
+reader. It supports GitHub Flavored Markdown, selectable text, horizontally
+scrollable tables and code, and source copying. Inline worker attachment markers
+still open file cards. Embedded images show their descriptions. The file reader
+labels the 128 KiB preview limit and keeps the full local file available to open.
+219 Flutter tests pass. Physical phone acceptance remains pending.
+
 **Conversation authority and widget recovery (November 17).** Conversation-bound
 coding sessions now use conversation + canonical workspace + engine, cannot follow
 newer Mac sessions, and reject cross-chat native-session attachment. Legacy shared
@@ -609,6 +617,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-17 — Added a native Markdown reader to Work reports, Trading documents,
+  and Markdown previews from Files, chat attachments, and Work artifacts.
 - 2026-11-17 — Conversation-owned context/session isolation, reliable explanations,
   shared Terminal/Trading quick access, and widget background-worker recovery.
 - 2026-11-17 — Diagnosed chat/provider/power failures; fixed deterministic slash

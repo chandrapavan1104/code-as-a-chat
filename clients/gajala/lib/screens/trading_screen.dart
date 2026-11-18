@@ -10,6 +10,7 @@ import '../core/app_lock.dart';
 import '../core/state.dart';
 import '../core/storage.dart';
 import '../core/theme.dart';
+import '../widgets/markdown_reader.dart';
 
 /// Library → Trading: the owner's view of the trading desk on the Mac.
 ///
@@ -874,58 +875,53 @@ class _MoodChip extends StatelessWidget {
 }
 
 /// A research memo or report, rendered as simple formatted text.
-class TradeDocScreen extends ConsumerWidget {
+class TradeDocScreen extends ConsumerStatefulWidget {
   final String path;
   const TradeDocScreen({super.key, required this.path});
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final api = ref.read(apiProvider);
+  ConsumerState<TradeDocScreen> createState() => _TradeDocScreenState();
+}
+
+class _TradeDocScreenState extends ConsumerState<TradeDocScreen> {
+  GajalaApi? _api;
+  Future<String>? _document;
+
+  @override
+  Widget build(BuildContext context) {
+    final api = ref.watch(apiProvider);
+    if (api != _api) {
+      _api = api;
+      _document = api?.tradeDoc(widget.path);
+    }
     return Scaffold(
-      appBar: AppBar(title: Text(path.split('/').last.replaceAll('.md', ''))),
-      body: FutureBuilder<String>(
-        future: api?.tradeDoc(path),
-        builder: (context, snap) {
-          if (snap.hasError) return Center(child: Text(detailOf(snap.error!)));
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          return SelectionArea(
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [for (final line in snap.data!.split('\n')) _mdLine(context, line)],
+      appBar: AppBar(title: Text(widget.path.split('/').last.replaceFirst(RegExp(r'\.md$'), ''))),
+      body: api == null
+          ? const Center(child: Text('Connection unavailable'))
+          : FutureBuilder<String>(
+              future: _document,
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(detailOf(snap.error!), textAlign: TextAlign.center),
+                        TextButton(
+                          onPressed: () => setState(() => _document = api.tradeDoc(widget.path)),
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                  children: [MarkdownReader(source: snap.data!)],
+                );
+              },
             ),
-          );
-        },
-      ),
     );
   }
-
-  Widget _mdLine(BuildContext context, String line) {
-    final trimmed = line.trimRight();
-    final heading = RegExp(r'^(#{1,4})\s+(.*)$').firstMatch(trimmed);
-    if (heading != null) {
-      final level = heading.group(1)!.length;
-      return Padding(
-        padding: EdgeInsets.only(top: level == 1 ? 4 : 12, bottom: 4),
-        child: Text(_plain(heading.group(2)!),
-            style: TextStyle(fontSize: level == 1 ? 21 : (level == 2 ? 17 : 15),
-                fontWeight: FontWeight.w700)),
-      );
-    }
-    final bullet = RegExp(r'^\s*[-*]\s+(.*)$').firstMatch(trimmed);
-    if (bullet != null) {
-      return Padding(
-        padding: const EdgeInsets.only(left: 6, bottom: 3),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('•  '),
-          Expanded(child: Text(_plain(bullet.group(1)!))),
-        ]),
-      );
-    }
-    if (trimmed.isEmpty) return const SizedBox(height: 8);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 3),
-      child: Text(_plain(trimmed), style: const TextStyle(height: 1.35)),
-    );
-  }
-
-  String _plain(String s) => s.replaceAll('**', '').replaceAll('`', '');
 }

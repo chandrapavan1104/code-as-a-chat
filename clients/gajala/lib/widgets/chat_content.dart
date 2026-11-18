@@ -7,6 +7,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../core/api.dart';
+import 'markdown_reader.dart';
 
 /// A deliberately small block model so message parsing can be tested without
 /// pumping a full chat screen.
@@ -209,6 +210,7 @@ class FileAttachmentPreview extends StatefulWidget {
 
 class _FileAttachmentPreviewState extends State<FileAttachmentPreview> {
   static const _maxPreviewBytes = 128 * 1024;
+  Future<({String text, bool truncated})>? _previewText;
   double? progress;
   String? localPath;
   String? error;
@@ -220,9 +222,11 @@ class _FileAttachmentPreviewState extends State<FileAttachmentPreview> {
       : '';
   bool get image =>
       {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}.contains(extension);
+  bool get markdown => {'md', 'markdown'}.contains(extension);
   bool get textLike => {
     'txt',
     'md',
+    'markdown',
     'json',
     'yaml',
     'yml',
@@ -261,6 +265,7 @@ class _FileAttachmentPreviewState extends State<FileAttachmentPreview> {
       if (!mounted) return;
       setState(() {
         localPath = target;
+        if (textLike) _previewText = _readPreview(target);
         opening = false;
         progress = 1;
       });
@@ -297,14 +302,18 @@ class _FileAttachmentPreviewState extends State<FileAttachmentPreview> {
     }
   }
 
-  Future<String> _readPreview(String path) async {
+  Future<({String text, bool truncated})> _readPreview(String path) async {
     final bytes = await File(path)
-        .openRead(0, _maxPreviewBytes)
+        .openRead(0, _maxPreviewBytes + 1)
         .fold<List<int>>(<int>[], (all, chunk) => all..addAll(chunk));
-    final text = utf8.decode(bytes, allowMalformed: true);
-    return bytes.length >= _maxPreviewBytes
-        ? '$text\n\n[Preview limited to 128 KB]'
-        : text;
+    final truncated = bytes.length > _maxPreviewBytes;
+    return (
+      text: utf8.decode(
+        truncated ? bytes.sublist(0, _maxPreviewBytes) : bytes,
+        allowMalformed: true,
+      ),
+      truncated: truncated,
+    );
   }
 
   @override
@@ -367,8 +376,8 @@ class _FileAttachmentPreviewState extends State<FileAttachmentPreview> {
         ],
       );
     if (textLike) {
-      return FutureBuilder<String>(
-        future: _readPreview(path),
+      return FutureBuilder<({String text, bool truncated})>(
+        future: _previewText,
         builder: (context, snap) {
           if (snap.hasError)
             return Column(
@@ -386,14 +395,31 @@ class _FileAttachmentPreviewState extends State<FileAttachmentPreview> {
           return Column(
             children: [
               Expanded(
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    snap.data!,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      height: 1.35,
-                    ),
-                  ),
+                child: ListView(
+                  children: [
+                    if (snap.data!.truncated)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 10),
+                        child: Text(
+                          'Preview limited to 128 KB. Open the full file in another app.',
+                        ),
+                      ),
+                    if (markdown)
+                      MarkdownReader(
+                        source: snap.data!.text,
+                        copyLabel: snap.data!.truncated
+                            ? 'Copy preview Markdown'
+                            : 'Copy Markdown',
+                      )
+                    else
+                      SelectableText(
+                        snap.data!.text,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          height: 1.35,
+                        ),
+                      ),
+                  ],
                 ),
               ),
               _externalOpen(),
