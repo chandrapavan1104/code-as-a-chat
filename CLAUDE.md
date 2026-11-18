@@ -59,6 +59,16 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Personalized wake word (November 17).** Voice settings → Teach my voice
+uses three pronunciation examples and replaces only unusable clips. A pretrained
+openWakeWord speech encoder and LiteRT compare local speech features against
+the saved examples. No recordings are retained. Profiles are versioned, stored
+outside Android backups, and enabled by enrollment for unlocked wake only.
+Optional practice, add-example, and reset flows are available. The legacy
+detector remains the locked and failure fallback. Synthetic near-match checks,
+native clip quality checks, and 225 Flutter tests pass. Real-phone wake
+accuracy, false wakes over two hours, delay, and battery still need measurement.
+
 **Voice assistant upgrade (November 17).** The voice sheet keeps a 20-second
 first-command and 12-second follow-up window across early silence callbacks.
 Confirmations require fresh final speech. Voice settings rank installed offline
@@ -630,6 +640,8 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+- 2026-11-17 — Added opt-in three-recording personalized “Gajala” detection
+  with local LiteRT inference and a legacy fallback.
 - 2026-11-17 — Extended voice listening, added offline voice selection and
   “Gajala” enrollment, and added opt-in locked voice and local phone commands.
 - 2026-11-17 — Added a native Markdown reader to Work reports, Trading documents,

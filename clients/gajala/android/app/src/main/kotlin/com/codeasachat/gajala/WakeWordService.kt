@@ -50,7 +50,8 @@ class WakeWordService : Service() {
     private var control: MethodChannel? = null
     private var audio: BasicMessageChannel<ByteBuffer>? = null
     private var engineReady = false
-    private var recorder: AudioRecord? = null
+    @Volatile private var recorder: AudioRecord? = null
+    @Volatile private var personalizedListening = false
     private var reader: Thread? = null
     private val pauses = mutableSetOf<String>()
     private val resumeAfterCooldown = Runnable { unpause(COOLDOWN) }
@@ -222,19 +223,69 @@ class WakeWordService : Service() {
         }
         rec.startRecording()
         recorder = rec
+        val examples = PersonalWakeProfile.load(this)
         reader = Thread {
             val buf = ByteArray(FRAME_BYTES)
-            while (recorder === rec) {
-                val n = rec.read(buf, 0, buf.size)
-                if (n <= 0) continue
-                val frame = ByteBuffer.allocateDirect(n).order(ByteOrder.LITTLE_ENDIAN)
-                frame.put(buf, 0, n)
-                main.post { if (recorder === rec) audio?.send(frame) }
+            val segments = WakeSegments()
+            var personal = false
+            var usable = examples.isNotEmpty()
+            var encoder: PersonalWakeEncoder? = null
+            try {
+                while (recorder === rec) {
+                    val n = rec.read(buf, 0, buf.size)
+                    if (n < 0) break
+                    if (n == 0) continue
+                    val requested = usable && personalAvailable()
+                    if (personal != requested) {
+                        personal = requested
+                        segments.reset()
+                        personalizedListening = personal
+                        main.post {
+                            if (recorder === rec) {
+                                control?.invokeMethod("reset", null)
+                                updateNotification()
+                            }
+                        }
+                    }
+                    if (personal) {
+                        try {
+                            val model = encoder ?: PersonalWakeEncoder(applicationContext).also { encoder = it }
+                            segments.accept(buf, n) { word ->
+                                val hit = try {
+                                    PersonalWakeProfile.score(model.features(word), examples) >=
+                                        PersonalWakeProfile.THRESHOLD
+                                } finally { word.fill(0) }
+                                if (hit) main.post {
+                                    if (recorder === rec && personalAvailable()) onDetected(personal = true)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.w("GajalaWakeWord", "Personal wake unavailable; using legacy wake.", e)
+                            usable = false
+                        } catch (e: LinkageError) {
+                            android.util.Log.w("GajalaWakeWord", "Personal wake runtime unavailable.", e)
+                            usable = false
+                        }
+                    } else {
+                        val frame = ByteBuffer.allocateDirect(n).order(ByteOrder.LITTLE_ENDIAN)
+                        frame.put(buf, 0, n)
+                        main.post { if (recorder === rec && !personalizedListening) audio?.send(frame) }
+                    }
+                }
+            } finally {
+                buf.fill(0)
+                segments.reset()
+                encoder?.close()
             }
         }.apply { name = "gajala-wakeword"; start() }
     }
 
+    private fun personalAvailable(): Boolean =
+        getSystemService(PowerManager::class.java).isInteractive && !LockedVoice.locked(this)
+
     private fun stopRecording() {
+        personalizedListening = false
+        control?.invokeMethod("reset", null)
         val rec = recorder ?: return
         recorder = null
         runCatching { rec.stop() }
@@ -254,7 +305,9 @@ class WakeWordService : Service() {
      *  3. Otherwise → a heads-up notification the user taps.
      * Listening resumes after a short cooldown unless voice mode holds the mic.
      */
-    private fun onDetected() {
+    private fun onDetected(personal: Boolean = false) {
+        if (personalizedListening != personal) return
+        if (personal && !personalAvailable()) return
         if (LockedVoice.locked(this) && (!LockedVoice.enabled(this) || LockedVoice.unsupported(this) != null)) {
             syncScreen()
             return
@@ -266,16 +319,16 @@ class WakeWordService : Service() {
         val assistant = GajalaVoiceInteractionService.instance
         when {
             activity != null && !LockedVoice.locked(this) -> activity.openVoice()
-            assistant != null -> runCatching { assistant.showSession(Bundle(), 0) }.onFailure { notifyTapToTalk() }
-            else -> notifyTapToTalk()
+            assistant != null -> runCatching { assistant.showSession(Bundle(), 0) }.onFailure { notifyTapToTalk(personal) }
+            else -> notifyTapToTalk(personal)
         }
     }
 
     @Suppress("DEPRECATION")
-    private fun notifyTapToTalk() {
+    private fun notifyTapToTalk(personal: Boolean) {
         val n = builder(TRIGGER_CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Heard “${phrase(this)}”")
+            .setContentTitle("Heard “${if (personal) "Gajala" else phrase(this)}”")
             .setContentText("Tap to talk")
             .setContentIntent(voiceIntent(this))
             .setAutoCancel(true)
@@ -311,7 +364,7 @@ class WakeWordService : Service() {
             POWER_SAVE in pauses -> "Paused while Battery Saver is on"
             SCREEN in pauses -> "Paused while the screen is off"
             pauses.isNotEmpty() -> "Paused while Gajala is using the mic"
-            else -> "Listening for “${phrase(this)}” · on this phone"
+            else -> "Listening for “${if (personalizedListening) "Gajala" else phrase(this)}” · on this phone"
         }
         val stop = PendingIntent.getService(
             this, 1, Intent(this, WakeWordService::class.java).setAction(ACTION_STOP),

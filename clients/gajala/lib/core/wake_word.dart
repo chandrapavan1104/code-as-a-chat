@@ -42,6 +42,11 @@ void wakeWordMain() {
   sherpa.OnlineStream? stream;
 
   control.setMethodCallHandler((call) async {
+    if (call.method == 'reset') {
+      final current = stream;
+      if (current != null) spotter?.reset(current);
+      return null;
+    }
     if (call.method != 'configure') return null;
     final args = call.arguments as Map;
     final dir = args['dir'] as String;
