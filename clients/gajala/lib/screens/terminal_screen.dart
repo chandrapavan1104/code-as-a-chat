@@ -265,7 +265,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         final on = data.lastIndexOf('\x1B[?1h'), off = data.lastIndexOf('\x1B[?1l');
         if (on != off) _appCursor = on > off;
         buffer.append(data);
-        if (wasAuthPrompt && !_authPrompt && !_privateEditing) _clearPrivate();
+        if (wasAuthPrompt && !_authPrompt) _clearPrivate();
         _offsets[id] = (frame['next'] as num).toInt();
         setState(() {});
         _scrollToEnd();
