@@ -203,10 +203,12 @@ def test_private_raw_submission_suppresses_cli_echo_and_replay(shell, tmp_path):
     shell_store.bind(KEY, "Pixel")
     fake_code = "synthetic-oauth-123"
     program = (
-        "import os, tty, time\n"
+        "import os, termios, tty, time\n"
+        "original = termios.tcgetattr(0)\n"
         "tty.setraw(0)\n"
         "os.write(1, b'Paste code here > ')\n"
         f"code = os.read(0, {len(fake_code) + 1})\n"
+        "termios.tcsetattr(0, termios.TCSANOW, original)\n"
         "os.write(1, code[:8]); time.sleep(0.1); os.write(1, code[8:])\n"
     )
     path = tmp_path / "fake_claude.py"

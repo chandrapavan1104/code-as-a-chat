@@ -136,7 +136,14 @@ class Session:
         if self._private_prompt is not None:
             # A raw-mode CLI can echo pasted text itself. Drop the entire
             # exchange before it reaches the replay buffer or any viewer.
-            if self.prompt_id() != self._private_prompt:
+            current = self.prompt_id()
+            private_group, private_mode = self._private_prompt.split(":")
+            group_changed = current is not None and current.split(":")[0] != private_group
+            # A shell builtin can return to its own prompt by restoring echo.
+            # An interactive child can change modes and still echo the code.
+            shell_prompt_returned = (private_group == str(self.pid)
+                                     and private_mode == "secret" and current == f"{self.pid}:line")
+            if group_changed or shell_prompt_returned:
                 self._private_prompt = None
                 self._append_output(b"\r\n[Private input sent; terminal output resumed]\r\n")
             self.last_active = time.time()
