@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from server import config as cfg
-from server import fcm, workspace, claude_quota, music_lookup
+from server import fcm, workspace, claude_quota, music_lookup, phone_inbox
 from server.db import notes_store, diary_store, reminders_store
 from server.db import devices_store
 from server.db import store as memory
@@ -30,6 +30,7 @@ from server.media import ensure_uploads_dir, is_served_path
 from server.work_orders import WorkOrderSpec
 
 router = APIRouter(prefix="/api", tags=["app"])
+router.include_router(phone_inbox.router)
 from server import ports_api, reminders_api, library_api, home_api, shell_api, trading_api
 router.include_router(ports_api.router)
 router.include_router(reminders_api.router)
@@ -459,6 +460,10 @@ def serve_file(path: str):
     p = Path(path).expanduser()
     if not is_served_path(p):
         raise HTTPException(404, "not found")
+    if any(p.resolve().is_relative_to(root.resolve()) for root in (
+            phone_inbox.inbox(), phone_inbox.inbox().with_name("phone-attachments"))):
+        return FileResponse(p, media_type="application/octet-stream", filename=p.name,
+                            headers={"X-Content-Type-Options": "nosniff"})
     return FileResponse(str(p))
 
 

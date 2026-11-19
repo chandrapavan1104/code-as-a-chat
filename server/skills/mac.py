@@ -115,11 +115,8 @@ async def _wake() -> str:
             stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as exc:
         return f"[mac] wake failed: {exc}"
-    return (f"Mac display woken 🌅 and kept on for {WAKE_HOLD_SECONDS} s so you "
-            "can type the password.\n"
-            "Unlocked if no password is required after sleep (or within the "
-            "grace window); otherwise the Mac still asks for its password / "
-            "Touch ID.")
+    return (f"Mac display wake requested and kept on for {WAKE_HOLD_SECONDS} s "
+            "by the wake assertion. If locked, sign in with macOS.")
 
 
 async def _say(text: str) -> str:

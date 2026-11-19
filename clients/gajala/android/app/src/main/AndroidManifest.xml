@@ -56,6 +56,12 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
             <!-- Deep-links from home_widget launch tiles (Ask, Brain dump). -->
             <intent-filter>
                 <action android:name="es.antonborri.home_widget.action.LAUNCH" />
@@ -150,6 +156,11 @@
         </receiver>
 
         <receiver android:name=".GajalaWidgetReceiver" android:exported="false" />
+        <receiver android:name=".WidgetUpgradeReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Runs the Dart background callback when a widget tile is tapped. -->
         <receiver

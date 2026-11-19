@@ -70,6 +70,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   static const _sentinel = '\u200B'; // lets Backspace on an "empty" field be seen
   final _keysInput = TextEditingController(text: _sentinel);
   final _secretInput = TextEditingController();
+  bool _supportsPrivateInput = false;
+  bool _privateEditing = false;
+  bool _privateSending = false;
+  String? _promptId;
+  String? _pasteStatus;
+
+  static final _codePrompt = RegExp(
+    r'paste (?:the )?code here[^\r\n]*(?:>|:)\s*$',
+    caseSensitive: false,
+  );
+  bool get _authPrompt =>
+      _program?.toLowerCase().contains('claude') == true &&
+      _codePrompt.hasMatch(_buffer.text);
 
   GajalaApi? get _api => ref.read(apiProvider);
   TerminalBuffer get _buffer => _buffers.putIfAbsent(_sid ?? '', TerminalBuffer.new);
@@ -123,6 +136,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     try {
       final s = await api.shellStatus(_key!);
       if (!mounted) return;
+      _supportsPrivateInput = s['private_input'] == true;
       if (s['enabled'] != true) {
         setState(() {
           _phase = _Phase.disabled;
@@ -205,6 +219,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   }
 
   void _attach(String id) {
+    _flushKeys();
+    _clearPrivate();
     _sub?.cancel();
     _retry?.cancel();
     setState(() {
@@ -231,25 +247,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           _connected = true;
           _mode = frame['mode']?.toString() ?? 'line';
           _program = frame['program']?.toString();
+          _promptId = frame['prompt_id'] as String?;
         });
       case 'mode':
+        _flushKeys();
+        _clearPrivate();
         setState(() {
           _mode = frame['mode']?.toString() ?? 'line';
           _program = frame['program']?.toString();
+          _promptId = frame['prompt_id'] as String?;
           _ctrl = false;
           if (_mode == 'line') _forceKeys = false; // back at a prompt: drop the override
         });
       case 'output':
         final data = frame['data']?.toString() ?? '';
+        final wasAuthPrompt = _authPrompt;
         final on = data.lastIndexOf('\x1B[?1h'), off = data.lastIndexOf('\x1B[?1l');
         if (on != off) _appCursor = on > off;
         buffer.append(data);
+        if (wasAuthPrompt && !_authPrompt && !_privateEditing) _clearPrivate();
         _offsets[id] = (frame['next'] as num).toInt();
         setState(() {});
         _scrollToEnd();
       case 'gap':
         buffer.append('\n[earlier output was dropped]\n');
       case 'exit':
+        _clearPrivate();
         _offsets[id] = (frame['next'] as num?)?.toInt() ?? _offsets[id] ?? 0;
         buffer.append('\n[session ended${frame['code'] == null ? '' : ' (exit ${frame['code']})'}]\n');
         setState(() {
@@ -263,6 +286,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   /// The stream dropped (network, app paused). Resume from the last offset.
   void _lost(String id, Object? error) {
     if (!mounted || id != _sid || _ended.contains(id)) return;
+    _clearPrivate();
+    _keyFlush?.cancel();
+    _pendingKeys = '';
     if (error is DioException && error.response?.statusCode == 404) {
       setState(() => _ended.add(id));
       return;
@@ -354,6 +380,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   Future<void> _closeSession() async {
     final id = _sid;
     if (id == null) return;
+    _flushKeys();
+    _clearPrivate();
     try {
       await _sub?.cancel();
       await _api!.shellClose(_key!, id);
@@ -366,13 +394,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     await _loadSessions();
   }
 
-  Future<void> _send(String data) {
+  Future<void> _send(String data, {bool reportPaste = false}) {
     final id = _sid;
-    if (id == null || _ended.contains(id) || data.isEmpty) return _outbox;
+    final api = _api;
+    final key = _key;
+    if (id == null || api == null || key == null || !_connected ||
+        _ended.contains(id) || data.isEmpty) {
+      return _outbox;
+    }
     _follow = true;
     return _outbox = _outbox.then((_) async {
       try {
-        await _api!.shellInput(_key!, id, data);
+        await api.shellInput(key, id, data);
+        if (reportPaste && mounted && _sid == id) {
+          setState(() => _pasteStatus = 'Paste sent to terminal');
+        }
       } catch (e) {
         _snack(_detail(e));
       }
@@ -385,17 +421,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   /// One key (or a typed burst) in keys mode. Sent ~30 ms later together with
   /// whatever else was typed meanwhile.
   void _typeKey(String seq) {
+    if (!_connected || _privateSending) return;
+    if (_pasteStatus != null) setState(() => _pasteStatus = null);
     if (_ctrl && seq.length == 1 && RegExp('[a-zA-Z@\\[\\]\\\\^_ ]').hasMatch(seq)) {
       seq = String.fromCharCode(seq.toUpperCase().codeUnitAt(0) & 0x1f);
       setState(() => _ctrl = false);
     }
     _pendingKeys += seq;
     _keyFlush?.cancel();
-    _keyFlush = Timer(const Duration(milliseconds: 30), () {
-      final batch = _pendingKeys;
-      _pendingKeys = '';
-      _send(batch);
-    });
+    _keyFlush = Timer(const Duration(milliseconds: 30), _flushKeys);
+  }
+
+  void _flushKeys() {
+    _keyFlush?.cancel();
+    final batch = _pendingKeys;
+    _pendingKeys = '';
+    if (batch.isNotEmpty) _send(batch);
   }
 
   String _arrow(String dir) => _appCursor ? '\x1BO$dir' : '\x1B[$dir';
@@ -407,8 +448,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       _typeKey('\x7f');
     } else {
       final typed = value.replaceAll(_sentinel, '');
-      for (final ch in typed.split('')) {
-        _typeKey(ch == '\n' ? '\r' : ch);
+      if (typed.length > 1 && !_ctrl) {
+        _flushKeys();
+        _send(typed.replaceAll('\r\n', '\r').replaceAll('\n', '\r'),
+            reportPaste: true);
+      } else if (typed.isNotEmpty) {
+        _typeKey(typed == '\n' ? '\r' : typed);
       }
     }
     _keysInput.value = const TextEditingValue(
@@ -417,14 +462,71 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     );
   }
 
-  void _submitSecret() {
+  void _clearPrivate() {
+    _secretInput.clear();
+    _privateEditing = false;
+    _pasteStatus = null;
+  }
+
+  Future<void> _pastePrivate() async {
+    final id = _sid;
+    final prompt = _promptId;
+    final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted || id != _sid || prompt != _promptId || !_connected) return;
+    final text = clipboard?.text?.replaceFirst(RegExp(r'(?:\r\n|\n|\r)$'), '');
+    if (text == null || text.isEmpty || RegExp(r'[\x00-\x1f\x7f]').hasMatch(text)) {
+      _snack('Copy a single line of text first.');
+      return;
+    }
+    setState(() {
+      _privateEditing = true;
+      _secretInput.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    });
+  }
+
+  Future<void> _submitSecret() async {
     final text = _secretInput.text;
-    _secretInput.clear(); // never kept in history or on screen
-    _send('$text\n');
-    _focus.requestFocus();
+    final prompt = _promptId;
+    final id = _sid;
+    final key = _key;
+    final api = _api;
+    if (!_connected || _privateSending || id == null || key == null || api == null) return;
+    if (!_supportsPrivateInput || prompt == null) {
+      if (_mode != 'secret') return;
+      _secretInput.clear();
+      await _send('$text\n');
+      return;
+    }
+    if (text.isEmpty || RegExp(r'[\x00-\x1f\x7f]').hasMatch(text)) return;
+    _flushKeys();
+    setState(() {
+      _secretInput.clear();
+      _privateSending = true;
+    });
+    final submission = _outbox.then((_) async {
+      if (!mounted || !_connected || id != _sid || prompt != _promptId) return;
+      try {
+        await api.shellPrivateInput(key, id, prompt, text);
+      } catch (_) {
+        _snack('Private input could not be confirmed. Check the prompt before pasting again.');
+      }
+    });
+    _outbox = submission;
+    await submission;
+    if (mounted) {
+      setState(() {
+        _privateSending = false;
+        _privateEditing = false;
+      });
+      _focus.requestFocus();
+    }
   }
 
   void _submit() {
+    if (!_connected) return;
     final line = _input.text;
     _input.clear();
     if (line.trim().isNotEmpty && (_history.isEmpty || _history.last != line)) {
@@ -605,7 +707,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     );
   }
 
-  List<Widget> _inputArea() => switch (_effectiveMode) {
+  List<Widget> _inputArea() => switch ((_privateEditing || _authPrompt) ? 'secret' : _effectiveMode) {
     'keys' => _keysArea(),
     'secret' => _secretArea(),
     _ => _lineArea(),
@@ -638,6 +740,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         tooltip: 'Send each key as you press it',
         onPressed: () => setState(() => _forceKeys = true),
       ),
+      if (_supportsPrivateInput && _program != null)
+        ActionChip(label: const Text('Paste privately'), onPressed: _pastePrivate),
       IconButton(
         tooltip: 'Previous command',
         icon: const Icon(Icons.keyboard_arrow_up),
@@ -671,7 +775,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               textInputAction: TextInputAction.send,
             ),
           ),
-          IconButton(tooltip: 'Run', icon: const Icon(Icons.send), onPressed: _submit),
+          _enter(_submit),
         ],
       ),
     ),
@@ -723,7 +827,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         key('↓', _arrow('B'), icon: Icons.arrow_downward, tip: 'Down'),
         key('←', _arrow('D'), icon: Icons.arrow_back, tip: 'Left'),
         key('→', _arrow('C'), icon: Icons.arrow_forward, tip: 'Right'),
-        key('Enter', '\r', icon: Icons.keyboard_return, tip: 'Enter'),
+        if (_supportsPrivateInput && _program != null)
+          ActionChip(label: const Text('Paste privately'), onPressed: _pastePrivate),
         key('Space', ' ', icon: Icons.space_bar, tip: 'Space'),
         key('⌫', '\x7f', icon: Icons.backspace_outlined, tip: 'Backspace'),
         key('Tab', '\t'),
@@ -738,7 +843,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       ]),
       Padding(
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-        child: TextField(
+        child: Row(children: [Expanded(child: TextField(
           key: const ValueKey('keys-input'),
           controller: _keysInput,
           focusNode: _focus,
@@ -748,21 +853,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           keyboardType: TextInputType.visiblePassword,
           style: const TextStyle(fontFamily: 'monospace'),
           decoration: InputDecoration(
-            hintText: _ctrl ? 'Type a letter for Ctrl-…' : 'Type — each key is sent',
+            hintText: _ctrl ? 'Type a letter for Ctrl-…' : _pasteStatus ?? 'Type — each key is sent',
             isDense: true,
             border: const OutlineInputBorder(),
           ),
           onChanged: _onKeysTyped,
-          onEditingComplete: () => _typeKey('\r'), // keeps the keyboard open
+          onEditingComplete: _enterKeys,
           textInputAction: TextInputAction.go,
-        ),
+        )), _enter(_enterKeys)]),
       ),
     ];
   }
 
-  /// Password prompts: masked, never echoed on the phone or saved in history.
+  void _enterKeys() {
+    _typeKey('\r');
+    _flushKeys();
+  }
+
+  Widget _enter(VoidCallback submit) => IconButton(
+    key: const ValueKey('terminal-enter'),
+    tooltip: 'Enter',
+    icon: const Icon(Icons.keyboard_return),
+    onPressed: _connected && !_privateSending ? submit : null,
+  );
+
+  /// Password and private code prompts use a local masked draft.
   List<Widget> _secretArea() => [
-    _chips([ActionChip(label: const Text('Ctrl-C'), onPressed: () => _send('\x03'))]),
+    _chips([
+      ActionChip(label: const Text('Ctrl-C'), onPressed: () {
+        setState(_clearPrivate);
+        _send('\x03');
+      }),
+      if (_supportsPrivateInput)
+        ActionChip(label: const Text('Paste privately'), onPressed: _pastePrivate),
+      if (_secretInput.text.isNotEmpty)
+        ActionChip(label: const Text('Clear'), onPressed: () => setState(_secretInput.clear)),
+    ]),
     Padding(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
       child: Row(
@@ -775,17 +901,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               obscureText: true,
               autocorrect: false,
               enableSuggestions: false,
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.lock_outline, size: 18),
-                hintText: 'Password (hidden, not saved)',
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.lock_outline, size: 18),
+                labelText: _secretInput.text.isNotEmpty
+                    ? 'Code ready · Press Enter'
+                    : 'Private input',
                 isDense: true,
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
               ),
               onSubmitted: (_) => _submitSecret(),
               textInputAction: TextInputAction.send,
             ),
           ),
-          IconButton(tooltip: 'Send', icon: const Icon(Icons.send), onPressed: _submitSecret),
+          _enter(_submitSecret),
         ],
       ),
     ),

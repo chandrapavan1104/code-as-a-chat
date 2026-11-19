@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'diff.dart';
@@ -53,6 +54,45 @@ class GajalaApi {
       throw ArgumentError('Expected an API path');
     }
     return path;
+  }
+
+  Future<List<Map<String, dynamic>>> phoneInbox() async {
+    final response = await _dio.get('/api/phone/inbox');
+    return List<Map<String, dynamic>>.from(response.data['files'] as List);
+  }
+
+  Future<String> attachPhoneFile(String id) async {
+    final response = await _dio.post('/api/phone/inbox/$id/attachment');
+    return response.data['path'] as String;
+  }
+
+  Future<Map<String, dynamic>> sendPhoneFile({
+    required String id,
+    required String name,
+    required File file,
+    required CancelToken cancel,
+    required ProgressCallback progress,
+  }) async {
+    final size = await file.length();
+    final response = await _dio.put(
+      '/api/phone/inbox/$id',
+      queryParameters: {'name': name},
+      data: file.openRead(),
+      options: Options(
+        contentType: 'application/octet-stream',
+        headers: {Headers.contentLengthHeader: size},
+        followRedirects: false,
+        sendTimeout: const Duration(minutes: 15),
+      ),
+      cancelToken: cancel,
+      onSendProgress: progress,
+    );
+    final receipt = Map<String, dynamic>.from(response.data);
+    if (receipt['id'] != id || receipt['name'] != name ||
+        receipt['size'] != size || receipt['path'] is! String) {
+      throw const FormatException('The Mac did not confirm the transferred file.');
+    }
+    return receipt;
   }
 
   Future<Map<String, dynamic>> getSkillData(
@@ -345,6 +385,18 @@ class GajalaApi {
         data: {'data': data},
         options: _shell(deviceKey),
       );
+
+  Future<void> shellPrivateInput(
+    String deviceKey,
+    String id,
+    String prompt,
+    String data,
+  ) async => _dio.post(
+    '/api/shell/sessions/$id/private-input',
+    queryParameters: {'prompt': prompt},
+    data: data,
+    options: _shell(deviceKey).copyWith(contentType: 'text/plain'),
+  );
 
   /// Live NDJSON output from byte [offset]: `hello`, `output` (with `next`),
   /// `gap`, `heartbeat`, and `exit` when the shell ends.

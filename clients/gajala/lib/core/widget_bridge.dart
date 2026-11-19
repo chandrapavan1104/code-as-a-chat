@@ -33,7 +33,7 @@ Future<void> widgetCallback(Uri? uri) async {
       await _macAction('lock', busy: 'Locking…', ok: 'Locked ✓');
       break;
     case 'wake':
-      await _macAction('wake', busy: 'Waking…', ok: 'Woke ✓');
+      await _macAction('wake', busy: 'Waking…', ok: 'Wake requested');
       break;
     case 'codaur':
       await refreshCodaurWidget();
@@ -177,7 +177,8 @@ String? macActionFailure(Object? data) {
   final completion = data['completion'];
   if (completion is Map && completion['status'] != 'completed') return 'Mac action not confirmed';
   if (result.startsWith('[mac]')) return result;
-  if (result.startsWith('Mac locked.') || result.startsWith('Mac display woken')) return null;
+  if (result.startsWith('Mac locked.') || result.startsWith('Mac display woken') ||
+      result.startsWith('Mac display wake requested')) return null;
   return 'Mac action not confirmed';
 }
 
@@ -206,6 +207,7 @@ Future<void> _macAction(
     );
     final failure = macActionFailure(response.data);
     if (failure != null) {
+      await widgetDiagnostic(action, 'failed', category: 'action_unconfirmed');
       await _setMacStatus('Failed — ${failure.replaceFirst('[mac] ', '')}');
       return;
     }
@@ -266,6 +268,7 @@ Future<void> _refreshCodaurWidget() async {
       );
       final secondary = p['secondary_pct'];
       final stale = p['quota_stale'] == true;
+      await HomeWidget.saveWidgetData<bool>('codaur_quota_stale${i + 1}', stale);
       await HomeWidget.saveWidgetData<int>(
         'codaur_primary_pct${i + 1}',
         !stale && primary is num ? primary.clamp(0, 100).round() : 0,

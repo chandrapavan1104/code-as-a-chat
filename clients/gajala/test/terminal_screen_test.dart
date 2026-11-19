@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gajala/core/api.dart';
@@ -13,6 +14,7 @@ class FakeShellApi extends GajalaApi {
   Map<String, dynamic> status = {'enabled': true, 'paired': false, 'this_device': false};
   final sessions = <Map<String, dynamic>>[];
   final inputs = <String>[];
+  final privateInputs = <(String, String, String)>[];
   final attachedAt = <int>[];
   StreamController<Map<String, dynamic>>? out;
   String? pairedKey;
@@ -49,6 +51,11 @@ class FakeShellApi extends GajalaApi {
     holdNextInput = null;
     if (hold != null) await hold.future;
     inputs.add(data);
+  }
+
+  @override
+  Future<void> shellPrivateInput(String key, String id, String prompt, String data) async {
+    privateInputs.add((id, prompt, data));
   }
 
   @override
@@ -180,6 +187,40 @@ void main() {
     await tester.tap(find.byIcon(Icons.arrow_upward));
     await flushKeys(tester);
     expect(api.inputs, ['\x1BOA']);
+  });
+
+  testWidgets('Claude code paste stays masked until fixed Enter is pressed', (tester) async {
+    tester.view.physicalSize = const Size(320, 540);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = FakeShellApi()
+      ..status = {
+        'enabled': true, 'paired': true, 'this_device': true, 'private_input': true,
+      }
+      ..sessions.add({'id': 'abcd1234', 'cwd': '/Users/me', 'closed': false});
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') return {'text': 'fake-code\n'};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    await pumpTerminal(tester, api);
+    api.out!.add({'type': 'hello', 'mode': 'keys', 'program': 'claude', 'prompt_id': '47:keys'});
+    api.out!.add({'type': 'output', 'data': 'Paste code here if prompted > ', 'next': 30});
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Paste privately'));
+    await tester.pumpAndSettle();
+    expect(find.text('Code ready · Press Enter'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('secret-input'))).obscureText, true);
+    expect(api.inputs, isEmpty);
+    expect(api.privateInputs, isEmpty);
+    await tester.tap(find.byTooltip('Enter'));
+    await tester.pumpAndSettle();
+    expect(api.privateInputs, [('abcd1234', '47:keys', 'fake-code')]);
+    await tester.tap(find.byTooltip('Enter'));
+    await tester.pumpAndSettle();
+    expect(api.privateInputs, hasLength(1));
   });
 
   testWidgets('password prompts are masked and never kept in history', (tester) async {

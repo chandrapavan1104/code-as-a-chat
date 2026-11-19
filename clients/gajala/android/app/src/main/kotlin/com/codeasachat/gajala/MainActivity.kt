@@ -17,12 +17,14 @@ class MainActivity : FlutterFragmentActivity() {
     private var device: DeviceActions? = null
     private var phoneActions: VoiceActions? = null
     private var wakeEnrollment: WakeEnrollment? = null
+    private val phoneImport = PhoneImport(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Only a fresh launch counts; a recreated activity (rotation, process
         // restore) must not reopen the voice sheet.
         if (savedInstanceState == null) pendingAssist = isAssist(intent)
+        phoneImport.accept(intent)
     }
 
     override fun onResume() {
@@ -51,6 +53,7 @@ class MainActivity : FlutterFragmentActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
+        phoneImport.connect(messenger)
         channel = MethodChannel(messenger, "gajala/assist").apply {
             setMethodCallHandler { call, result ->
                 if (call.method == "consumeLaunch") {
@@ -198,6 +201,7 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        phoneImport.accept(intent)
         if (isAssist(intent)) openVoice()
     }
 

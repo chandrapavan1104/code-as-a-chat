@@ -8,6 +8,7 @@ import 'core/chat_controller.dart';
 import 'core/errors.dart';
 import 'core/outbox.dart';
 import 'core/push.dart';
+import 'screens/phone_inbox_screen.dart';
 import 'core/state.dart';
 import 'core/storage.dart';
 import 'core/theme.dart';
@@ -43,6 +44,29 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
   Timer? _outboxTimer;
   AppLifecycleListener? _lifecycle;
   bool _importingLockedVoice = false;
+  bool _openingPhoneInbox = false;
+
+  Future<void> _openPhoneShare() async {
+    final api = ref.read(apiProvider);
+    final nav = Push.navigatorKey.currentState;
+    if (_openingPhoneInbox || api == null || nav == null) return;
+    _openingPhoneInbox = true;
+    var opened = false;
+    try {
+      final files = await phoneImportChannel
+          .invokeListMethod<Map<Object?, Object?>>('consume');
+      if (!mounted || files == null || files.isEmpty) return;
+      opened = true;
+      await nav.push(MaterialPageRoute<void>(
+        builder: (_) => PhoneInboxScreen(api: api, shared: files),
+      ));
+    } on MissingPluginException {
+      // Android only.
+    } finally {
+      _openingPhoneInbox = false;
+      if (opened && mounted) unawaited(_openPhoneShare());
+    }
+  }
 
   Future<void> _importLockedVoice() async {
     if (_importingLockedVoice) return;
@@ -92,6 +116,7 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
 
   @override
   void dispose() {
+    phoneImportChannel.setMethodCallHandler(null);
     _outboxTimer?.cancel();
     _lifecycle?.dispose();
     super.dispose();
@@ -100,6 +125,9 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
   @override
   void initState() {
     super.initState();
+    phoneImportChannel.setMethodCallHandler((call) async {
+      if (call.method == 'incoming' && mounted) unawaited(_openPhoneShare());
+    });
     _outboxTimer = Timer.periodic(
       const Duration(seconds: 30),
       (_) => _replayOutbox(),
@@ -154,7 +182,10 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
     });
     final api = ref.read(apiProvider);
     if (api != null) Push.registerWith(api);
-    WidgetsBinding.instance.addPostFrameCallback((_) => flushWidgetLaunch());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      flushWidgetLaunch();
+      if (mounted && api != null) unawaited(_openPhoneShare());
+    });
     return MaterialApp(
       title: 'Gajala',
       debugShowCheckedModeBanner: false,

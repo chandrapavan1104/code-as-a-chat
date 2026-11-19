@@ -91,6 +91,7 @@ class Session:
         self.closed = False
         self.closed_at: float | None = None
         self.exit_code: int | None = None
+        self._private_prompt: str | None = None
         self._event = asyncio.Event()
         fd, slave = os.openpty()
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -132,6 +133,17 @@ class Session:
         if not data:
             self._finish()
             return
+        if self._private_prompt is not None:
+            # A raw-mode CLI can echo pasted text itself. Drop the entire
+            # exchange before it reaches the replay buffer or any viewer.
+            if self.prompt_id() != self._private_prompt:
+                self._private_prompt = None
+                self._append_output(b"\r\n[Private input sent; terminal output resumed]\r\n")
+            self.last_active = time.time()
+            return
+        self._append_output(data)
+
+    def _append_output(self, data: bytes) -> None:
         self.buffer += data
         overflow = len(self.buffer) - BUFFER_BYTES
         if overflow > 0:
@@ -186,6 +198,26 @@ class Session:
             return psutil.Process(pgid).name()
         except (OSError, psutil.Error):
             return None
+
+    def prompt_id(self) -> str | None:
+        if self.closed:
+            return None
+        try:
+            group = os.tcgetpgrp(self.fd)
+            return f"{group if group > 0 else self.pid}:{self.mode()}"
+        except OSError:
+            return None
+
+    def write_private(self, data: str, prompt: str) -> None:
+        # Never paste a credential into a shell prompt or a different program.
+        at_shell = prompt.startswith(f"{self.pid}:") and not prompt.endswith(":secret")
+        if self.prompt_id() != prompt or at_shell:
+            raise ShellError(409, "The prompt changed. Open the code prompt and paste again.")
+        if self._private_prompt == prompt:
+            raise ShellError(409, "Private input is already pending at this prompt.")
+        self._private_prompt = prompt
+        self._append_output(b"\r\n[Sending private input; output temporarily hidden]\r\n")
+        self.write(data + ("\r" if prompt.endswith(":keys") else "\n"))
 
     def write(self, data: str) -> None:
         if self.closed:

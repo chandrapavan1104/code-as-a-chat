@@ -27,6 +27,7 @@ class ChatScreen extends ConsumerStatefulWidget {
   final String? sessionId;
   final String? project;
   final bool active;
+  final String? attachmentPath;
   const ChatScreen({
     super.key,
     this.command = 'shell',
@@ -34,6 +35,7 @@ class ChatScreen extends ConsumerStatefulWidget {
     this.sessionId,
     this.project,
     this.active = true,
+    this.attachmentPath,
   });
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -203,6 +205,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _chat?.setProjectContext(_conversationProject ?? dir);
     await _chat?.ensureLoaded(welcome: _welcome);
     _restoreDraft();
+    final attachment = widget.attachmentPath;
+    if (mounted && attachment != null) {
+      final marker = '[file: $attachment]';
+      final draft = _input.text;
+      if (!draft.contains(marker)) {
+        _input.text = draft.trim().isEmpty ? marker : '$draft\n$marker';
+        _chat?.setDraft(_input.text);
+      }
+    }
     if (_foreground) unawaited(_chat?.refreshBackgroundResearch());
     final pending = _pendingProject;
     _pendingProject = null;
