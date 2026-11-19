@@ -52,6 +52,10 @@ class FakeTradeApi extends GajalaApi {
   }
 
   @override
+  Future<String> tradeDoc(String path) async =>
+      '# Research memo\n\n- **Finding:** a sample observation.';
+
+  @override
   Future<Map<String, dynamic>> tradeTicket(int id) async =>
       {'ticket': open.firstWhere((t) => t['id'] == id), 'history': []};
 
@@ -237,6 +241,25 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.calls, ['approve 7']);
     expect(find.text('BUY ABCD'), findsNothing);                     // sheet closed
+  });
+
+  testWidgets('ticket memo opens in reading view and back restores the ticket', (tester) async {
+    final api = FakeTradeApi();
+    await pump(tester, api, home: Consumer(builder: (context, ref, _) => Scaffold(
+      body: TextButton(onPressed: () => showTicketSheet(context, ref, 7),
+          child: const Text('Open ticket')))));
+    await tester.tap(find.text('Open ticket'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Memo'));
+    await tester.pumpAndSettle();
+    expect(find.text('Research memo', findRichText: true), findsOneWidget);
+    await tester.tap(find.text('View source'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('**Finding:**'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('BUY ABCD'), findsOneWidget);
+    expect(api.calls, isEmpty);
   });
 
   test('push taps on trade alerts open Trading, focused on the ticket', () {

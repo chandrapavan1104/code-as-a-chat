@@ -81,7 +81,8 @@ class CodaurWidget : HomeWidgetProvider() {
                     val isLocal = provider.equals("Qwen", ignoreCase = true)
                     val dataEpoch = widgetData.getLong("codaur_updated_epoch", 0L)
                     val expired = widgetData.getBoolean("codaur_stale", false) || dataEpoch <= 0L ||
-                        System.currentTimeMillis() - dataEpoch > STALE_AFTER_MS
+                        System.currentTimeMillis() - dataEpoch > STALE_AFTER_MS ||
+                        widgetData.getBoolean("codaur_quota_stale$suffix", false)
                     val hasPrimary = !expired && widgetData.getBoolean("codaur_has_primary$suffix", false)
                     val hasSecondary = !expired && widgetData.getBoolean("codaur_has_secondary$suffix", false)
                     val primary = widgetData.getInt("codaur_primary_pct$suffix", 0).coerceIn(0, 100)
@@ -109,7 +110,12 @@ class CodaurWidget : HomeWidgetProvider() {
                     if (isLocal || (!hasPrimary && !hasSecondary)) {
                         setViewVisibility(windows[index], View.GONE)
                         setViewVisibility(localNotes[index], View.VISIBLE)
-                        setTextViewText(localNotes[index], if (isLocal) "LOCAL · no subscription quota" else "Quota unavailable")
+                        val note = when {
+                            isLocal -> "Local model"
+                            expired && dataEpoch > 0L -> "Quota stale · refresh"
+                            else -> "Quota unavailable"
+                        }
+                        setTextViewText(localNotes[index], note)
                     } else {
                         setViewVisibility(windows[index], View.VISIBLE)
                         setViewVisibility(localNotes[index], View.GONE)
@@ -139,7 +145,7 @@ class CodaurWidget : HomeWidgetProvider() {
                 val availableHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
                 if (availableWidth in 1 until COMPACT_WIDTH_DP || availableHeight in 1 until COMPACT_HEIGHT_DP) {
                     setTextViewTextSize(R.id.codaur_summary, TypedValue.COMPLEX_UNIT_SP, 9f)
-                    for (viewId in tokens) setTextViewTextSize(viewId, TypedValue.COMPLEX_UNIT_SP, 8f)
+                    for (viewId in tokens) setTextViewTextSize(viewId, TypedValue.COMPLEX_UNIT_SP, 9f)
                     for (viewId in primaryLabels + secondaryLabels) {
                         setTextViewTextSize(viewId, TypedValue.COMPLEX_UNIT_SP, 8f)
                     }
@@ -164,7 +170,7 @@ class CodaurWidget : HomeWidgetProvider() {
         val epoch = data.getLong("codaur_updated_epoch", 0L)
         if (epoch <= 0L) {
             return data.getString("codaur_updated", null)?.takeIf { it.isNotBlank() }
-                ?.replace("SYNC", "Updated") ?: "Updated —"
+                ?.replace("SYNC", "Updated") ?: "No update yet"
         }
         val relative = DateUtils.getRelativeTimeSpanString(
             epoch,

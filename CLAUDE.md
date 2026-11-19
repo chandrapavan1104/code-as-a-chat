@@ -59,6 +59,46 @@ user already uses talk to the outside.
   avoid duplicate-uvicorn races.
 
 ## Current State
+**Widget, Terminal, and phone file transfer (November 19).** Mac Lock and
+Wake use explicit background widget actions; only Ask and Brain dump open the
+app. Codaur has compact rows and separate stale indicators. Terminal keeps
+Enter beside the editor and supports paired, masked submission at Claude's code
+prompt. Private exchanges are withheld from the replay buffer and audit.
+Android share and Files picker transfers go to the Mac's Phone inbox with
+bounded streaming, immutable receipts, and explicit chat attachment.
+Physical-phone acceptance remains separate from automated checks.
+
+**Personalized wake word (November 17).** Voice settings → Teach my voice
+uses three pronunciation examples and replaces only unusable clips. A pretrained
+openWakeWord speech encoder and LiteRT compare local speech features against
+the saved examples. No recordings are retained. Profiles are versioned, stored
+outside Android backups, and enabled by enrollment for unlocked wake only.
+Optional practice, add-example, and reset flows are available. The legacy
+detector remains the locked and failure fallback. Synthetic near-match checks,
+native clip quality checks, and 225 Flutter tests pass. Real-phone wake
+accuracy, false wakes over two hours, delay, and battery still need measurement.
+
+**Voice assistant upgrade (November 17).** The voice sheet keeps a 20-second
+first-command and 12-second follow-up window across early silence callbacks.
+Confirmations require fresh final speech. Voice settings rank installed offline
+Indian English voices and separate audition from saving. Passing 15 local
+enrollment samples switches the active wake phrase from “Hey Gajala” to “Gajala.”
+Opt-in locked voice uses a separate Android activity and on-device recognition.
+It accepts a fixed set of phone commands and confirmed calls to selected
+contacts. Allowed results archive through the voice journal after unlock.
+Phone commands include named countdowns, battery, exact media volume, and
+verified media-session controls. 223 Flutter tests and native command policy
+checks pass. Lock-screen compatibility, wake accuracy, battery impact, and
+call and timer delivery on a physical phone remain unverified.
+
+**Markdown reading view (November 17).** Coding and research results, trading
+reports and memos, and authenticated Markdown file previews use a shared native
+reader. It supports GitHub Flavored Markdown, selectable text, horizontally
+scrollable tables and code, and source copying. Inline worker attachment markers
+still open file cards. Embedded images show their descriptions. The file reader
+labels the 128 KiB preview limit and keeps the full local file available to open.
+219 Flutter tests pass. Physical phone acceptance remains pending.
+
 **Conversation authority and widget recovery (November 17).** Conversation-bound
 coding sessions now use conversation + canonical workspace + engine, cannot follow
 newer Mac sessions, and reject cross-chat native-session attachment. Legacy shared
@@ -609,6 +649,16 @@ progress, so what you watch is what you can reopen. Projects lists show real
 paths, git branch and remote, and a failed switch fails loudly.
 
 ## Changelog (most recent first)
+
+- **November 19** — Fixed Mac widget routing and compacted Codaur. Added fixed
+  Terminal Enter with private code paste and authenticated phone-to-Mac files.
+
+- 2026-11-17 — Added opt-in three-recording personalized “Gajala” detection
+  with local LiteRT inference and a legacy fallback.
+- 2026-11-17 — Extended voice listening, added offline voice selection and
+  “Gajala” enrollment, and added opt-in locked voice and local phone commands.
+- 2026-11-17 — Added a native Markdown reader to Work reports, Trading documents,
+  and Markdown previews from Files, chat attachments, and Work artifacts.
 - 2026-11-17 — Conversation-owned context/session isolation, reliable explanations,
   shared Terminal/Trading quick access, and widget background-worker recovery.
 - 2026-11-17 — Diagnosed chat/provider/power failures; fixed deterministic slash

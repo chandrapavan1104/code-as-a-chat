@@ -8,6 +8,7 @@ import '../core/models.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
 import '../widgets/chat_content.dart';
+import '../widgets/markdown_reader.dart';
 import '../widgets/work_result_widgets.dart';
 
 class WorkResultScreen extends ConsumerStatefulWidget {
@@ -109,6 +110,7 @@ class _ResultBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final markdown = {'coding', 'research'}.contains(result.kind);
     final partial = result.completeness == 'partial';
     final unavailable =
         !result.available ||
@@ -126,7 +128,7 @@ class _ResultBody extends StatelessWidget {
             Chip(label: Text(result.completeness.toUpperCase())),
           ],
         ),
-        if (result.text.trim().isNotEmpty)
+        if (!markdown && result.text.trim().isNotEmpty)
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
@@ -156,7 +158,14 @@ class _ResultBody extends StatelessWidget {
           ),
         if (result.text.trim().isNotEmpty) ...[
           const SizedBox(height: 12),
-          ChatContent(text: result.text, api: api),
+          if (markdown)
+            MarkdownReader(
+              source: result.text,
+              attachmentBuilder: (path) =>
+                  FileAttachmentCard(path: path, api: api),
+            )
+          else
+            SelectableText(result.text),
         ],
         if (result.artifacts.isNotEmpty) ...[
           const SizedBox(height: 18),

@@ -38,26 +38,47 @@ void main() {
     },
   );
 
-  test('calibration chooses the first safe, least-sensitive profile', () {
-    final chosen = chooseWakeCalibration([
-      [true, true, true, false, false, false, false, false],
-      [true, true, true, true, false, false, false, true],
-      [true, true, true, true, true, false, false, true],
-      [true, true, true, true, true, true, false, true],
-    ]);
-    expect(chosen?.threshold, 0.25);
-    expect(chosen?.boost, 1.6);
-  });
+  List<bool> trial(
+    int good, {
+    bool falseWake = false,
+    bool missedFresh = false,
+  }) => [
+    for (var i = 0; i < 8; i++) i < good,
+    falseWake,
+    false,
+    false,
+    false,
+    true,
+    true,
+    !missedFresh,
+  ];
 
-  test('calibration rejects false wakes and a failed holdout', () {
-    expect(
-      chooseWakeCalibration([
-        [true, true, true, true, true, false, false, false],
-        [true, true, true, true, true, true, false, true],
-        [true, true, true, false, false, false, false, true],
-        [true, true, true, true, true, false, true, true],
-      ]),
-      isNull,
-    );
-  });
+  test(
+    'calibration chooses the least sensitive profile passing all 15 clips',
+    () {
+      final chosen = chooseWakeCalibration([
+        trial(6),
+        trial(7),
+        trial(8),
+        trial(8, falseWake: true),
+      ]);
+      expect(chosen?.threshold, 0.25);
+      expect(chosen?.boost, 1.6);
+    },
+  );
+
+  test(
+    'calibration rejects false wakes, failed fresh trials and old clip counts',
+    () {
+      expect(
+        chooseWakeCalibration([
+          trial(8, falseWake: true),
+          trial(8, missedFresh: true),
+          trial(6),
+          List.filled(8, true),
+        ]),
+        isNull,
+      );
+    },
+  );
 }

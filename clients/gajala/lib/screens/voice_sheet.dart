@@ -25,7 +25,7 @@ import '../widgets/voice_picker.dart';
 import '../widgets/music_access_tile.dart';
 import '../core/wake_word.dart';
 import 'chat_screen.dart';
-import 'wake_enrollment_screen.dart';
+import 'personal_wake_screen.dart';
 
 /// Open the voice sheet over whatever is on screen.
 bool _sheetOpen = false;
@@ -95,6 +95,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
   bool _speakReplies = true;
   bool _settingsOpen = false;
   bool _busy = false;
+  bool _noSpeech = false;
   bool _foreground = true;
   bool _handedOff = false;
   int _generation = 0;
@@ -156,6 +157,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
       unawaited(Voice.instance.stopSpeaking());
     } else if (state == AppLifecycleState.resumed) {
       _foreground = true;
+      if (_handedOff) unawaited(_stop());
     }
   }
 
@@ -192,19 +194,14 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
       await Voice.instance.speak(question);
       if (!_active(generation)) return '';
       setState(() => _phase = _Phase.listening);
-      final answer = await Voice.instance
-          .listen(
-            onPartial: (p) {
-              if (_active(generation)) setState(() => _partial = p);
-            },
-          )
-          .timeout(
-            const Duration(seconds: 15),
-            onTimeout: () {
-              unawaited(Voice.instance.cancelListening());
-              return '';
-            },
-          );
+      final answer = await Voice.instance.listenForCommand(
+        const Duration(seconds: 12),
+        confirmation: true,
+        onPartial: (p) {
+          if (_active(generation)) setState(() => _partial = p);
+        },
+      );
+      if (!_active(generation)) return '';
       await log!.appendLocalVoiceMessage(
         id!,
         answer.isEmpty ? 'assistant' : 'user',
@@ -218,7 +215,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
     }
   }
 
-  Future<void> _turn() async {
+  Future<void> _turn({bool followUp = false}) async {
     if (_busy || !_foreground || _settingsOpen || !mounted) return;
     _busy = true;
     _handedOff = false;
@@ -228,17 +225,22 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
       if (!_active(generation)) return;
       setState(() {
         _phase = _Phase.listening;
+        _noSpeech = false;
         _partial = '';
         _error = null;
       });
-      final heard = await Voice.instance.listen(
+      final heard = await Voice.instance.listenForCommand(
+        Duration(seconds: followUp ? 12 : 20),
         onPartial: (p) {
           if (_active(generation)) setState(() => _partial = p);
         },
       );
       if (!_active(generation)) return;
-      if (heard.isEmpty ||
-          RegExp(
+      if (heard.isEmpty) {
+        setState(() { _error = null; _partial = ''; _noSpeech = true; });
+        return;
+      }
+      if (RegExp(
             r'^(stop|cancel|goodbye|bye|stop listening)[.!?]*$',
             caseSensitive: false,
           ).hasMatch(heard.trim())) {
@@ -250,7 +252,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
         _partial = heard;
       });
       final exchange = await _answer(heard, generation);
-      if (!mounted) return;
+      if (!_active(generation)) return;
       setState(() {
         _log.add(exchange);
         _partial = '';
@@ -266,7 +268,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
       }
       if (_active(generation)) {
         _followUp = Timer(const Duration(milliseconds: 500), () {
-          if (_active(generation)) unawaited(_turn());
+          if (_active(generation)) unawaited(_turn(followUp: true));
         });
       }
     } catch (e) {
@@ -285,6 +287,18 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
   }
 
   Future<_Exchange> _answer(String heard, int generation) async {
+    if (!_active(generation)) return _Exchange(heard, 'Voice session ended.', 'Phone');
+    final utility = await EverydayVoice.execute(heard);
+    if (!_active(generation)) return _Exchange(heard, 'Voice session ended.', 'Phone');
+    if (utility != null) {
+      final key = await _shellKey(ref.read(apiProvider));
+      if (!mounted) return _Exchange(heard, utility, 'Phone');
+      final log = ref.read(chatControllerProvider(key).notifier);
+      final id = await log.beginLocalVoiceTurn(heard);
+      await log.appendLocalVoiceMessage(id, 'assistant', utility);
+      await log.finishLocalVoiceTurn(id);
+      return _Exchange(heard, utility, 'Phone');
+    }
     final local = parseLocalIntent(heard) != null;
     if (local) {
       final key = await _shellKey(ref.read(apiProvider));
@@ -399,6 +413,9 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
     final key = await _shellKey(api);
     final ctrl = ref.read(chatControllerProvider(key).notifier);
     await ctrl.ensureLoaded();
+    if (!await EverydayVoice.canUseUnlocked() || !_active(generation)) {
+      return 'Unlock your phone and ask again.';
+    }
     if (ref.read(chatControllerProvider(key)).sending) {
       await ctrl.send(heard);
       return "Gajala's still working on your last request, so I queued this. "
@@ -408,7 +425,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
     await ctrl.send(
       heard,
       phone: (command, args, api) async {
-        if (!_active(generation) || _handedOff) {
+        if (!await EverydayVoice.canUseUnlocked() || !_active(generation) || _handedOff) {
           return {
             'ok': false,
             'error': 'Voice session ended; ask again to authorize this action.',
@@ -531,7 +548,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
                     await Voice.instance.stopSpeaking();
                     if (!mounted) return;
                     setState(() => _settingsOpen = !_settingsOpen);
-                    if (!_settingsOpen) unawaited(_turn());
+                    if (!_settingsOpen) unawaited(_turn(followUp: true));
                   },
                 ),
               ],
@@ -622,7 +639,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSheet>
             ),
             const SizedBox(height: 10),
             Text(
-              _status,
+              _noSpeech ? 'Tap to try again' : _status,
               textAlign: TextAlign.center,
               style: TextStyle(color: pal.textDim),
             ),
@@ -694,6 +711,7 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
   String? _modelError;
   WakeWordState _wake = WakeWordState.off;
   String? _wakeError;
+  String _wakePhrase = 'Hey Gajala';
 
   @override
   void initState() {
@@ -704,10 +722,12 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
   Future<void> _refresh() async {
     final b = await OfflineBrain.instance.installedBytes();
     final w = await WakeWord.state();
+    final phrase = w == WakeWordState.unsupported ? _wakePhrase : await WakeWord.phrase();
     if (mounted) {
       setState(() {
         _bytes = b;
         _wake = w;
+        _wakePhrase = phrase;
       });
     }
   }
@@ -732,9 +752,9 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
         WakeWordState.off =>
           'Say it anytime the screen is on; a notification shows while it listens',
         WakeWordState.listening =>
-          'Listening on this phone only — nothing is recorded or sent',
+          'Listening for “$_wakePhrase” on this phone',
         WakeWordState.paused =>
-          'On · paused while the screen is off, Battery Saver is on, or Gajala is using the mic',
+          'Paused by screen settings, Battery Saver, or another Gajala voice activity',
       };
 
   Future<void> _download() async {
@@ -778,14 +798,35 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
           VoicePicker(preferences: Voice.instance.preferences),
           const MusicAccessTile(),
           ListTile(
+            leading: const Icon(Icons.lock_outline),
+            title: const Text('Lock screen, calls and timers'),
+            subtitle: const Text('Manage lock-screen voice access and timer alerts'),
+            onTap: () async {
+              try {
+                await EverydayVoice.settings();
+              } on PlatformException catch (e) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(e.message ?? 'Voice access is unavailable.')),
+                );
+              } on MissingPluginException {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Voice access requires Android.')),
+                );
+              }
+            },
+          ),
+          ListTile(
             leading: const Icon(Icons.record_voice_over),
-            title: const Text('Teach Hey Gajala my pronunciation'),
+            title: const Text('Teach my voice'),
             subtitle: const Text(
-              'Record short samples on this phone to tune wake sensitivity.',
+              'Say “Gajala” three times to set up personalized wake.',
             ),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const WakeEnrollmentScreen()),
-            ),
+            onTap: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const PersonalWakeScreen()),
+              );
+              if (mounted) await _refresh();
+            },
           ),
           SwitchListTile(
             title: const Text('Speak replies'),
@@ -800,7 +841,7 @@ class _VoiceSettingsState extends ConsumerState<_VoiceSettings> {
           ),
           SwitchListTile(
             secondary: const Icon(Icons.hearing),
-            title: const Text('Hands-free “Hey Gajala”'),
+            title: Text('Hands-free “$_wakePhrase”'),
             subtitle: Text(_wakeSubtitle),
             value:
                 _wake == WakeWordState.listening ||

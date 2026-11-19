@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,10 +8,12 @@ import 'core/chat_controller.dart';
 import 'core/errors.dart';
 import 'core/outbox.dart';
 import 'core/push.dart';
+import 'screens/phone_inbox_screen.dart';
 import 'core/state.dart';
 import 'core/storage.dart';
 import 'core/theme.dart';
 import 'core/voice.dart';
+import 'core/voice_journal.dart';
 import 'core/widget_bridge.dart';
 import 'screens/chat_screen.dart';
 import 'screens/connect_screen.dart';
@@ -40,6 +43,66 @@ class GajalaApp extends ConsumerStatefulWidget {
 class _GajalaAppState extends ConsumerState<GajalaApp> {
   Timer? _outboxTimer;
   AppLifecycleListener? _lifecycle;
+  bool _importingLockedVoice = false;
+  bool _openingPhoneInbox = false;
+
+  Future<void> _openPhoneShare() async {
+    final api = ref.read(apiProvider);
+    final nav = Push.navigatorKey.currentState;
+    if (_openingPhoneInbox || api == null || nav == null) return;
+    _openingPhoneInbox = true;
+    var opened = false;
+    try {
+      final files = await phoneImportChannel
+          .invokeListMethod<Map<Object?, Object?>>('consume');
+      if (!mounted || files == null || files.isEmpty) return;
+      opened = true;
+      await nav.push(MaterialPageRoute<void>(
+        builder: (_) => PhoneInboxScreen(api: api, shared: files),
+      ));
+    } on MissingPluginException {
+      // Android only.
+    } finally {
+      _openingPhoneInbox = false;
+      if (opened && mounted) unawaited(_openPhoneShare());
+    }
+  }
+
+  Future<void> _importLockedVoice() async {
+    if (_importingLockedVoice) return;
+    _importingLockedVoice = true;
+    try {
+      final data = await EverydayVoice.channel.invokeMethod<String>('journal');
+      if (data == null || data == '[]' || !mounted) return;
+      final install = await ref.read(sessionIdProvider.future);
+      final selected = await Storage.selectedConversation();
+      if (!mounted) return;
+      final sid = selected.sessionId?.startsWith('$install:') == true
+          ? selected.sessionId! : shellSessionId(install, null);
+      final ctrl = ref.read(chatControllerProvider(ChatKey('shell', sid)).notifier);
+      for (final item in jsonDecode(data) as List) {
+        final turn = VoiceJournalTurn(
+          id: item['id'] as String,
+          sessionId: sid,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(item['time'] as int),
+          completed: true,
+          messages: [
+            VoiceJournalMessage('user', item['request'] as String),
+            VoiceJournalMessage('assistant', item['reply'] as String),
+          ],
+        );
+        await VoiceJournal.instance.importCompleted(turn);
+        await EverydayVoice.channel.invokeMethod<void>('acknowledge', turn.id);
+        if (mounted) unawaited(ctrl.syncImportedVoiceTurn(turn));
+      }
+    } on MissingPluginException {
+      // Android-only feature.
+    } on PlatformException {
+      // Device locked or the native activity had not resumed; retry on resume.
+    } finally {
+      _importingLockedVoice = false;
+    }
+  }
 
   /// Deliver unsent messages for every conversation, not only the open one.
   Future<void> _replayOutbox() async {
@@ -53,6 +116,7 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
 
   @override
   void dispose() {
+    phoneImportChannel.setMethodCallHandler(null);
     _outboxTimer?.cancel();
     _lifecycle?.dispose();
     super.dispose();
@@ -61,11 +125,17 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
   @override
   void initState() {
     super.initState();
+    phoneImportChannel.setMethodCallHandler((call) async {
+      if (call.method == 'incoming' && mounted) unawaited(_openPhoneShare());
+    });
     _outboxTimer = Timer.periodic(
       const Duration(seconds: 30),
       (_) => _replayOutbox(),
     );
-    _lifecycle = AppLifecycleListener(onResume: _replayOutbox);
+    _lifecycle = AppLifecycleListener(onResume: () {
+      unawaited(_importLockedVoice());
+      unawaited(_replayOutbox());
+    });
     // Tapping a reply notification (foreground, background, or cold launch)
     // deep-links into the chat.
     Push.onOpenChat = (sessionId) {
@@ -92,15 +162,13 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
     AssistLaunch.listen(_openVoice);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       Push.handleLaunchMessage();
+      unawaited(_importLockedVoice());
       handleWidgetLaunch(); // route Ask / Dump widget deep-links
       if (await AssistLaunch.consumeInitial()) await _openVoice();
     });
   }
 
   Future<void> _openVoice() async {
-    // Voice needs a paired Mac for anything but phone actions; before pairing
-    // the connect screen is the right place to land.
-    if (await Storage.loadConfig() == null) return;
     await showVoiceSheet();
   }
 
@@ -114,7 +182,10 @@ class _GajalaAppState extends ConsumerState<GajalaApp> {
     });
     final api = ref.read(apiProvider);
     if (api != null) Push.registerWith(api);
-    WidgetsBinding.instance.addPostFrameCallback((_) => flushWidgetLaunch());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      flushWidgetLaunch();
+      if (mounted && api != null) unawaited(_openPhoneShare());
+    });
     return MaterialApp(
       title: 'Gajala',
       debugShowCheckedModeBanner: false,

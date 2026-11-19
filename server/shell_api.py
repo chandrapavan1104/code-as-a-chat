@@ -14,7 +14,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -113,7 +113,8 @@ def status(x_shell_device: str | None = Header(default=None)):
     return {"enabled": cfg.REMOTE_SHELL_ENABLED, "paired": bool(bound),
             "label": bound["label"] if bound else None,
             "paired_at": bound["bound_at"] if bound else None,
-            "this_device": bool(x_shell_device) and shell_store.matches(x_shell_device)}
+            "this_device": bool(x_shell_device) and shell_store.matches(x_shell_device),
+            "private_input": True}
 
 
 class PairBody(BaseModel):
@@ -218,6 +219,31 @@ def send_input(session_id: str, body: Input, x_shell_device: str | None = Header
     return {"ok": True, "end": session.end}
 
 
+@router.post("/sessions/{session_id}/private-input")
+async def send_private_input(session_id: str, prompt: str, request: Request,
+                             x_shell_device: str | None = Header(default=None)):
+    device = require_device(x_shell_device)
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > 4096:
+            raise HTTPException(413, "Private input is too long.")
+        data.extend(chunk)
+    try:
+        text = data.decode()
+    except UnicodeDecodeError:
+        raise HTTPException(400, "Private input must be a single line of text.") from None
+    if not text or any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise HTTPException(400, "Private input must be a single line of text.")
+    try:
+        session = manager.get(session_id)
+        session.write_private(text, prompt)
+    except ShellError as exc:
+        _raise(exc)
+    shell_store.audit("input", session_id=session_id, device=device.get("label"),
+                      cwd=session.cwd, text="[hidden input]")
+    return {"ok": True}
+
+
 @router.get("/sessions/{session_id}/output")
 async def stream_output(session_id: str, offset: int = 0,
                         x_shell_device: str | None = Header(default=None)):
@@ -232,15 +258,16 @@ async def stream_output(session_id: str, offset: int = 0,
 
     async def frames():
         pos = max(0, offset)
-        shown = (session.mode(), session.foreground())
+        shown = (session.mode(), session.foreground(), session.prompt_id())
         yield json.dumps({"type": "hello", **session.info(),
-                          "mode": shown[0], "program": shown[1]}) + "\n"
+                          "mode": shown[0], "program": shown[1], "prompt_id": shown[2]}) + "\n"
         last = time.monotonic()
         while True:
-            now_mode = (session.mode(), session.foreground())
+            now_mode = (session.mode(), session.foreground(), session.prompt_id())
             if now_mode != shown and not session.closed:
                 shown = now_mode
-                yield json.dumps({"type": "mode", "mode": shown[0], "program": shown[1]}) + "\n"
+                yield json.dumps({"type": "mode", "mode": shown[0], "program": shown[1],
+                                  "prompt_id": shown[2]}) + "\n"
             changed = session.changed
             gap, data, nxt = session.read(pos)
             if gap is not None:

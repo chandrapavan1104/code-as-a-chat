@@ -142,6 +142,10 @@ class VoiceJournal {
     return turns.where((turn) => turn.sessionId == sessionId).toList();
   }
 
+  Future<void> importCompleted(VoiceJournalTurn entry) => _mutate((turns) async {
+    if (!turns.any((turn) => turn.id == entry.id)) turns.add(entry);
+  });
+
   Future<void> begin(
     String id,
     String sessionId,

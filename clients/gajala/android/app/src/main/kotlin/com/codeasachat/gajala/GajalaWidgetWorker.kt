@@ -99,7 +99,8 @@ class GajalaWidgetReceiver : BroadcastReceiver() {
         if (uri.host !in setOf("lock", "wake", "codaur")) return
         val request = OneTimeWorkRequestBuilder<GajalaWidgetWorker>()
             .setInputData(Data.Builder().putString("uri", uri.toString()).build()).build()
-        WorkManager.getInstance(context).enqueueUniqueWork("gajala_widget_${uri.host}", ExistingWorkPolicy.KEEP, request)
+        val lane = if (uri.host == "codaur") "codaur" else "mac"
+        WorkManager.getInstance(context).enqueueUniqueWork("gajala_widget_$lane", ExistingWorkPolicy.KEEP, request)
     }
 
     companion object {

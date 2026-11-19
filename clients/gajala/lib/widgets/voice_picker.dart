@@ -37,7 +37,6 @@ class _VoicePickerState extends State<VoicePicker> {
         selected = chosen;
         loading = false;
       });
-      if (chosen != null) await widget.preferences.select(chosen);
     } catch (e) {
       if (mounted)
         setState(() {
@@ -50,11 +49,6 @@ class _VoicePickerState extends State<VoicePicker> {
   Future<void> _select(VoiceOption? voice) async {
     if (voice == null) return;
     setState(() => selected = voice);
-    try {
-      await widget.preferences.select(voice);
-    } catch (e) {
-      if (mounted) setState(() => error = 'Could not select that voice: $e');
-    }
   }
 
   Future<void> _preview() async {
@@ -109,9 +103,16 @@ class _VoicePickerState extends State<VoicePicker> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (!voices.any((voice) => voice.isIndianEnglish))
+          TextButton(
+            onPressed: _openSettings,
+            child: const Text('Install Indian English voices'),
+          ),
         DropdownButtonFormField<VoiceOption>(
           value: selected,
-          decoration: const InputDecoration(labelText: 'Indian English voice'),
+          decoration: const InputDecoration(
+            labelText: 'Offline speaking voice',
+          ),
           items: [
             for (final voice in voices)
               DropdownMenuItem(
@@ -135,6 +136,22 @@ class _VoicePickerState extends State<VoicePicker> {
                 : const Icon(Icons.volume_up),
             label: Text(previewing ? 'Speaking…' : 'Preview voice'),
           ),
+        ),
+        TextButton(
+          onPressed: selected == null || previewing
+              ? null
+              : () async {
+                  try {
+                    await widget.preferences.select(selected!);
+                    if (mounted)
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Voice saved.')),
+                      );
+                  } catch (e) {
+                    if (mounted) setState(() => error = e.toString());
+                  }
+                },
+          child: const Text('Save voice'),
         ),
         if (error != null)
           Text(

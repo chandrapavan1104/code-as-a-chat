@@ -28,6 +28,9 @@ class Voice {
   void Function(String)? _onPartial;
   String _latest = '';
   bool _holdingMic = false;
+  bool _requireFinal = false;
+
+  int _listenGeneration = 0;
 
   bool get isListening => _stt.isListening;
 
@@ -53,10 +56,40 @@ class Voice {
     return _sttReady;
   }
 
+  /// The recognizer can end an attempt early. Keep the user's first-speech
+  /// window independent of its silence timeout.
+  Future<String> listenForCommand(
+    Duration window, {
+    void Function(String)? onPartial,
+    bool confirmation = false,
+  }) async {
+    final generation = ++_listenGeneration;
+    try {
+      await SystemSound.play(SystemSoundType.click);
+    } on PlatformException {
+      // The tone is optional on phones that do not expose system sounds.
+    }
+    return listenWithinWindow(
+      window,
+      active: () => generation == _listenGeneration,
+      confirmation: confirmation,
+      attempt: (remaining) => listen(
+        onPartial: onPartial,
+        initialSilence: remaining,
+        requireFinal: confirmation,
+      ),
+    );
+  }
+
   /// Listen for one utterance. Completes with the final transcript ('' when
   /// nothing was heard). Throws [VoiceUnavailable] when there is no mic
   /// permission or recognizer.
-  Future<String> listen({void Function(String partial)? onPartial}) async {
+  Future<String> listen({
+    void Function(String partial)? onPartial,
+    Duration? initialSilence,
+    bool requireFinal = false,
+  }) async {
+    final generation = _listenGeneration;
     await stopSpeaking();
     if (!await _ensureStt()) {
       throw const VoiceUnavailable(
@@ -64,20 +97,35 @@ class Voice {
         'and make sure a voice-input app (e.g. Google) is installed.',
       );
     }
+    if (generation != _listenGeneration) return '';
     _finish();
     final done = Completer<String>();
     _pending = done;
     _holdingMic = true;
     await WakeWord.hold();
+    if (generation != _listenGeneration || !identical(_pending, done))
+      return '';
     _onPartial = onPartial;
+    _requireFinal = requireFinal;
     _latest = '';
+    final silenceTimer = initialSilence == null
+        ? null
+        : Timer(initialSilence, () {
+            if (identical(_pending, done) &&
+                (requireFinal || _latest.trim().isEmpty)) {
+              unawaited(_cancelAttempt());
+            }
+          });
     try {
       await _stt.listen(
         localeId: _localeId,
         onResult: (r) {
+          if (!identical(_pending, done)) return;
           _latest = r.recognizedWords;
+          if (!requireFinal && _latest.trim().isNotEmpty)
+            silenceTimer?.cancel();
           _onPartial?.call(_latest);
-          if (r.finalResult) _finish();
+          if (r.finalResult) _finish(finalResult: true);
         },
         listenOptions: SpeechListenOptions(
           partialResults: true,
@@ -88,21 +136,24 @@ class Voice {
         ),
       );
     } catch (_) {
+      silenceTimer?.cancel();
       _latest = '';
       _finish();
       rethrow;
     }
     // A plugin/recognizer must not leave a pending confirmation alive forever.
-    return done.future.timeout(
-      const Duration(seconds: 65),
-      onTimeout: () {
-        unawaited(cancelListening());
-        return '';
-      },
-    );
+    return done.future
+        .timeout(
+          const Duration(seconds: 65),
+          onTimeout: () {
+            if (identical(_pending, done)) unawaited(_cancelAttempt());
+            return '';
+          },
+        )
+        .whenComplete(() => silenceTimer?.cancel());
   }
 
-  void _finish({String? error}) {
+  void _finish({String? error, bool finalResult = false}) {
     if (_holdingMic) {
       _holdingMic = false;
       WakeWord.release();
@@ -118,7 +169,7 @@ class Voice {
         !error.contains('speech_timeout')) {
       p.completeError(VoiceUnavailable('Didn\'t catch that ($error).'));
     } else {
-      p.complete(_latest.trim());
+      p.complete(_requireFinal && !finalResult ? '' : _latest.trim());
     }
   }
 
@@ -128,7 +179,12 @@ class Voice {
     _finish();
   }
 
-  Future<void> cancelListening() async {
+  Future<void> cancelListening() {
+    _listenGeneration++;
+    return _cancelAttempt();
+  }
+
+  Future<void> _cancelAttempt() async {
     _latest = '';
     await _stt.cancel();
     _finish();
@@ -139,11 +195,9 @@ class Voice {
     if (text.isEmpty) return;
     if (!_ttsReady) {
       await _tts.awaitSpeakCompletion(true);
-      final voices = await preferences.available();
-      final selected = await preferences.selected(voices);
-      if (selected != null) await preferences.select(selected);
       _ttsReady = true;
     }
+    if (!await preferences.applySaved()) return;
     await _tts.stop();
     // Don't let the wake word hear Gajala saying its own name.
     await WakeWord.hold();
@@ -160,6 +214,55 @@ class Voice {
 
   Future<bool> speakReplies() => Storage.speakReplies();
   Future<void> setSpeakReplies(bool on) => Storage.setSpeakReplies(on);
+}
+
+/// An early empty attempt is silence, not the end of the user's window.
+Future<String> listenWithinWindow(
+  Duration window, {
+  required bool Function() active,
+  required Future<String> Function(Duration remaining) attempt,
+  bool confirmation = false,
+  Duration retryDelay = const Duration(milliseconds: 220),
+}) async {
+  final clock = Stopwatch()..start();
+  while (active() && clock.elapsed < window) {
+    final heard = await attempt(window - clock.elapsed);
+    if (!active()) return '';
+    if (heard.isNotEmpty) {
+      return confirmation && clock.elapsed > window ? '' : heard;
+    }
+    final remaining = window - clock.elapsed;
+    if (remaining > Duration.zero) {
+      await Future<void>.delayed(
+        remaining < retryDelay ? remaining : retryDelay,
+      );
+    }
+  }
+  return '';
+}
+
+class EverydayVoice {
+  static const channel = MethodChannel('gajala/voice/phone');
+
+  static Future<void> settings() => channel.invokeMethod<void>('setup');
+
+  static Future<bool> canUseUnlocked() async {
+    try {
+      return await channel.invokeMethod<bool>('unlocked') == true;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  static Future<String?> execute(String text) async {
+    try {
+      return await channel.invokeMethod<String>('execute', text);
+    } on MissingPluginException {
+      return null;
+    }
+  }
 }
 
 class VoiceUnavailable implements Exception {

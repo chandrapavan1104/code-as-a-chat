@@ -14,7 +14,8 @@ const _payload = <String, dynamic>{
     'available': true,
     'kind': 'research',
     'completeness': 'partial',
-    'text': 'Research summary so far.\n\n```dart\nfinal answer = 42;\n```',
+    'text':
+        '## Research summary so far.\n\n```dart\nfinal answer = 42;\n```\n\n[file: /uploads/queue/42/worker.md]',
     'artifacts': [
       {'kind': 'git_branch', 'ref': 'research/queue-42', 'files_changed': []},
       {
@@ -151,8 +152,10 @@ void main() {
     );
     expect(find.textContaining('Research summary so far.'), findsOneWidget);
     expect(find.text('DART'), findsOneWidget);
+    expect(find.text('worker.md'), findsOneWidget);
     expect(find.text('research/queue-42'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('Attempts and logs'));
     await tester.tap(find.text('Attempts and logs'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Attempt 2 · gemini'));

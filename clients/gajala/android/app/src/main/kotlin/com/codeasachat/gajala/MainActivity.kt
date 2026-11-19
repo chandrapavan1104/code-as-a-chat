@@ -17,12 +17,14 @@ class MainActivity : FlutterFragmentActivity() {
     private var device: DeviceActions? = null
     private var phoneActions: VoiceActions? = null
     private var wakeEnrollment: WakeEnrollment? = null
+    private val phoneImport = PhoneImport(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Only a fresh launch counts; a recreated activity (rotation, process
         // restore) must not reopen the voice sheet.
         if (savedInstanceState == null) pendingAssist = isAssist(intent)
+        phoneImport.accept(intent)
     }
 
     override fun onResume() {
@@ -51,6 +53,7 @@ class MainActivity : FlutterFragmentActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
+        phoneImport.connect(messenger)
         channel = MethodChannel(messenger, "gajala/assist").apply {
             setMethodCallHandler { call, result ->
                 if (call.method == "consumeLaunch") {
@@ -67,6 +70,9 @@ class MainActivity : FlutterFragmentActivity() {
         MethodChannel(messenger, "gajala/wakeword/control").setMethodCallHandler { call, result ->
             when (call.method) {
                 "state" -> result.success(wakeWordState())
+                "phrase" -> result.success(
+                    if (PersonalWakeProfile.load(this).isNotEmpty()) "Gajala" else WakeWordService.phrase(this))
+                "calibration" -> result.success(WakeWordService.calibration(this).let { listOf(it.first, it.second) })
                 "enable" -> enableWakeWord(result)
                 "disable" -> {
                     WakeWordService.setEnabled(this, false)
@@ -105,14 +111,97 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+        MethodChannel(messenger, "gajala/wakeword/personal").setMethodCallHandler { call, result ->
+            if (LockedVoice.locked(this) || visible !== this) {
+                result.error("locked", "Open Gajala while unlocked to manage your wake word.", null)
+                return@setMethodCallHandler
+            }
+            when (call.method) {
+                "examples" -> result.success(PersonalWakeProfile.load(this).map { row -> row.map(Float::toDouble) })
+                "capture" -> {
+                    val enrollment = wakeEnrollment ?: WakeEnrollment(this).also { wakeEnrollment = it }
+                    enrollment.capture(object : MethodChannel.Result {
+                        override fun success(capture: Any?) {
+                            val pcm = capture as ByteArray
+                            Thread {
+                                val outcome = runCatching {
+                                    val speech = WakeSegments.sample(pcm)
+                                    try {
+                                        PersonalWakeEncoder(applicationContext).use { it.features(speech) }
+                                    } finally { speech.fill(0) }
+                                }
+                                pcm.fill(0)
+                                runOnUiThread {
+                                    if (LockedVoice.locked(this@MainActivity) || visible !== this@MainActivity) {
+                                        result.error("cancelled", "Recording cancelled.", null)
+                                    } else outcome.fold(
+                                        { row -> result.success(row.map(Float::toDouble)) },
+                                        { error -> result.error("sample", error.message ?: "Could not use this recording.", null) }
+                                    )
+                                }
+                            }.start()
+                        }
+                        override fun error(code: String, message: String?, details: Any?) =
+                            result.error(code, message, details)
+                        override fun notImplemented() = result.notImplemented()
+                    })
+                }
+                "save" -> {
+                    val examples = (call.arguments as? List<*>)?.mapNotNull { row ->
+                        (row as? List<*>)?.mapNotNull { (it as? Number)?.toFloat() }?.toFloatArray()
+                    }.orEmpty()
+                    result.success(PersonalWakeProfile.save(this, examples))
+                }
+                "reset" -> result.success(PersonalWakeProfile.reset(this))
+                "match" -> {
+                    val example = (call.arguments as? List<*>)?.mapNotNull { (it as? Number)?.toFloat() }?.toFloatArray()
+                    result.success(example != null && example.size == PersonalWakeProfile.DIMENSIONS &&
+                        PersonalWakeProfile.score(example, PersonalWakeProfile.load(this)) >= PersonalWakeProfile.THRESHOLD)
+                }
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(messenger, "gajala/voice/phone").setMethodCallHandler { call, result ->
+            if (LockedVoice.locked(this) || visible !== this) {
+                result.error("locked", "Unlock your phone and ask again.", null)
+                return@setMethodCallHandler
+            }
+            when (call.method) {
+                "unlocked" -> result.success(true)
+                "setup" -> {
+                    startActivity(Intent(this, VoiceSetupActivity::class.java))
+                    result.success(null)
+                }
+                "execute" -> {
+                    val command = VoiceCommand.parse(call.arguments as? String ?: "")
+                    if (command == null) result.success(null)
+                    else EverydayVoice(this).execute(command, {
+                        visible === this && !LockedVoice.locked(this)
+                    }) { reply -> result.success(reply) }
+                }
+                "saveVoice" -> {
+                    LockedVoice.prefs(this).edit().putString("voice", call.arguments as? String).apply()
+                    result.success(null)
+                }
+                "journal" -> result.success(LockedVoice.prefs(this).getString("journal", "[]"))
+                "acknowledge" -> {
+                    (call.arguments as? String)?.let { LockedVoice.acknowledge(this, it) }
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
         phoneActions = VoiceActions(this)
         MethodChannel(messenger, "gajala/phone").setMethodCallHandler { call, result ->
-            if (phoneActions?.handle(call, result) != true) result.notImplemented()
+            if (LockedVoice.locked(this)) {
+                result.error("locked", "Unlock your phone and ask again.", null)
+            } else if (phoneActions?.handle(call, result) != true) result.notImplemented()
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        phoneImport.accept(intent)
         if (isAssist(intent)) openVoice()
     }
 

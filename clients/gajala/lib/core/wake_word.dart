@@ -42,9 +42,17 @@ void wakeWordMain() {
   sherpa.OnlineStream? stream;
 
   control.setMethodCallHandler((call) async {
+    if (call.method == 'reset') {
+      final current = stream;
+      if (current != null) spotter?.reset(current);
+      return null;
+    }
     if (call.method != 'configure') return null;
     final args = call.arguments as Map;
     final dir = args['dir'] as String;
+    final keywordFile = args['keywordFile'] == 'gajala.txt'
+        ? 'gajala.txt'
+        : 'keywords.txt';
     final threshold = (args['threshold'] as num?)?.toDouble() ?? _threshold;
     final boost = (args['boost'] as num?)?.toDouble() ?? _boost;
     sherpa.initBindings();
@@ -60,7 +68,7 @@ void wakeWordMain() {
           numThreads: 1,
           debug: false,
         ),
-        keywordsFile: '$dir/keywords.txt',
+        keywordsFile: '$dir/$keywordFile',
         keywordsThreshold: threshold,
         keywordsScore: boost,
         numTrailingBlanks: _trailingBlanks,
@@ -101,15 +109,16 @@ const wakeCalibrationCandidates = [
   WakeCalibration(0.15, 2.0),
 ];
 
-/// Picks the least sensitive bounded profile that catches 4/5 enrollment
-/// phrases, rejects both negatives, and catches the separate holdout phrase.
+/// Reject near matches and require independent trials before changing the profile.
 WakeCalibration? chooseWakeCalibration(List<List<bool>> detections) {
   if (detections.length != wakeCalibrationCandidates.length) return null;
   for (var i = 0; i < detections.length; i++) {
     final hits = detections[i];
-    if (hits.length != 8) continue;
-    final positives = hits.take(5).where((v) => v).length;
-    if (positives >= 4 && !hits[5] && !hits[6] && hits[7]) {
+    if (hits.length != 15) continue;
+    final positives = hits.take(8).where((v) => v).length;
+    if (positives >= 7 &&
+        !hits.skip(8).take(4).any((hit) => hit) &&
+        hits.skip(12).every((hit) => hit)) {
       return wakeCalibrationCandidates[i];
     }
   }
@@ -133,7 +142,7 @@ List<bool> _detectClips(
         numThreads: 1,
         debug: false,
       ),
-      keywordsFile: '$dir/keywords.txt',
+      keywordsFile: '$dir/gajala.txt',
       keywordsThreshold: profile.threshold,
       keywordsScore: profile.boost,
       numTrailingBlanks: _trailingBlanks,
@@ -180,7 +189,7 @@ Future<WakeCalibration?> calibrateWakeSamples(
   String modelDir,
   List<Uint8List> samples,
 ) async {
-  if (samples.length != 8) return null;
+  if (samples.length != 15) return null;
   // Model evaluation is CPU-heavy; keep it off the UI isolate. Clips are
   // copied into this short-lived isolate and released with it.
   return Isolate.run(() {
@@ -192,6 +201,15 @@ Future<WakeCalibration?> calibrateWakeSamples(
     return chooseWakeCalibration(matrix);
   });
 }
+
+Future<bool> practiceWakeSample(
+  String dir,
+  Uint8List clip,
+  WakeCalibration profile,
+) => Isolate.run(() {
+  sherpa.initBindings();
+  return _detectClips(dir, [clip], profile).single;
+});
 
 /// App-side switch for the wake word, backed by MainActivity.
 class WakeWord {
@@ -208,6 +226,14 @@ class WakeWord {
     } on MissingPluginException {
       return WakeWordState.unsupported;
     }
+  }
+
+  static Future<String> phrase() async =>
+      await _channel.invokeMethod<String>('phrase') ?? 'Hey Gajala';
+
+  static Future<WakeCalibration> calibration() async {
+    final values = await _channel.invokeListMethod<num>('calibration');
+    return WakeCalibration(values![0].toDouble(), values[1].toDouble());
   }
 
   static Future<Uint8List> enrollmentCapture() async =>

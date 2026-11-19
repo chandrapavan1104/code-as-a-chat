@@ -12,3 +12,10 @@ Godzilla", "Gisela", "gazella" and "Coachella"; the original five caught 0/30
 synthetic clips of that style, the combined set 17-18/30 (and still 28/30 of
 "ga-JAH-la"). Settings: threshold 0.3, boost 1.5, 3 trailing blanks; ~2 false
 triggers in 6.9 min of deliberately similar speech. Accuracy drops in noise.
+
+The optional single-word profile uses `gajala.txt` with pronunciation variants
+derived from the legacy list. Calibration selects the least sensitive candidate
+that passes at least seven of eight positive samples, all four negative samples,
+and all three fresh trials. The single-word and legacy profiles are never
+listened for together. Samples stay in memory. The legacy results above do not
+measure accuracy for the single-word profile.

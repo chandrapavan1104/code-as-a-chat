@@ -497,6 +497,17 @@ class ChatController extends StateNotifier<ChatState> {
 
   /// Completes the local record before returning. Network archival runs in the
   /// background so dialing, media, and other phone actions are never delayed.
+  Future<void> syncImportedVoiceTurn(VoiceJournalTurn turn) async {
+    if (mounted && state.loaded && !state.messages.any((m) => m.localRequestId == turn.id)) {
+      state = state.copyWith(messages: [
+        ...state.messages,
+        for (final m in turn.messages)
+          ChatMessage(m.role == 'user' ? 'user' : 'bot', m.content, localRequestId: turn.id),
+      ]);
+    }
+    await _syncLocalVoiceTurn(turn);
+  }
+
   Future<void> finishLocalVoiceTurn(String id) async {
     await _voiceJournal.finish(id);
     final turn = (await _voiceJournal.load(

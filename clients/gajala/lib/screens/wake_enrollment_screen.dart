@@ -18,15 +18,53 @@ class _WakeEnrollmentScreenState extends State<WakeEnrollmentScreen>
   String? _error;
 
   static const _prompts = [
-    'Say “Hey Gajala” naturally',
-    'Say it a little faster',
-    'Say it from a little farther away',
-    'Say it in your usual slang and rhythm',
-    'Say “Hey Gajala” one more time',
-    'Now talk normally without saying Gajala',
-    'Stay quiet for three seconds',
-    'Final check: say “Hey Gajala” naturally',
+    'Say “Gajala” naturally',
+    'Say “Gajala” a little faster',
+    'Say “Gajala” from farther away',
+    'Say “Gajala” in your usual rhythm',
+    'Say “Gajala” a little more softly',
+    'Say “Gajala” as if your phone were on the table',
+    'Say “Gajala” from your usual seat',
+    'Say “Gajala” naturally once more',
+    'Say “gazelle”',
+    'Say “Godzilla”',
+    'Talk normally without saying Gajala',
+    'Stay quiet or let background audio play',
+    'Fresh trial 1: say “Gajala” naturally',
+    'Fresh trial 2: say “Gajala” from farther away',
+    'Fresh trial 3: say “Gajala” in your usual rhythm',
   ];
+  String? _practice;
+
+  Future<void> _tryWake() async {
+    final generation = ++_generation;
+    setState(() {
+      _recording = true;
+      _practice = null;
+    });
+    try {
+      final clip = await WakeWord.enrollmentCapture();
+      final dir = await WakeWord.enrollmentModelDir();
+      final detected = await practiceWakeSample(
+        dir,
+        clip,
+        await WakeWord.calibration(),
+      );
+      if (mounted && generation == _generation)
+        setState(() {
+          _practice = detected
+              ? 'Detected “Gajala”.'
+              : '“Gajala” was not detected.';
+        });
+    } catch (_) {
+      if (mounted && generation == _generation) {
+        setState(() => _practice = 'Practice recording was unavailable.');
+      }
+    } finally {
+      if (mounted && generation == _generation)
+        setState(() => _recording = false);
+    }
+  }
 
   @override
   void initState() {
@@ -50,6 +88,7 @@ class _WakeEnrollmentScreenState extends State<WakeEnrollmentScreen>
     if (!_foreground) {
       _generation++;
       WakeWord.cancelEnrollment();
+      _samples.clear();
       if (mounted) {
         setState(() {
           _recording = false;
@@ -60,13 +99,14 @@ class _WakeEnrollmentScreenState extends State<WakeEnrollmentScreen>
   }
 
   Future<void> _capture() async {
+    final generation = ++_generation;
     setState(() {
       _recording = true;
       _error = null;
     });
     try {
       final pcm = await WakeWord.enrollmentCapture();
-      if (!mounted) return;
+      if (!mounted || !_foreground || generation != _generation) return;
       _samples.add(pcm);
       setState(() => _recording = false);
       if (_samples.length == _prompts.length) await _calibrate();
@@ -118,7 +158,7 @@ class _WakeEnrollmentScreenState extends State<WakeEnrollmentScreen>
   Widget build(BuildContext context) {
     final done = _samples.length;
     return Scaffold(
-      appBar: AppBar(title: const Text('Teach “Hey Gajala”')),
+      appBar: AppBar(title: const Text('Train “Gajala”')),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
@@ -133,7 +173,7 @@ class _WakeEnrollmentScreenState extends State<WakeEnrollmentScreen>
             LinearProgressIndicator(value: done / _prompts.length),
             const SizedBox(height: 12),
             Text(
-              'Sample ${done + 1} of ${_prompts.length}',
+              'Sample ${(done + 1).clamp(1, _prompts.length)} of ${_prompts.length}',
               style: Theme.of(context).textTheme.labelLarge,
             ),
             const SizedBox(height: 20),
@@ -151,6 +191,12 @@ class _WakeEnrollmentScreenState extends State<WakeEnrollmentScreen>
               ),
             ],
             const Spacer(),
+            if (_practice != null)
+              Text(_practice!, textAlign: TextAlign.center),
+            TextButton(
+              onPressed: _recording || _calibrating ? null : _tryWake,
+              child: const Text('Practice “Gajala”'),
+            ),
             FilledButton.icon(
               onPressed: _recording || _calibrating ? null : _capture,
               icon: Icon(_recording ? Icons.mic : Icons.mic_none),

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import shlex
+import sys
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -195,4 +197,46 @@ def test_audit_text_by_mode():
     assert shell_api._audit_text("hunter2\r", "keys") == "[7 chars] ⏎"
     assert shell_api._audit_text("\x1bOA\x03\x7f\t\x1b", "keys") == "↑ ^C ⌫ <tab> <esc>"
     assert shell_api._audit_text("hunter2\n", "secret") == "[hidden input]"
+
+
+def test_private_raw_submission_suppresses_cli_echo_and_replay(shell, tmp_path):
+    shell_store.bind(KEY, "Pixel")
+    fake_code = "synthetic-oauth-123"
+    program = (
+        "import os, tty, time\n"
+        "tty.setraw(0)\n"
+        "os.write(1, b'Paste code here > ')\n"
+        f"code = os.read(0, {len(fake_code) + 1})\n"
+        "os.write(1, code[:8]); time.sleep(0.1); os.write(1, code[8:])\n"
+    )
+    path = tmp_path / "fake_claude.py"
+    path.write_text(program)
+    session = shell.post("/api/shell/sessions", headers=_h(), json={}).json()["id"]
+    url = f"/api/shell/sessions/{session}"
+
+    async def wait_for_output(text):
+        terminal = shell_api.manager.get(session)
+        for _ in range(100):
+            if text in terminal.buffer:
+                return terminal.prompt_id()
+            await asyncio.sleep(0.03)
+        pytest.fail("Terminal did not reach test prompt")
+
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(path))}"
+    shell.post(f"{url}/input", headers=_h(), json={"data": command + "\n"}).raise_for_status()
+    prompt = shell.portal.call(wait_for_output, b"Paste code here >")
+    assert prompt.endswith(":keys")
+    assert shell.post(f"{url}/private-input", headers=_h(OTHER),
+                      params={"prompt": prompt}, content=fake_code).status_code == 403
+    assert shell.post(f"{url}/private-input", headers=_h(),
+                      params={"prompt": "wrong:keys"}, content=fake_code).status_code == 409
+    assert shell.post(f"{url}/private-input", headers=_h(),
+                      params={"prompt": prompt}, content=fake_code).status_code == 200
+    shell.portal.call(wait_for_output, b"output resumed")
+    output, _ = _run(shell, session, "printf 'ready-after-login'")
+    assert "ready-after-login" in output
+    assert fake_code not in output and "synthetic" not in output
+    audit = [row["text"] or "" for row in shell_store.recent_audit()]
+    assert "[hidden input]" in audit
+    assert not any(fake_code in text for text in audit)
     assert shell_api._audit_text("git status\n", "line") == "git status"

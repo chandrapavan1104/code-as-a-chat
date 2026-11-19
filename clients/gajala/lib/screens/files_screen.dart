@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import '../core/api.dart';
 import '../core/theme.dart';
 import '../widgets/chat_content.dart';
+import 'phone_inbox_screen.dart';
 
 /// Browse files in the selected project using the authenticated library API.
 class FilesScreen extends StatefulWidget {
@@ -121,6 +123,15 @@ class _FilesScreenState extends State<FilesScreen> {
       appBar: AppBar(
         title: const Text('Files'),
         actions: [
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android &&
+              widget.api is GajalaApi)
+            IconButton(
+              tooltip: 'Send to Mac',
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => PhoneInboxScreen(api: widget.api as GajalaApi),
+              )),
+              icon: const Icon(Icons.upload_file_outlined),
+            ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: _loading ? null : () => _load(),

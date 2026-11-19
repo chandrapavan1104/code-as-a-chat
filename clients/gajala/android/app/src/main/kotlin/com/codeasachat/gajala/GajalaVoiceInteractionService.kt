@@ -1,6 +1,7 @@
 package com.codeasachat.gajala
 
 import android.content.Intent
+import android.os.PowerManager
 import android.os.Bundle
 import android.service.voice.VoiceInteractionService
 import android.service.voice.VoiceInteractionSession
@@ -17,6 +18,10 @@ class GajalaVoiceInteractionService : VoiceInteractionService() {
     override fun onReady() {
         super.onReady()
         instance = this
+    }
+
+    override fun onLaunchVoiceAssistFromKeyguard() {
+        if (LockedVoice.enabled(this) && LockedVoice.unsupported(this) == null) showSession(Bundle(), 0)
     }
 
     override fun onShutdown() {
@@ -41,11 +46,22 @@ class GajalaVoiceSessionService : VoiceInteractionSessionService() {
 class GajalaVoiceSession(service: VoiceInteractionSessionService) : VoiceInteractionSession(service) {
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        val intent = Intent(context, MainActivity::class.java).apply {
-            action = MainActivity.ACTION_VOICE
+        val locked = LockedVoice.locked(context) || !context.getSystemService(PowerManager::class.java).isInteractive
+        if (locked && (!LockedVoice.enabled(context) || LockedVoice.unsupported(context) != null)) {
+            hide()
+            return
+        }
+        val target = if (locked) LockedVoiceActivity::class.java else MainActivity::class.java
+        val intent = Intent(context, target).apply {
+            if (!locked) action = MainActivity.ACTION_VOICE
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        startAssistantActivity(intent)
-        hide()
+        try {
+            startAssistantActivity(intent)
+        } catch (error: RuntimeException) {
+            android.util.Log.w("GajalaVoiceSession", "Android refused the assistant surface", error)
+        } finally {
+            hide()
+        }
     }
 }

@@ -44,4 +44,36 @@ void main() {
       );
     },
   );
+  test(
+    'offline voices are ranked by installed quality; network voices are excluded',
+    () {
+      final voices = VoicePreferences.indianVoicesFrom([
+        {
+          'name': 'Regular',
+          'locale': 'en-IN',
+          'quality': 'normal',
+          'network_required': '0',
+        },
+        {
+          'name': 'Cloud',
+          'locale': 'en-IN',
+          'quality': 'very high',
+          'network_required': '1',
+        },
+        {
+          'name': 'Missing',
+          'locale': 'en-IN',
+          'quality': 'very high',
+          'features': 'notInstalled',
+        },
+        {
+          'name': 'Better',
+          'locale': 'en-IN',
+          'quality': 'high',
+          'network_required': '0',
+        },
+      ]);
+      expect(voices.map((voice) => voice.name), ['Better', 'Regular']);
+    },
+  );
 }
