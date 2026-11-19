@@ -66,7 +66,8 @@ Enter beside the editor and supports paired, masked submission at Claude's code
 prompt. Private exchanges are withheld from the replay buffer and audit.
 Android share and Files picker transfers go to the Mac's Phone inbox with
 bounded streaming, immutable receipts, and explicit chat attachment.
-Physical-phone acceptance remains separate from automated checks.
+Release #85 and signed build 1795118760 are live. Server checks and the
+Tailscale transfer smoke test pass. Physical-phone acceptance is pending.
 
 **Personalized wake word (November 17).** Voice settings → Teach my voice
 uses three pronunciation examples and replaces only unusable clips. A pretrained

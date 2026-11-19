@@ -17,9 +17,12 @@ class MainActivity : FlutterFragmentActivity() {
     private var device: DeviceActions? = null
     private var phoneActions: VoiceActions? = null
     private var wakeEnrollment: WakeEnrollment? = null
-    private val phoneImport = PhoneImport(this)
+    private lateinit var phoneImport: PhoneImport
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Android attaches the Activity context before onCreate. Register the
+        // picker before Flutter configures its channel inside super.onCreate.
+        phoneImport = PhoneImport(this)
         super.onCreate(savedInstanceState)
         // Only a fresh launch counts; a recreated activity (rotation, process
         // restore) must not reopen the voice sheet.
